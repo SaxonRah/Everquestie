@@ -1,1 +1,0 @@
-MCP setup helpers were restored on 2026-08-13 after the initial GitHub bootstrap omitted the tools directory.

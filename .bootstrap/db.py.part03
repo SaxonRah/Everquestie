@@ -1,0 +1,300 @@
+                ORDER BY e.kind, e.name, l.id
+                """,
+                (int(zone_row["id"]),),
+            ).fetchall()
+
+        norm = normalize_name(zone_name)
+        return self.conn.execute(
+            """
+            SELECT l.*, e.id AS entity_id, e.kind, e.name,
+                   z.name AS zone_name, e.source_url
+            FROM entity_locations l
+            JOIN entities e ON e.id=l.entity_id
+            LEFT JOIN entities z ON z.id=l.zone_entity_id
+            WHERE lower(trim(COALESCE(z.name, e.zone, '')))=?
+              AND l.x IS NOT NULL AND l.y IS NOT NULL
+            ORDER BY e.kind, e.name, l.id
+            """,
+            (norm,),
+        ).fetchall()
+
+    def clear_page_derivatives(self, source_page_id: int) -> None:
+        """Remove only facts generated from one imported page before re-extracting it."""
+        self.conn.execute(
+            "DELETE FROM entity_relationships WHERE source_page_id=?", (source_page_id,)
+        )
+        self.conn.execute(
+            "DELETE FROM entity_locations WHERE source_page_id=?", (source_page_id,)
+        )
+        self.conn.execute(
+            "DELETE FROM entity_aliases WHERE source_page_id=?", (source_page_id,)
+        )
+        self.conn.execute(
+            "DELETE FROM quest_steps WHERE source_page_id=?", (source_page_id,)
+        )
+        self._commit()
+
+    def add_quest_step(
+        self,
+        quest_id: int,
+        order: int,
+        description: str,
+        *,
+        zone: str | None = None,
+        match: dict[str, Any] | None = None,
+        source_page_id: int | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO quest_steps(
+                quest_entity_id, step_order, description, zone, match_json, source_page_id
+            ) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(quest_entity_id, step_order) DO UPDATE SET
+                description=excluded.description,
+                zone=excluded.zone,
+                match_json=excluded.match_json,
+                source_page_id=COALESCE(excluded.source_page_id, quest_steps.source_page_id)
+            """,
+            (
+                quest_id, order, description, zone,
+                json.dumps(match or {}, ensure_ascii=False), source_page_id,
+            ),
+        )
+        self._commit()
+
+    def upsert_entity_detail(
+        self,
+        entity_id: int,
+        *,
+        source_page_id: int | None = None,
+        detail_format: str = "text",
+        detail_text: str = "",
+        detail_json: dict[str, Any] | list[Any] | str | int | float | bool | None = None,
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        if detail_json is None:
+            payload = "{}"
+        elif isinstance(detail_json, str):
+            payload = detail_json
+        else:
+            payload = json.dumps(detail_json, ensure_ascii=False)
+        self.conn.execute(
+            """
+            INSERT INTO entity_details(
+                entity_id, source_page_id, detail_format, detail_text, detail_json, updated_at
+            ) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(entity_id) DO UPDATE SET
+                source_page_id=COALESCE(excluded.source_page_id, entity_details.source_page_id),
+                detail_format=excluded.detail_format,
+                detail_text=excluded.detail_text,
+                detail_json=excluded.detail_json,
+                updated_at=excluded.updated_at
+            """,
+            (entity_id, source_page_id, detail_format, detail_text, payload, now),
+        )
+        if source_page_id is not None:
+            self.link_entity_source(entity_id, source_page_id, role="detail")
+        self._commit()
+
+    def entity_detail(self, entity_id: int):
+        return self.conn.execute(
+            "SELECT * FROM entity_details WHERE entity_id=?", (entity_id,)
+        ).fetchone()
+
+    def clear_support_table_source(self, table: str, source_page_id: int) -> None:
+        allowed = {"skill_caps", "base_stats", "ac_mitigation", "spell_stacking"}
+        if table not in allowed:
+            raise ValueError(f"Unsupported client-data table: {table}")
+        self.conn.execute(f"DELETE FROM {table} WHERE source_page_id=?", (source_page_id,))
+        self._commit()
+
+    def replace_skill_caps(self, source_page_id: int, rows: list[tuple[int, int, int, int]]) -> int:
+        self.clear_support_table_source("skill_caps", source_page_id)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO skill_caps(class_id, skill_id, level, cap, source_page_id)
+            VALUES(?,?,?,?,?)
+            """,
+            [(a, b, c, d, source_page_id) for a, b, c, d in rows],
+        )
+        self._commit()
+        return len(rows)
+
+    def replace_base_stats(self, source_page_id: int, rows: list[tuple]) -> int:
+        self.clear_support_table_source("base_stats", source_page_id)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO base_stats(
+                level, class_id, hp, mana, endurance,
+                hp_regen, mana_regen, endurance_regen, source_page_id
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            [tuple(row) + (source_page_id,) for row in rows],
+        )
+        self._commit()
+        return len(rows)
+
+    def replace_ac_mitigation(self, source_page_id: int, rows: list[tuple]) -> int:
+        self.clear_support_table_source("ac_mitigation", source_page_id)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO ac_mitigation(
+                class_id, level, ac_cap, soft_cap_multiplier, source_page_id
+            ) VALUES(?,?,?,?,?)
+            """,
+            [tuple(row) + (source_page_id,) for row in rows],
+        )
+        self._commit()
+        return len(rows)
+
+    def replace_spell_stacking(self, source_page_id: int, rows: list[tuple]) -> int:
+        self.clear_support_table_source("spell_stacking", source_page_id)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO spell_stacking(
+                spell_id, stacking_group, rank, stacking_type, source_page_id
+            ) VALUES(?,?,?,?,?)
+            """,
+            [tuple(row) + (source_page_id,) for row in rows],
+        )
+        self._commit()
+        return len(rows)
+
+    def support_table_counts(self) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for table in ("skill_caps", "base_stats", "ac_mitigation", "spell_stacking", "entity_details"):
+            result[table] = int(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        return result
+
+    def rebuild_search_index(self) -> int:
+        """Rebuild the derived FTS5 index from EverQuestie's normalized DB.
+
+        The knowledge corpus can exceed 80K entities and rich spell records can be
+        large, so this deliberately streams rows in bounded batches instead of
+        materializing the entire corpus and a second FTS payload copy in RAM.
+        """
+        if not self.fts_available:
+            return 0
+        inserted = 0
+        with self.batch():
+            self.conn.execute("DELETE FROM entity_fts")
+            cursor = self.conn.execute(
+                """
+                SELECT e.id, e.kind, e.name, e.notes, e.data_json,
+                       COALESCE((
+                           SELECT group_concat(a.alias, ' ')
+                           FROM entity_aliases a WHERE a.entity_id=e.id
+                       ), '') AS aliases,
+                       COALESCE(d.detail_text, '') AS detail_text,
+                       COALESCE(d.detail_json, '') AS detail_json,
+                       COALESCE((
+                           SELECT group_concat(qs.description, ' ')
+                           FROM quest_steps qs WHERE qs.quest_entity_id=e.id
+                       ), '') AS quest_text
+                FROM entities e
+                LEFT JOIN entity_details d ON d.entity_id=e.id
+                ORDER BY e.id
+                """
+            )
+            while True:
+                rows = cursor.fetchmany(1000)
+                if not rows:
+                    break
+                payload = []
+                for row in rows:
+                    body = "\n".join(
+                        part for part in (
+                            str(row["notes"] or ""),
+                            str(row["detail_text"] or ""),
+                            str(row["detail_json"] or ""),
+                            str(row["quest_text"] or ""),
+                            str(row["data_json"] or ""),
+                        ) if part
+                    )
+                    payload.append(
+                        (int(row["id"]), row["kind"], row["name"], row["aliases"], body)
+                    )
+                self.conn.executemany(
+                    "INSERT INTO entity_fts(entity_id, kind, name, aliases, body) VALUES(?,?,?,?,?)",
+                    payload,
+                )
+                inserted += len(payload)
+            self.set_meta("fts_last_rebuild", datetime.now().isoformat(timespec="seconds"))
+            self.set_meta("fts_dirty", "0")
+        return inserted
+
+    @staticmethod
+    def _fts_query(term: str) -> str:
+        # Prefix-match ordinary whitespace-delimited words while neutralizing FTS
+        # punctuation/operators.  This keeps the Search box forgiving for EQ names.
+        import re
+        tokens = re.findall(r"[\w']+", term, flags=re.UNICODE)
+        return " AND ".join('"' + token.replace('"', '""') + '"*' for token in tokens)
+
+    def search_entities_fts(
+        self,
+        term: str,
+        kind: str | None = None,
+        *,
+        limit: int = 250,
+        offset: int = 0,
+    ):
+        term = term.strip()
+        if not term or not self.fts_available or self.get_meta("fts_dirty", "1") == "1":
+            return self.search_entities(term, kind, limit=limit, offset=offset)
+        query = self._fts_query(term)
+        if not query:
+            return self.search_entities(term, kind, limit=limit, offset=offset)
+        safe_limit = max(1, min(int(limit), 5000))
+        safe_offset = max(0, int(offset))
+        try:
+            indexed = int(self.conn.execute("SELECT COUNT(*) FROM entity_fts").fetchone()[0])
+            if indexed == 0:
+                return self.search_entities(term, kind, limit=limit, offset=offset)
+            return self.conn.execute(
+                """
+                SELECT e.*, sp.title AS source_title, bm25(entity_fts, 3.0, 1.5, 0.5) AS rank
+                FROM entity_fts
+                JOIN entities e ON e.id=CAST(entity_fts.entity_id AS INTEGER)
+                LEFT JOIN source_pages sp ON sp.id=e.source_page_id
+                WHERE entity_fts MATCH ?
+                  AND (? IS NULL OR e.kind=?)
+                ORDER BY rank, e.kind, e.name
+                LIMIT ? OFFSET ?
+                """,
+                (query, kind, kind, safe_limit, safe_offset),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return self.search_entities(term, kind, limit=limit, offset=offset)
+
+    def database_diagnostics(self) -> dict[str, Any]:
+        integrity = str(self.conn.execute("PRAGMA integrity_check").fetchone()[0])
+        counts = {
+            "entities": int(self.conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]),
+            "relationships": int(self.conn.execute("SELECT COUNT(*) FROM entity_relationships").fetchone()[0]),
+            "locations": int(self.conn.execute("SELECT COUNT(*) FROM entity_locations").fetchone()[0]),
+            "sources": int(self.conn.execute("SELECT COUNT(*) FROM source_pages").fetchone()[0]),
+            "aliases": int(self.conn.execute("SELECT COUNT(*) FROM entity_aliases").fetchone()[0]),
+            "details": int(self.conn.execute("SELECT COUNT(*) FROM entity_details").fetchone()[0]),
+            "tracked_quests": int(self.conn.execute("SELECT COUNT(*) FROM tracked_quests").fetchone()[0]),
+            "observed_events": int(self.conn.execute("SELECT COUNT(*) FROM observed_events").fetchone()[0]),
+        }
+        fts_rows = 0
+        if self.fts_available:
+            try:
+                fts_rows = int(self.conn.execute("SELECT COUNT(*) FROM entity_fts").fetchone()[0])
+            except sqlite3.OperationalError:
+                pass
+        return {
+            "path": str(self.path),
+            "integrity": integrity,
+            "fts_available": bool(self.fts_available),
+            "fts_rows": fts_rows,
+            "fts_last_rebuild": self.get_meta("fts_last_rebuild", ""),
+            "fts_dirty": self.get_meta("fts_dirty", "1") == "1",
+            "counts": counts,
+            "support": self.support_table_counts(),
+        }
+
+    def search_entities(
+        self,

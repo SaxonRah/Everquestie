@@ -1,0 +1,1 @@
+Repository source bootstrap is being finalized from the verified v0.13 working tree. Personal EQ log captures and saved Allakhazam page fixtures are intentionally excluded from the public repository; runtime mirror imports remain local/manual.

@@ -1,0 +1,81 @@
+name: Verify EverQuestie v0.13
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.verify/READY'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out finalized source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Verify public source layout and submodule pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f EverQuestie.py
+          test -f pyproject.toml
+          test -f eqquest/app.py
+          test -f eqquest/db.py
+          test -f eqquest/allakhazam.py
+          test -f eqquest/mapview.py
+          test -f eqquest/theme.py
+          test -f eqquest/sources/mcp_snapshot.py
+          test -f eqquest/sources/eqclient.py
+          test -f docs/SOURCE_POLICY.md
+          test ! -e .bootstrap
+          test ! -e allakhazam
+          ! git ls-files | grep -E '(^|/)(eqlog_.*\.txt|sample_eqlog.*\.txt)$'
+
+          line="$(git ls-files -s third_party/everquest1-mcp)"
+          echo "$line"
+          test "$(printf '%s\n' "$line" | awk '{print $1}')" = '160000'
+          test "$(printf '%s\n' "$line" | awk '{print $2}')" = 'bd8a423a255d866b23df6cecaa1d79bc67232154'
+
+          grep -q 'version = "0.13.0"' pyproject.toml
+          grep -q 'https://github.com/ArtSabintsev/everquest1-mcp.git' .gitmodules
+
+      - name: Compile and run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q eqquest EverQuestie.py
+          python -m unittest discover -s tests -q | tee /tmp/tests.txt
+
+      - name: Stamp verified checkout and tag v0.13
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          cat > docs/VERIFIED_V013.md <<EOF
+          # EverQuestie v0.13 verification
+
+          This public checkout was verified by GitHub Actions after the v0.13 source bootstrap.
+
+          - Source commit verified: \`$commit\`
+          - Python compileall: PASS
+          - Public unittest suite: PASS
+          - \`everquest1-mcp\` gitlink: \`bd8a423a255d866b23df6cecaa1d79bc67232154\` (v1.2.1)
+          - HTTrack mirrors and player log corpora: not stored in this repository
+          EOF
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/VERIFIED_V013.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'Mark EverQuestie v0.13 public checkout verified'
+            git push origin HEAD:main
+          fi
+
+          git tag -f -a v0.13 -m 'EverQuestie v0.13'
+          git push origin refs/tags/v0.13 --force

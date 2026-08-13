@@ -1,0 +1,150 @@
+
+        m = re.match(rf"^Kill\s+(?P<count>{COUNT_TOKEN})\s+(?P<npc>.+)$", text, re.I)
+        if m:
+            count = parse_count(m.group("count"))
+            phrase = m.group("npc").strip()
+            target_id = self._best_entity(phrase, creature_ids + starter_ids)
+            rule = {"event": "kill", "npc": phrase, "count": count}
+            if target_id:
+                row = self.db.entity(target_id)
+                rule.update({"npc": row["name"], "npc_entity_id": target_id})
+                self.db.add_alias(target_id, phrase, alias_type="objective", source_page_id=source_page_id)
+                relations.append((target_id, "objective_kill", count, objective, {}))
+            return rule, relations
+
+        m = re.match(
+            rf"^Loot\s+(?P<count>{COUNT_TOKEN})\s+(?P<item>.+?)(?:\s+from\s+(?P<npc>.+))?$",
+            text, re.I,
+        )
+        if m:
+            count = parse_count(m.group("count"))
+            item_phrase = m.group("item").strip()
+            item_id = self._best_entity(item_phrase, item_ids)
+            rule = {"event": "loot", "item": item_phrase, "count": count}
+            if item_id:
+                item = self.db.entity(item_id)
+                rule.update({"item": item["name"], "item_entity_id": item_id})
+                self.db.add_alias(item_id, item_phrase, alias_type="objective", source_page_id=source_page_id)
+                relations.append((item_id, "objective_loot", count, objective, {}))
+            npc_phrase = (m.group("npc") or "").strip()
+            npc_id = self._best_entity(npc_phrase, creature_ids) if npc_phrase else None
+            if npc_id:
+                self.db.add_alias(npc_id, npc_phrase, alias_type="objective", source_page_id=source_page_id)
+                if item_id:
+                    # This direction reads naturally for Where:/Find: on the item.
+                    self.db.upsert_relationship(
+                        item_id, npc_id, "drops_from",
+                        source_page_id=source_page_id,
+                        evidence=objective,
+                        data={"derived_from": "quest_objective"},
+                    )
+                relations.append((npc_id, "objective_source_creature", None, objective, {}))
+            return rule, relations
+
+        m = re.match(
+            rf"^(?:Bring back|Hand in|Give)\s+(?:(?P<count>{COUNT_TOKEN})\s+)?(?:pieces?\s+of\s+)?(?P<item>.+?)\s+to\s+(?P<npc>.+)$",
+            text, re.I,
+        )
+        if m:
+            count = parse_count(m.group("count"), 1)
+            item_phrase = m.group("item").strip()
+            npc_phrase = m.group("npc").strip()
+            item_id = self._best_entity(item_phrase, item_ids)
+            npc_id = self._best_entity(npc_phrase, starter_ids + creature_ids)
+            rule: dict = {}
+            if item_id:
+                self.db.add_alias(item_id, item_phrase, alias_type="objective", source_page_id=source_page_id)
+                relations.append((item_id, "objective_turn_in_item", count, objective, {}))
+            if npc_id:
+                npc = self.db.entity(npc_id)
+                self.db.add_alias(npc_id, npc_phrase, alias_type="objective", source_page_id=source_page_id)
+                rule = {"event": "npc_say", "npc": npc["name"], "npc_entity_id": npc_id, "count": 1}
+                relations.append((npc_id, "objective_turn_in_to", None, objective, {}))
+                if item_id:
+                    self.db.upsert_relationship(
+                        item_id, npc_id, "turn_in_to",
+                        quantity=count,
+                        source_page_id=source_page_id,
+                        evidence=objective,
+                        data={"quest_entity_id": quest_id},
+                    )
+            return rule, relations
+
+        m = re.match(r"^(?:Speak with|Talk to|Hail)\s+(?P<npc>.+)$", text, re.I)
+        if m:
+            phrase = m.group("npc").strip()
+            npc_id = self._best_entity(phrase, starter_ids + creature_ids)
+            rule: dict = {}
+            if npc_id:
+                npc = self.db.entity(npc_id)
+                self.db.add_alias(npc_id, phrase, alias_type="objective", source_page_id=source_page_id)
+                rule = {"event": "npc_say", "npc": npc["name"], "npc_entity_id": npc_id, "count": 1}
+                relations.append((npc_id, "objective_speak", None, objective, {}))
+            return rule, relations
+
+        return {}, relations
+
+    def _extract_quest_locations(
+        self,
+        table: HtmlNode,
+        quest_id: int,
+        zone_id: int | None,
+        starter_ids: list[int],
+        creature_ids: list[int],
+        source_page_id: int,
+        stats: dict[str, int],
+    ) -> None:
+        # EQ /loc convention is Y, X, Z. Allakhazam's two-number quest coordinates
+        # are stored as Y then X so they line up with SessionState's parsed /loc.
+        italic_lines = [i.text().strip() for i in table.descendants("i") if i.text().strip()]
+        for line in italic_lines:
+            start = re.search(
+                r"begins with\s+(.+?)\s+at location\s+([+-]?\d+(?:\.\d+)?),\s*([+-]?\d+(?:\.\d+)?)\s+in\s+(.+?)(?:\.|$)",
+                line, re.I,
+            )
+            if start:
+                npc_id = self._best_entity(start.group(1), starter_ids + creature_ids)
+                if npc_id:
+                    self.db.add_location(
+                        npc_id, zone_entity_id=zone_id,
+                        y=float(start.group(2)), x=float(start.group(3)),
+                        label="quest starter",
+                        source_page_id=source_page_id,
+                        evidence=line,
+                        data={"coordinate_convention": "eq_y_x"},
+                    )
+                    stats["locations"] += 1
+
+            found = re.search(
+                rf"Kill\s+(?:{COUNT_TOKEN})\s+(.+?).*?found at\s+([+-]?\d+(?:\.\d+)?),\s*([+-]?\d+(?:\.\d+)?)",
+                line, re.I,
+            )
+            if found:
+                npc_id = self._best_entity(found.group(1), creature_ids)
+                if npc_id:
+                    self.db.add_location(
+                        npc_id, zone_entity_id=zone_id,
+                        y=float(found.group(2)), x=float(found.group(3)),
+                        label="quest target",
+                        source_page_id=source_page_id,
+                        evidence=line,
+                        data={"coordinate_convention": "eq_y_x"},
+                    )
+                    stats["locations"] += 1
+
+            handin = re.search(
+                r"(?:Hand in|Give|Bring back).+?\s+to\s+(.+?)\s+at\s+([+-]?\d+(?:\.\d+)?),\s*([+-]?\d+(?:\.\d+)?)",
+                line, re.I,
+            )
+            if handin:
+                npc_id = self._best_entity(handin.group(1), starter_ids + creature_ids)
+                if npc_id:
+                    self.db.add_location(
+                        npc_id, zone_entity_id=zone_id,
+                        y=float(handin.group(2)), x=float(handin.group(3)),
+                        label="turn-in",
+                        source_page_id=source_page_id,
+                        evidence=line,
+                        data={"coordinate_convention": "eq_y_x"},
+                    )
+                    stats["locations"] += 1

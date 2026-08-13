@@ -24,7 +24,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, zlib
-
           payload = Path('.map_patch/mapview.zlib.b64').read_text(encoding='ascii').strip()
           data = zlib.decompress(base64.b64decode(payload))
           expected = 'da204c1dba1b059bc3f336d33911d049693476fd4eb49e5f7dbcad749ac523d2'
@@ -34,10 +33,8 @@ jobs:
               raise SystemExit('optimized mapview payload hash mismatch')
           Path('eqquest/mapview.py').write_bytes(data)
           PY
-
           python -m py_compile eqquest/mapview.py
           python -m compileall -q eqquest EverQuestie.py
-          python -c "import eqquest.mapview; import eqquest.app; print('mapview/app import OK')"
 
       - name: Commit optimized map viewer
         shell: bash

@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import os
+import queue
+import json
+import sqlite3
+import tkinter as tk
+import webbrowser
+import threading
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+from .allakhazam import AllakhazamImporter, open_allakhazam_search, open_url
+from .commands import parse_control_command
+from .db import Database
+from .parser import EQLogParser
+from .quest_engine import QuestEngine
+from .knowledge import entity_detail_text, find_text, where_text
+from .mapview import MapViewerFrame
+from .mcp_client import (
+    ONLINE_TOOLS,
+    MCP_LOCAL_SEARCH_TOOL,
+    MCPStdioClient,
+    default_mcp_path,
+    mcp_status,
+)
+from .sources import EQClientImporter, MCPLocalSnapshotCompiler
+from .sources.allakhazam_wiki import AllakhazamWikiImporter
+from .settings import SettingsFile
+from .theme import DEFAULT_THEME, THEME_LABELS, ThemeManager
+from .state import SessionState
+from .tailer import LogTailer
+from .widgets import VerticalScrolledFrame
+
+
+APP_TITLE = "EverQuestie — local-first EverQuest companion"
+
+VISIBLE_EVENT_KINDS = {
+    "zone", "target_npc", "consider", "npc_say", "loot", "kill", "death",
+    "level_gain", "level_loss", "faction_up", "faction_down",
+    "task_assigned", "task_update", "merchant_sale",
+}
+
+KNOWLEDGE_KIND_LABELS = {
+    "quest": "Quests",
+    "npc": "NPCs / Bestiary",
+    "item": "Items",
+    "zone": "Zones",
+    "faction": "Factions",
+    "spell": "Spells",
+    "recipe": "Recipes",
+    "achievement": "Achievements",
+    "aa": "Alternate Advancement (AA)",
+    "overseer_agent": "Overseer Agents",
+    "overseer_quest": "Overseer Quests",
+    "mercenary": "Mercenaries",
+    "tribute": "Tributes",
+    "lore": "Lore",
+    "combat_ability": "Combat Abilities",
+    "creature_type": "Creature / Race Types",
+    "alt_currency": "Alternate Currencies",
+    "expansion": "Expansions",
+    "game_event": "Game Events",
+    "wiki": "Wiki",
+    "help": "Official Help",
+}
+KNOWLEDGE_CHILD_LIMIT = 1000
+
+
+class EverQuestieApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_TITLE)
+        self.geometry("1220x760")
+        self.minsize(940, 620)
+
+        data_dir = Path.home() / ".eqquest"
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.db = Database(data_dir / "eqquest.sqlite3")
+
+        # User-selected filesystem locations live in a human-readable INI rather
+        # than being scattered across widgets/SQLite metadata.  On first v0.10
+        # launch, migrate any paths older releases already stored in SQLite.
+        self.settings = SettingsFile(data_dir / "settings.ini")
+        migrated = self.settings.migrate_missing_paths({
+            "everquest_install": self.db.get_meta("eq_game_path", ""),
+            "allakhazam_db_mirror": self.db.get_meta("allakhazam_db_mirror", ""),
+            "allakhazam_wiki_mirror": self.db.get_meta("allakhazam_wiki_mirror", ""),
+            "map_root": self.db.get_meta("map_root", ""),
+            "mcp_repository": str(default_mcp_path()),
+        })
+        if migrated or not self.settings.path.exists():
+            self.settings.save()
+
+        # MapViewerFrame still mirrors map_root into DB metadata for backwards
+        # compatibility.  Make the INI authoritative when both exist.
+        saved_map_root = self.settings.get_path("map_root")
+        if saved_map_root:
+            self.db.set_meta("map_root", saved_map_root)
+
+        self.parser = EQLogParser()
+        self.state_model = SessionState()
+        self.quest_engine = QuestEngine(self.db)
+        self.importer = AllakhazamImporter(self.db)
+        self.eq_client_importer = EQClientImporter(self.db)
+        self.mcp_local_compiler = MCPLocalSnapshotCompiler(self.db)
+        self.wiki_importer = AllakhazamWikiImporter(self.db)
+        # Upgrade previously imported raw Allakhazam pages into the new graph
+        # automatically; no re-save/re-import is required after updating EverQuestie.
+        try:
+            self.importer.rebuild_imported_pages()
+        except Exception:
+            # A malformed archived page must not prevent the companion from starting.
+            pass
+
+        self.tailer: LogTailer | None = None
+        self.event_queue: queue.Queue[str] = queue.Queue()
+
+        self.log_path = tk.StringVar(value=self.settings.get_path("log_file"))
+        self.status = tk.StringVar(value="Not monitoring")
+        self.zone_var = tk.StringVar(value="Zone: unknown")
+        self.loc_var = tk.StringVar(value="Location: unknown")
+        self.search_var = tk.StringVar()
+        self.kind_var = tk.StringVar(value="all")
+        self.import_url_var = tk.StringVar()
+        self.import_type_var = tk.StringVar(value="auto")
+        self.import_name_var = tk.StringVar()
+        self.eq_game_path_var = tk.StringVar(value=self.settings.get_path("everquest_install"))
+        self.mcp_path_var = tk.StringVar(value=self.settings.get_path("mcp_repository", str(default_mcp_path())))
+        self.mcp_status_var = tk.StringVar(value="MCP repository status: checking…")
+        self.db_mirror_var = tk.StringVar(value=self.settings.get_path("allakhazam_db_mirror"))
+        self.wiki_mirror_var = tk.StringVar(value=self.settings.get_path("allakhazam_wiki_mirror"))
+        self.settings_path_var = tk.StringVar(value=str(self.settings.path))
+        saved_theme = self.settings.get("ui", "theme", DEFAULT_THEME) or DEFAULT_THEME
+        self.ui_theme_var = tk.StringVar(value=ThemeManager.label_for(saved_theme))
+        self.theme_manager = ThemeManager(self)
+        self.online_query_var = tk.StringVar()
+        self.online_source_var = tk.StringVar(value="All online sources")
+        self.online_status_var = tk.StringVar(value="Online access is idle. No network request has been made.")
+        self.client_compile_status_var = tk.StringVar(
+            value=self._initial_client_compile_status()
+        )
+
+        # If a previous run already observed the quest assignment/progress, rebuild
+        # tracked quests immediately after an Allakhazam graph upgrade. If the
+        # stored history lacks a reliable boundary, reconciliation preserves the
+        # existing progress instead of guessing.
+        for tracked in self.db.tracked_quests():
+            self.quest_engine.reconcile_quest_from_history(int(tracked["id"]))
+
+        self._knowledge_entity_by_item: dict[str, int] = {}
+        self._knowledge_kind_nodes: dict[str, str] = {}
+        self._knowledge_loaded_nodes: set[str] = set()
+        self._knowledge_counts: dict[str, int] = {}
+        self._tracked_quest_by_item: dict[str, int] = {}
+        self._tracked_step_by_item: dict[str, tuple[int, int]] = {}
+
+        self._settings_save_job: str | None = None
+        self._build_ui()
+        self.theme_manager.apply(ThemeManager.id_for_label(self.ui_theme_var.get()))
+        self._bind_settings_autosave()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self._drain_lines)
+        self.after(400, self._refresh_guidance)
+
+    def _initial_client_compile_status(self) -> str:
+        timestamp = self.db.get_meta("eq_mcp_last_compile", "")
+        version = self.db.get_meta("eq_mcp_version", "")
+        if not timestamp:
+            return "Full MCP client-data compile has not been run yet."
+        suffix = f" | everquest1-mcp {version}" if version else ""
+        return f"Last full MCP compile: {timestamp}{suffix}"
+
+    def _build_ui(self):
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="EQ log:").pack(side="left")
+        ttk.Entry(top, textvariable=self.log_path).pack(
+            side="left", fill="x", expand=True, padx=6
+        )
+        ttk.Button(top, text="Browse…", command=self._browse_log).pack(side="left")
+        ttk.Button(top, text="Start monitoring", command=self._start).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(top, text="Stop", command=self._stop).pack(side="left", padx=(6, 0))
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.notebook = notebook
+
+        self.live_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
+        self.map_tab = ttk.Frame(notebook)
+        self.knowledge_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
+        self.search_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
+        self.database_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
+        self.import_tab = VerticalScrolledFrame(
+            notebook, padding=8, style="Stone.TFrame", content_style="Stone.TFrame"
+        )
+
+        notebook.add(self.live_tab, text="Live")
+        notebook.add(self.map_tab, text="Map")
+        notebook.add(self.knowledge_tab, text="Knowledge")
+        notebook.add(self.search_tab, text="Search")
+        notebook.add(self.database_tab, text="Database")
+        notebook.add(self.import_tab, text="Sources")
+
+        self._build_live()
+        self._build_map()
+        self._build_knowledge()
+        self._build_search()
+        self._build_database()
+        self._build_import()
+        self._refresh_mcp_status()
+        self._refresh_source_summary()
+
+        status = ttk.Frame(self, padding=(8, 2, 8, 8))
+        status.pack(fill="x")
+        ttk.Label(status, textvariable=self.status).pack(side="left")
+        ttk.Label(status, text="   ").pack(side="left")
+        ttk.Label(status, textvariable=self.zone_var).pack(side="left")
+        ttk.Label(status, text="   ").pack(side="left")
+        ttk.Label(status, textvariable=self.loc_var).pack(side="left")
+
+    def _build_live(self):
+        self.live_tab.columnconfigure(0, weight=2)
+        self.live_tab.columnconfigure(1, weight=1)
+        self.live_tab.rowconfigure(0, weight=1)
+
+        left = ttk.LabelFrame(self.live_tab, text="Observed EQ events", padding=6)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+
+        self.event_text = tk.Text(left, wrap="word", state="disabled")
+        self.event_text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(left, command=self.event_text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.event_text.configure(yscrollcommand=scroll.set)
+
+        right = ttk.Frame(self.live_tab)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        right.rowconfigure(4, weight=1)
+
+        ttk.Label(right, text="Tracked quests / objectives").grid(row=0, column=0, sticky="w")
+        self.tracked_tree = ttk.Treeview(right, show="tree", selectmode="browse", height=10)
+        self.tracked_tree.grid(row=1, column=0, sticky="nsew")
+        self.tracked_tree.column("#0", minwidth=220, width=390, stretch=True)
+        tracked_scroll = ttk.Scrollbar(right, orient="vertical", command=self.tracked_tree.yview)
+        tracked_scroll.grid(row=1, column=1, sticky="ns")
+        tracked_hscroll = ttk.Scrollbar(right, orient="horizontal", command=self.tracked_tree.xview)
+        tracked_hscroll.grid(row=2, column=0, sticky="ew")
+        self.tracked_tree.configure(yscrollcommand=tracked_scroll.set, xscrollcommand=tracked_hscroll.set)
+        self.tracked_tree.bind("<<TreeviewSelect>>", self._tracked_tree_selected)
+
+        ttk.Label(right, text="Guidance").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.guide_text = tk.Text(right, wrap="word", state="disabled", height=12)
+        self.guide_text.grid(row=4, column=0, sticky="nsew")
+        guide_scroll = ttk.Scrollbar(right, orient="vertical", command=self.guide_text.yview)
+        guide_scroll.grid(row=4, column=1, sticky="ns")
+        self.guide_text.configure(yscrollcommand=guide_scroll.set)
+
+        row = ttk.Frame(right)
+        row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(row, text="Open source", command=self._open_tracked_source).pack(
+            side="left"
+        )
+        ttk.Button(row, text="Refresh", command=self._refresh_guidance).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(row, text="Reconcile from log", command=self._reconcile_selected_tracked).pack(
+            side="left", padx=(6, 0)
+        )
+
+    def _build_map(self):
+        self.map_tab.rowconfigure(0, weight=1)
+        self.map_tab.columnconfigure(0, weight=1)
+        self.map_view = MapViewerFrame(
+            self.map_tab,
+            db=self.db,
+            get_zone=lambda: self.state_model.current_zone,
+            get_location=lambda: self.state_model.last_location,
+            set_zone=lambda zone: self._set_current_zone(zone, source="manual", announce=True),
+            on_entity=self._map_entity_selected,
+        )
+        self.map_view.grid(row=0, column=0, sticky="nsew")
+
+    def _map_entity_selected(self, entity_id: int):
+        row = self.db.entity(entity_id)
+        if row is None:
+            return
+        self.search_var.set(row["name"])
+        self.kind_var.set(row["kind"])
+        self._search_knowledge()
+        iid = f"entity:{entity_id}"
+        if not hasattr(self, "entity_tree") or not self.entity_tree.exists(iid):
+            return

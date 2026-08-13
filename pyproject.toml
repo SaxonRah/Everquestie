@@ -1,0 +1,9 @@
+[project]
+name = "eqquest"
+version = "0.13.0"
+description = "Local EverQuest log-driven quest and navigation companion"
+requires-python = ">=3.11"
+
+[project.scripts]
+everquestie = "eqquest.app:main"
+eqquest = "eqquest.app:main"

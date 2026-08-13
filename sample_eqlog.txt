@@ -1,0 +1,5 @@
+[Sun Aug 09 20:00:00 2026] You have entered Crushbone.
+[Sun Aug 09 20:00:03 2026] Your Location is 10.50, -20.25, 3.00
+[Sun Aug 09 20:00:07 2026] orc centurion says, 'Death to the elves!'
+[Sun Aug 09 20:00:12 2026] You have looted Crushbone Belt.
+[Sun Aug 09 20:00:18 2026] You gain experience!!

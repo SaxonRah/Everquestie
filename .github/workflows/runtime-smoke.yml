@@ -1,0 +1,22 @@
+name: Runtime import smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'eqquest/**'
+      - 'EverQuestie.py'
+      - '.github/workflows/runtime-smoke.yml'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python source
+        run: python -m compileall -q eqquest EverQuestie.py
+      - name: Import application
+        run: python -c "import eqquest.app; print('eqquest.app import OK')"

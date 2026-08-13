@@ -1,0 +1,300 @@
+            zone=zone_name,
+            level_min=level_min,
+            level_max=level_max,
+            notes=current["notes"],
+            data=data,
+        )
+
+    def _extract_item(
+        self,
+        root: HtmlNode,
+        item_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        current = self.db.entity(item_id)
+        if current is None:
+            return
+
+        data: dict[str, object] = {}
+        main = self._first_with_class(root, "nobgrd")
+        main_text = main.text() if main else ""
+        if main_text:
+            m = re.search(r"Recommended level of\s+(\d+)", main_text, re.I)
+            if m:
+                data["recommended_level"] = int(m.group(1))
+            m = re.search(r"Required level of\s+(\d+)", main_text, re.I)
+            if m:
+                data["required_level"] = int(m.group(1))
+            m = re.search(r"Augmentation type:\s*(.*?)\s+Slot:", main_text, re.I)
+            if m:
+                data["augmentation_type"] = m.group(1).strip()
+            m = re.search(r"Slot:\s*(.*?)(?:\s+AC:|\s+Recommended level|\s+Required level|\s+WT:|\s+Class:)", main_text, re.I)
+            if m:
+                data["slots"] = m.group(1).strip().split()
+            m = re.search(r"Class:\s*(.*?)\s+Race:", main_text, re.I)
+            if m:
+                data["classes"] = m.group(1).strip().split()
+            m = re.search(r"Race:\s*(.*?)(?:\s+Item Information:|$)", main_text, re.I)
+            if m:
+                data["races"] = m.group(1).strip().split()
+            flags = []
+            for flag in ("Lore Item", "No Trade", "Attuneable", "Heirloom", "Augmentation", "Magic Item"):
+                if re.search(rf"\b{re.escape(flag)}\b", main_text, re.I):
+                    flags.append(flag)
+            if flags:
+                data["flags"] = flags
+
+        meta_table = self._node_by_id(root, "sortableTable0")
+        if meta_table:
+            metadata: dict[str, str] = {}
+            for row in self._table_rows(meta_table):
+                cells = self._row_cells(row)
+                if len(cells) < 2:
+                    continue
+                label = cells[0].text().strip().rstrip(":").strip()
+                value = cells[1].text().strip()
+                if label and value:
+                    metadata[label] = value
+            if metadata:
+                data["metadata"] = metadata
+                mapping = {
+                    "Item Lore": "item_lore",
+                    "Item Type": "item_type",
+                    "Stackable": "stackable",
+                    "Merchant Value": "merchant_value",
+                    "Source": "data_source",
+                    "IC Last Updated": "ic_last_updated",
+                    "Page Updated": "page_updated",
+                }
+                for label, key in mapping.items():
+                    if label in metadata:
+                        data[key] = metadata[label]
+
+        # Establish canonical zone entities first from the dedicated zone list.
+        zone_map: dict[str, int] = {}
+        zone_heading = None
+        for h2 in root.descendants("h2"):
+            if h2.text().casefold().startswith("zone(s) found in"):
+                zone_heading = h2
+                break
+        if zone_heading and zone_heading.parent:
+            siblings = zone_heading.parent.children
+            try:
+                pos = siblings.index(zone_heading)
+            except ValueError:
+                pos = -1
+            if pos >= 0:
+                for sibling in siblings[pos + 1:]:
+                    if isinstance(sibling, HtmlNode) and sibling.tag == "h2":
+                        break
+                    if not isinstance(sibling, HtmlNode):
+                        continue
+                    candidates = [sibling] if sibling.tag == "table" else list(sibling.descendants("table"))
+                    for table in candidates:
+                        for text, url in self._anchors(table):
+                            kind, _ext = infer_kind_and_external_id(url)
+                            if kind != "zone":
+                                continue
+                            zid, _ = self._ensure_linked_entity(text, url, source_page_id, stats)
+                            if zid is None:
+                                continue
+                            zone_map[normalize_name(text)] = zid
+                            self._add_relationship(
+                                item_id, zid, "found_in", source_page_id, stats,
+                                evidence="Zone(s) Found In",
+                                data={"confidence": "structured", "source_field": "Zone(s) Found In"},
+                            )
+                    if zone_map:
+                        break
+
+        # Drops are grouped by a strong zone heading followed by an NPC table.
+        drops = self._node_by_id(root, "drops")
+        current_zone_name: str | None = None
+        if drops:
+            for child in drops.children:
+                if isinstance(child, str):
+                    continue
+                if child.tag == "strong":
+                    current_zone_name = child.text().strip()
+                    continue
+                if child.tag != "table" or not current_zone_name:
+                    continue
+                zid = zone_map.get(normalize_name(current_zone_name))
+                for text, url in self._anchors(child):
+                    kind, _ext = infer_kind_and_external_id(url)
+                    if kind != "npc":
+                        continue
+                    npc_id, _ = self._ensure_linked_entity(text, url, source_page_id, stats)
+                    if npc_id is None:
+                        continue
+                    self._add_relationship(
+                        item_id, npc_id, "drops_from", source_page_id, stats,
+                        evidence=f"Drops: {current_zone_name} / {text}",
+                        data={"confidence": "structured", "zone": current_zone_name, "zone_entity_id": zid},
+                    )
+                    if zid is not None:
+                        self._add_relationship(
+                            npc_id, zid, "found_in", source_page_id, stats,
+                            evidence=f"Item drop table grouped under {current_zone_name}",
+                            data={"confidence": "structured", "derived_from": "item_drop_group"},
+                        )
+
+        self.db.upsert_entity(
+            kind="item",
+            name=current["name"],
+            source_page_id=source_page_id,
+            source_url=source_url,
+            external_id=current["external_id"],
+            notes=current["notes"],
+            data=data,
+        )
+
+    def _extract_zone(
+        self,
+        root: HtmlNode,
+        zone_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        current = self.db.entity(zone_id)
+        if current is None:
+            return
+        data: dict[str, object] = {}
+        level_min = level_max = None
+
+        quick = self._first_with_class(root, "db-infobox")
+        if quick:
+            text = quick.text()
+            data["hot_zone"] = "HOT ZONE" in text.upper()
+            patterns = [
+                ("zone_type", r"Type:\s*(.*?)\s+Expansion:"),
+                ("expansion", r"Expansion:\s*(.*?)\s+Instanced:"),
+                ("instanced", r"Instanced:\s*(.*?)\s+Keyed:"),
+                ("keyed", r"Keyed:\s*(.*?)\s+Level Range:"),
+            ]
+            for key, pattern in patterns:
+                m = re.search(pattern, text, re.I)
+                if m:
+                    data[key] = m.group(1).strip()
+            m = re.search(r"Level Range:\s*(\d+)\s*-\s*(\d+)", text, re.I)
+            if m:
+                level_min, level_max = int(m.group(1)), int(m.group(2))
+                data["level_range"] = [level_min, level_max]
+
+        # Connected Zones is complete on the saved zone page.
+        connected = self._node_by_id(root, "Connected_Zones_t")
+        if connected:
+            table = connected.first("table")
+            for row in self._table_rows(table):
+                cells = self._row_cells(row)
+                if len(cells) < 2:
+                    continue
+                anchors = self._anchors(cells[0])
+                if not anchors:
+                    continue
+                name, url = anchors[0]
+                other_id, kind = self._ensure_linked_entity(name, url, source_page_id, stats)
+                if other_id is None or kind != "zone":
+                    continue
+                direction = cells[1].text().strip()
+                self._add_relationship(
+                    zone_id, other_id, "connected_to", source_page_id, stats,
+                    evidence=f"{name} / {direction}",
+                    data={"confidence": "structured", "direction": direction},
+                )
+
+        # The following tab tables are previews. Preserve that fact so UI/query
+        # code never mistakes a saved page's first 25 rows for an exhaustive list.
+        preview_specs = [
+            ("NPCs_t", "npc", "found_in"),
+            ("Items_t", "item", "found_in"),
+            ("Quests_Starting_t", "quest", "starts_in"),
+            ("Quests_In_t", "quest", "occurs_in"),
+        ]
+        previews: dict[str, dict[str, int | None]] = {}
+        for container_id, expected_kind, relation in preview_specs:
+            container = self._node_by_id(root, container_id)
+            if not container:
+                continue
+            shown, total = self._parse_preview_counts(container.text())
+            previews[container_id] = {"shown": shown, "total": total}
+            table = container.first("table")
+            if table is None:
+                continue
+            for row in self._table_rows(table):
+                cells = self._row_cells(row)
+                if not cells:
+                    continue
+                entity_anchor: tuple[str, str] | None = None
+                for cell in cells:
+                    for text, url in self._anchors(cell):
+                        kind, _ext = infer_kind_and_external_id(url)
+                        if kind == expected_kind:
+                            entity_anchor = (text, url)
+                            break
+                    if entity_anchor:
+                        break
+                if not entity_anchor:
+                    continue
+                name, url = entity_anchor
+                eid, kind = self._ensure_linked_entity(name, url, source_page_id, stats)
+                if eid is None or kind != expected_kind:
+                    continue
+
+                # Store useful level/type metadata from the structured preview row.
+                if expected_kind == "npc" and len(cells) >= 3:
+                    lo, hi = self._parse_level_range(cells[1].text())
+                    npc = self.db.entity(eid)
+                    self.db.upsert_entity(
+                        kind="npc", name=npc["name"], source_url=npc["source_url"],
+                        external_id=npc["external_id"], level_min=lo, level_max=hi,
+                        notes=npc["notes"], data={"npc_type": cells[2].text().strip(), "zone_preview_source": current["name"]},
+                    )
+                elif expected_kind == "quest":
+                    # Account for the leading icon cell in the zone quest tables.
+                    level_cell = next((c for c in cells if re.fullmatch(r"\s*\d+\s*-\s*\d+\s*", c.text())), None)
+                    if level_cell:
+                        lo, hi = self._parse_level_range(level_cell.text())
+                        quest = self.db.entity(eid)
+                        self.db.upsert_entity(
+                            kind="quest", name=quest["name"], source_url=quest["source_url"],
+                            external_id=quest["external_id"], level_min=lo, level_max=hi,
+                            notes=quest["notes"], data={"zone_preview_source": current["name"]},
+                        )
+
+                # The relation is stored from the specific thing to its zone.
+                self._add_relationship(
+                    eid, zone_id, relation, source_page_id, stats,
+                    evidence=f"{container_id} preview: {name}",
+                    data={"confidence": "structured", "preview": True, "shown": shown, "total": total},
+                )
+
+        if previews:
+            data["previews"] = previews
+
+        self.db.upsert_entity(
+            kind="zone",
+            name=current["name"],
+            source_page_id=source_page_id,
+            source_url=source_url,
+            external_id=current["external_id"],
+            level_min=level_min,
+            level_max=level_max,
+            notes=current["notes"],
+            data=data,
+        )
+
+    def _objective_rule(
+        self,
+        objective: str,
+        quest_id: int,
+        item_ids: list[int],
+        creature_ids: list[int],
+        starter_ids: list[int],
+        source_page_id: int,
+    ) -> tuple[dict, list[tuple[int, str, int | None, str, dict]]]:
+        text = " ".join(objective.split()).strip().rstrip(".")
+        relations: list[tuple[int, str, int | None, str, dict]] = []

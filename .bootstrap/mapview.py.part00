@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import json
+import math
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import Callable
+
+from .db import Database
+from .eqmap import (
+    ZoneMap,
+    discover_base_maps,
+    game_to_map,
+    load_zone_map,
+    normalize_map_name,
+    resolve_map_for_zone,
+)
+
+
+MAP_ROOT_META = "map_root"
+MAP_BIND_PREFIX = "map_binding::"
+MAP_VIEW_PREFIX = "map_view::"
+
+
+def _hex_color(r: int, g: int, b: int) -> str:
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _binding_key(zone_name: str) -> str:
+    return MAP_BIND_PREFIX + normalize_map_name(zone_name)
+
+
+class MapViewerFrame(ttk.Frame):
+    """Native EverQuest vector map viewer with EverQuestie knowledge overlays."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        db: Database,
+        get_zone: Callable[[], str | None],
+        get_location: Callable[[], tuple[float, float, float] | None],
+        set_zone: Callable[[str], None] | None = None,
+        on_entity: Callable[[int], None] | None = None,
+    ):
+        super().__init__(master, padding=8)
+        self.db = db
+        self.get_zone = get_zone
+        self.get_location = get_location
+        self.set_zone_callback = set_zone
+        self.on_entity = on_entity
+
+        self.map_root = tk.StringVar(value=self.db.get_meta(MAP_ROOT_META, ""))
+        self.manual_zone = tk.StringVar()
+        self.map_file = tk.StringVar()
+        self.map_status = tk.StringVar(value="Choose a Brewall/Good/EverQuest map folder.")
+        self.coord_status = tk.StringVar(value="")
+        self.layer_vars = {i: tk.BooleanVar(value=True) for i in range(4)}
+        self.show_labels = tk.BooleanVar(value=True)
+        self.show_player = tk.BooleanVar(value=True)
+        self.show_trail = tk.BooleanVar(value=True)
+        self.follow_player = tk.BooleanVar(value=False)
+        self.show_knowledge = tk.BooleanVar(value=True)
+        self.show_quest = tk.BooleanVar(value=True)
+        self.filter_elevation = tk.BooleanVar(value=False)
+        self.elevation_span = tk.DoubleVar(value=150.0)
+
+        self.zone_map: ZoneMap | None = None
+        self.scale = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self._fit_pending = False
+        self._pan_start: tuple[int, int] | None = None
+        self._overlay_entity_by_item: dict[int, int] = {}
+        self._last_zone: str | None = None
+        self._last_location: tuple[float, float, float] | None = None
+        self._trail: list[tuple[float, float, float]] = []
+        self._trail_limit = 250
+
+        self._build()
+        self.after(250, self._poll_state)
+
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(3, weight=1)
+
+        zone_row = ttk.Frame(self)
+        zone_row.grid(row=0, column=0, sticky="ew")
+        zone_row.columnconfigure(1, weight=1)
+        ttk.Label(zone_row, text="Zone:").grid(row=0, column=0, sticky="w")
+        zone_entry = ttk.Entry(zone_row, textvariable=self.manual_zone)
+        zone_entry.grid(row=0, column=1, sticky="ew", padx=6)
+        zone_entry.bind("<Return>", lambda _e: self.set_manual_zone())
+        ttk.Button(zone_row, text="Set zone", command=self.set_manual_zone).grid(row=0, column=2)
+        ttk.Label(zone_row, text="(or /g Zone: <name>)").grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        row = ttk.Frame(self)
+        row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        row.columnconfigure(1, weight=1)
+        ttk.Label(row, text="Map pack:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(row, textvariable=self.map_root).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(row, text="Browse…", command=self.choose_map_root).grid(row=0, column=2)
+        ttk.Button(row, text="Current zone", command=self.load_current_zone).grid(row=0, column=3, padx=(6, 0))
+        ttk.Button(row, text="Open map…", command=self.choose_map_file).grid(row=0, column=4, padx=(6, 0))
+        ttk.Button(row, text="Bind zone", command=self.bind_current_zone).grid(row=0, column=5, padx=(6, 0))
+        ttk.Button(row, text="Fit", command=self.fit).grid(row=0, column=6, padx=(6, 0))
+        ttk.Button(row, text="Player", command=self.center_player).grid(row=0, column=7, padx=(6, 0))
+
+        options = ttk.Frame(self)
+        options.grid(row=2, column=0, sticky="ew", pady=(6, 6))
+        ttk.Label(options, text="Layers:").pack(side="left")
+        for i, name in enumerate(("Base", "1", "2", "3")):
+            ttk.Checkbutton(options, text=name, variable=self.layer_vars[i], command=self.redraw).pack(side="left", padx=(4, 0))
+        ttk.Checkbutton(options, text="Map labels", variable=self.show_labels, command=self.redraw).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(options, text="Player", variable=self.show_player, command=self.redraw).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="/loc trail", variable=self.show_trail, command=self.redraw).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="Follow player", variable=self.follow_player).pack(side="left", padx=(8, 0))
+        ttk.Button(options, text="Clear trail", command=self.clear_trail).pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(options, text="Knowledge", variable=self.show_knowledge, command=self.redraw).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="Tracked quest", variable=self.show_quest, command=self.redraw).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="Near current Z ±", variable=self.filter_elevation, command=self.redraw).pack(side="left", padx=(12, 0))
+        span = ttk.Spinbox(options, from_=25, to=1000, increment=25, width=6, textvariable=self.elevation_span, command=self.redraw)
+        span.pack(side="left", padx=(3, 0))
+
+        body = ttk.Panedwindow(self, orient="horizontal")
+        body.grid(row=3, column=0, sticky="nsew")
+
+        canvas_frame = ttk.Frame(body)
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
+        body.add(canvas_frame, weight=4)
+
+        self.canvas = tk.Canvas(canvas_frame, background="#f7f7f7", highlightthickness=1)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.bind("<Configure>", self._on_resize)
+        self.canvas.bind("<ButtonPress-1>", self._pan_begin)
+        self.canvas.bind("<B1-Motion>", self._pan_move)
+        self.canvas.bind("<ButtonRelease-1>", self._pan_end)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.12))
+        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1/1.12))
+        self.canvas.bind("<Motion>", self._motion)
+
+        side = ttk.Frame(body, padding=(8, 0, 0, 0))
+        side.rowconfigure(3, weight=1)
+        side.columnconfigure(0, weight=1)
+        body.add(side, weight=1)
+        ttk.Label(side, textvariable=self.map_status, wraplength=260, justify="left").grid(row=0, column=0, sticky="ew")
+        ttk.Label(side, textvariable=self.coord_status, wraplength=260, justify="left").grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(side, text="Imported locations in this zone").grid(row=2, column=0, sticky="w", pady=(12, 2))
+        self.marker_list = tk.Listbox(side, exportselection=False)
+        self.marker_list.grid(row=3, column=0, sticky="nsew")
+        marker_scroll = ttk.Scrollbar(side, orient="vertical", command=self.marker_list.yview)
+        marker_scroll.grid(row=3, column=1, sticky="ns")
+        self.marker_list.configure(yscrollcommand=marker_scroll.set)
+        self.marker_list.bind("<<ListboxSelect>>", self._marker_selected)
+        self._marker_ids: list[int] = []
+
+    def set_manual_zone(self) -> None:
+        zone = self.manual_zone.get().strip()
+        if not zone:
+            return
+        if self.set_zone_callback is not None:
+            self.set_zone_callback(zone)
+        self.load_current_zone()
+
+    def choose_map_root(self) -> None:
+        initial = self.map_root.get().strip() or None
+        folder = filedialog.askdirectory(title="Choose Brewall/Good/EverQuest map pack", initialdir=initial)
+        if not folder:
+            return
+        self.set_map_root(folder)
+        self.load_current_zone()
+
+    def set_map_root(self, folder: str | Path) -> None:
+        root = str(Path(folder))
+        self.map_root.set(root)
+        self.db.set_meta(MAP_ROOT_META, root)
+        count = len(discover_base_maps(root))
+        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")
+
+    def suggest_root_from_log(self, log_path: str | Path) -> None:
+        """Infer EverQuest/maps from an eqlog path, without overriding a chosen pack."""
+        if self.map_root.get().strip():
+            return
+        p = Path(log_path)
+        # .../EverQuest/Logs/eqlog_x.txt -> .../EverQuest/maps
+        if p.parent.name.casefold() == "logs":
+            maps = p.parent.parent / "maps"
+            if maps.is_dir():
+                # Prefer known custom map subdirectories if exactly one is obvious.
+                subdirs = [d for d in maps.iterdir() if d.is_dir() and ("good" in d.name.casefold() or "brewall" in d.name.casefold())]
+                if len(subdirs) == 1:
+                    self.set_map_root(subdirs[0])
+                else:
+                    self.set_map_root(maps)
+
+    def choose_map_file(self) -> None:
+        root = self.map_root.get().strip() or None
+        path = filedialog.askopenfilename(
+            title="Choose EverQuest map file",
+            initialdir=root,
+            filetypes=[("EverQuest map", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.load_map(path)
+
+    def load_map(self, path: str | Path) -> None:
+        try:
+            self.zone_map = load_zone_map(path)
+        except Exception as exc:
+            messagebox.showerror("Map load failed", str(exc))
+            return
+        self.map_file.set(str(self.zone_map.base_path))
+        counts = []
+        for layer, data in sorted(self.zone_map.layers.items()):
+            counts.append(f"L{layer}:{len(data.lines)} lines/{len(data.points)} labels")
+        self.map_status.set(f"{self.zone_map.stem} | " + " | ".join(counts))
+        self._fit_pending = True
+        self._refresh_marker_list()
+        self.after_idle(lambda: None if self._restore_view() else self.fit())
+
+    def load_current_zone(self) -> None:
+        zone = self.get_zone()
+        root = self.map_root.get().strip()
+        if not zone:
+            self.map_status.set("Current zone is not known from the log yet.")
+            return
+        if not root or not Path(root).is_dir():
+            self.map_status.set("Choose a map pack folder first.")
+            return
+
+        bound = self.db.get_meta(_binding_key(zone), "")
+        hinted = None
+        zone_row, _ = self.db.resolve_entity(zone, "zone")
+        if zone_row is not None:
+            try:
+                data = json.loads(zone_row["data_json"] or "{}")
+            except Exception:
+                data = {}
+            hinted = data.get("map_short_name") or data.get("short_name")
+
+        path = resolve_map_for_zone(zone, root, bound_stem=bound, hinted_stem=hinted)
+        if path is None:
+            self.map_status.set(
+                f"No unique map-file match for {zone}. Open the correct .txt once, then press Bind zone."
+            )
+            self._refresh_marker_list()
+            return

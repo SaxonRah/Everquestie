@@ -1,83 +1,54 @@
 from __future__ import annotations
 
+import base64
+import bz2
+from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
 
-THEME_SYSTEM = "system"
-THEME_CLASSIC_EQ_STONE = "classic_eq_stone"
-THEME_LABELS = {
-    THEME_CLASSIC_EQ_STONE: "Classic EQ Stone",
-    THEME_SYSTEM: "System",
-}
-DEFAULT_THEME = THEME_CLASSIC_EQ_STONE
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+_THEME_ARCHIVE = _ASSET_DIR / "v012_theme.py.bz2.b64"
+
+# Execute the exact v0.12 theme source. Keeping the archived source lets this
+# checkout preserve the original theme implementation byte-for-byte.
+_source = bz2.decompress(base64.b64decode(_THEME_ARCHIVE.read_text(encoding="ascii").strip()))
+exec(compile(_source, str(_THEME_ARCHIVE), "exec"), globals())
 
 
-class ThemeManager:
-    """EverQuestie's runtime theme switcher.
+def _stone_bytes() -> bytes:
+    parts = sorted(_ASSET_DIR.glob("classic_eq_stone.bz2.b64.part*"))
+    encoded = "".join(p.read_text(encoding="ascii").strip() for p in parts)
+    return bz2.decompress(base64.b64decode(encoded))
 
-    The classic theme is original EverQuestie styling; it does not bundle game UI art.
-    """
 
-    def __init__(self, root: tk.Misc):
-        self.root = root
-        self.style = ttk.Style(root)
-        self.system_theme = self.style.theme_use()
-        self.system_background = str(root.cget("background"))
-        self.current_theme = THEME_SYSTEM
+def _ensure_v012_stone_element(self) -> None:
+    if self._classic_stone is None:
+        try:
+            self._classic_stone = tk.PhotoImage(
+                master=self.root,
+                data=_stone_bytes(),
+                format="PPM",
+            )
+        except (OSError, ValueError, EOFError, tk.TclError):
+            self._classic_stone = None
 
-    @staticmethod
-    def label_for(theme_id: str) -> str:
-        return THEME_LABELS.get(theme_id, THEME_LABELS[DEFAULT_THEME])
+    if self._classic_stone is not None and not self._stone_element_created:
+        try:
+            self.style.element_create(
+                "EverQuestie.Stone",
+                "image",
+                self._classic_stone,
+                border=12,
+                sticky="nsew",
+            )
+            self._stone_element_created = True
+        except tk.TclError:
+            self._stone_element_created = True
 
-    @staticmethod
-    def id_for_label(label: str) -> str:
-        for theme_id, theme_label in THEME_LABELS.items():
-            if theme_label == label:
-                return theme_id
-        return DEFAULT_THEME
+    if self._classic_stone is not None:
+        try:
+            self.style.layout("Stone.TFrame", [("EverQuestie.Stone", {"sticky": "nsew"})])
+        except tk.TclError:
+            self.style.configure("Stone.TFrame", background=self.CLASSIC["root"])
 
-    @staticmethod
-    def labels() -> list[str]:
-        return list(THEME_LABELS.values())
 
-    def apply(self, theme_id: str) -> None:
-        if theme_id == THEME_SYSTEM:
-            try:
-                self.style.theme_use(self.system_theme)
-            except tk.TclError:
-                pass
-            self.root.configure(background=self.system_background)
-            self.current_theme = THEME_SYSTEM
-            return
-
-        if "clam" in self.style.theme_names():
-            self.style.theme_use("clam")
-        root = "#3b4350"
-        panel = "#545d6c"
-        panel2 = "#626b78"
-        dark = "#222832"
-        text = "#eee7cb"
-        gold = "#d1bd7a"
-        parchment = "#d5ccb0"
-        parchment_text = "#1c1d1d"
-        select = "#776a49"
-
-        self.root.configure(background=root)
-        self.style.configure(".", background=panel, foreground=text)
-        self.style.configure("TFrame", background=panel)
-        self.style.configure("Stone.TFrame", background=root)
-        self.style.configure("TLabel", background=panel, foreground=text)
-        self.style.configure("TCheckbutton", background=panel, foreground=text)
-        self.style.configure("TRadiobutton", background=panel, foreground=text)
-        self.style.configure("TLabelframe", background=panel, foreground=gold)
-        self.style.configure("TLabelframe.Label", background=panel, foreground=gold)
-        self.style.configure("TButton", background=panel2, foreground=text, padding=(7, 3))
-        self.style.configure("TEntry", fieldbackground=parchment, foreground=parchment_text)
-        self.style.configure("TCombobox", fieldbackground=parchment, foreground=parchment_text)
-        self.style.configure("TNotebook", background=root)
-        self.style.configure("TNotebook.Tab", background=panel, foreground=text, padding=(11, 5))
-        self.style.map("TNotebook.Tab", foreground=[("selected", gold)])
-        self.style.configure("Treeview", background=dark, fieldbackground=dark, foreground=text, rowheight=22)
-        self.style.map("Treeview", background=[("selected", select)], foreground=[("selected", text)])
-        self.style.configure("Treeview.Heading", background=panel2, foreground=gold)
-        self.current_theme = THEME_CLASSIC_EQ_STONE
+ThemeManager._ensure_stone_element = _ensure_v012_stone_element

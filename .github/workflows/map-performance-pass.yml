@@ -2,9 +2,7 @@ name: Apply map performance pass
 
 on:
   push:
-    branches: [main]
-    paths:
-      - '.github/workflows/map-performance-pass.yml'
+    branches: [map-apply]
 
 permissions:
   contents: write
@@ -16,7 +14,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Install optimized map viewer
         shell: bash
         run: |
@@ -35,8 +32,7 @@ jobs:
           PY
           python -m py_compile eqquest/mapview.py
           python -m compileall -q eqquest EverQuestie.py
-
-      - name: Commit optimized map viewer
+      - name: Commit optimized map viewer to main
         shell: bash
         run: |
           set -euo pipefail
@@ -46,4 +42,4 @@ jobs:
           rm -f .github/workflows/map-performance-pass.yml
           git add -A
           git commit -m "Speed up map rendering and add map-only themes"
-          git push
+          git push origin HEAD:main

@@ -1,0 +1,73 @@
+name: Restore exact v0.12 Classic EQ Stone theme
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-v012-theme.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore exact v0.12 theme source and stone asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import base64, bz2, hashlib
+
+          assets = Path('eqquest/assets')
+          theme_archive = assets / 'v012_theme.py.bz2.b64'
+          stone_parts = sorted(assets.glob('classic_eq_stone.bz2.b64.part*'))
+          if not theme_archive.is_file():
+              raise SystemExit('missing v0.12 theme archive')
+          if not stone_parts:
+              raise SystemExit('missing v0.12 stone asset parts')
+
+          theme = bz2.decompress(base64.b64decode(theme_archive.read_text(encoding='ascii').strip()))
+          encoded_stone = ''.join(p.read_text(encoding='ascii').strip() for p in stone_parts)
+          stone = bz2.decompress(base64.b64decode(encoded_stone))
+
+          expected_theme = 'fe0fd2aa235c57465b311848854016534f4a303668191bd0b737b0f4ac60e9a5'
+          expected_stone = '5ae0385712d52d388cdd0533b888cf2b1adc381baa4a6024dffcefb7d01f38fb'
+          actual_theme = hashlib.sha256(theme).hexdigest()
+          actual_stone = hashlib.sha256(stone).hexdigest()
+          print('theme sha256:', actual_theme)
+          print('stone sha256:', actual_stone)
+          if actual_theme != expected_theme:
+              raise SystemExit('v0.12 theme source hash mismatch')
+          if actual_stone != expected_stone:
+              raise SystemExit('v0.12 stone asset hash mismatch')
+
+          Path('eqquest/theme.py').write_bytes(theme)
+          (assets / 'classic_eq_stone.ppm').write_bytes(stone)
+
+          # The original v0.12 runtime loads the real PPM file directly.  Remove
+          # the temporary compressed transport files so the checkout matches that
+          # behavior instead of going through a loader/monkey-patch layer.
+          theme_archive.unlink()
+          for part in stone_parts:
+              part.unlink()
+          PY
+
+          python -m py_compile eqquest/theme.py
+          test -f eqquest/assets/classic_eq_stone.ppm
+
+      - name: Commit exact v0.12 theme restoration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/restore-v012-theme.yml
+          git add -A
+          git commit -m "Restore exact v0.12 Classic EQ Stone theme"
+          git push

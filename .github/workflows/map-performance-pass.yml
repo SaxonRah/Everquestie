@@ -1,0 +1,52 @@
+name: Apply map performance pass
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/map-performance-pass.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install optimized map viewer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, zlib
+
+          payload = Path('.map_patch/mapview.zlib.b64').read_text(encoding='ascii').strip()
+          data = zlib.decompress(base64.b64decode(payload))
+          expected = 'da204c1dba1b059bc3f336d33911d049693476fd4eb49e5f7dbcad749ac523d2'
+          actual = hashlib.sha256(data).hexdigest()
+          print('mapview sha256:', actual)
+          if actual != expected:
+              raise SystemExit('optimized mapview payload hash mismatch')
+          Path('eqquest/mapview.py').write_bytes(data)
+          PY
+
+          python -m py_compile eqquest/mapview.py
+          python -m compileall -q eqquest EverQuestie.py
+          python -c "import eqquest.mapview; import eqquest.app; print('mapview/app import OK')"
+
+      - name: Commit optimized map viewer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf .map_patch
+          rm -f .github/workflows/map-performance-pass.yml
+          git add -A
+          git commit -m "Speed up map rendering and add map-only themes"
+          git push

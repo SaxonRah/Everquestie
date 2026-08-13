@@ -1,0 +1,300 @@
+        for table in root.descendants("table"):
+            text = table.text()
+            if "Quest Started By:" in text and "Description:" in text:
+                return table
+        return None
+
+    @staticmethod
+    def _anchors(node: HtmlNode) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for a in node.descendants("a"):
+            href = html_lib.unescape(a.attrs.get("href", "")).strip()
+            text = a.text().strip()
+            if href and text:
+                out.append((text, href))
+        return out
+
+    def _field_rows(self, table: HtmlNode) -> dict[str, HtmlNode]:
+        rows: dict[str, HtmlNode] = {}
+        for tr in table.descendants("tr"):
+            strong = tr.first("strong")
+            if not strong:
+                continue
+            label = strong.text().strip().rstrip(":").casefold()
+            if label:
+                rows[label] = tr
+        return rows
+
+    @staticmethod
+    def _row_value(row: HtmlNode, label: str) -> str:
+        text = row.text()
+        prefix = label.rstrip(":") + ":"
+        if text.casefold().startswith(prefix.casefold()):
+            return text[len(prefix):].strip()
+        return text
+
+    def _ensure_linked_entity(
+        self,
+        text: str,
+        url: str,
+        source_page_id: int,
+        stats: dict[str, int],
+    ) -> tuple[int | None, str | None]:
+        if not is_allakhazam_url(url):
+            return None, None
+        kind, external_id = infer_kind_and_external_id(url)
+        if kind not in ENTITY_KINDS:
+            return None, None
+        existing = self.db.entity_by_external_id(kind, external_id)
+        entity_id = self.db.upsert_entity(
+            kind=kind,
+            name=text,
+            source_url=url,
+            external_id=external_id,
+            notes="Discovered through a relationship on an imported Allakhazam page.",
+            data={"discovered_from_source_page_id": source_page_id},
+        )
+        if existing is None:
+            stats["discovered"] += 1
+        return entity_id, kind
+
+    def _add_link_relationships(
+        self,
+        quest_id: int,
+        row: HtmlNode | None,
+        relation: str,
+        source_page_id: int,
+        stats: dict[str, int],
+    ) -> list[int]:
+        ids: list[int] = []
+        if row is None:
+            return ids
+        evidence = row.text()
+        for text, url in self._anchors(row):
+            entity_id, _kind = self._ensure_linked_entity(text, url, source_page_id, stats)
+            if entity_id is None:
+                continue
+            self.db.upsert_relationship(
+                quest_id, entity_id, relation,
+                source_page_id=source_page_id,
+                evidence=evidence,
+            )
+            stats["relationships"] += 1
+            ids.append(entity_id)
+        return ids
+
+    def _best_entity(self, phrase: str, candidates: list[int]) -> int | None:
+        phrase_key = loose_name_key(phrase)
+        if not phrase_key:
+            return None
+        scored: list[tuple[int, int]] = []
+        for entity_id in candidates:
+            row = self.db.entity(entity_id)
+            if not row:
+                continue
+            key = loose_name_key(row["name"])
+            if phrase_key == key:
+                score = 100
+            elif phrase_key.startswith(key) or key.startswith(phrase_key):
+                score = 80
+            elif phrase_key in key or key in phrase_key:
+                score = 60
+            else:
+                a, b = set(phrase_key.split()), set(key.split())
+                score = 10 * len(a & b)
+            scored.append((score, entity_id))
+        scored.sort(reverse=True)
+        return scored[0][1] if scored and scored[0][0] >= 20 else None
+
+    def _extract_quest(
+        self,
+        root: HtmlNode,
+        quest_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        table = self._quest_table(root)
+        if table is None:
+            return
+        rows = self._field_rows(table)
+
+        zone_ids = self._add_link_relationships(
+            quest_id, rows.get("where"), "occurs_in", source_page_id, stats
+        )
+        starter_ids = self._add_link_relationships(
+            quest_id, rows.get("who"), "started_by", source_page_id, stats
+        )
+        item_ids = self._add_link_relationships(
+            quest_id, rows.get("quest items"), "quest_item", source_page_id, stats
+        )
+        creature_ids = self._add_link_relationships(
+            quest_id, rows.get("related creatures"), "related_creature", source_page_id, stats
+        )
+        self._add_link_relationships(
+            quest_id, rows.get("related quests"), "related_quest", source_page_id, stats
+        )
+
+        zone_name = None
+        if zone_ids:
+            z = self.db.entity(zone_ids[0])
+            zone_name = z["name"] if z else None
+
+        def scalar(label: str) -> str | None:
+            row = rows.get(label.casefold())
+            return self._row_value(row, label) if row else None
+
+        level = scalar("Level")
+        max_level = scalar("Maximum Level")
+        data = {
+            "quest_type": scalar("Quest Type"),
+            "repeatable": scalar("Repeatable"),
+            "group_size": scalar("Group Size"),
+            "min_players": scalar("Min. # of Players"),
+            "max_players": scalar("Max. # of Players"),
+            "quest_goal": [t for t, _u in self._anchors(rows.get("quest goal"))] if rows.get("quest goal") else [],
+            "factions_raised": [t for t, _u in self._anchors(rows.get("factions raised"))] if rows.get("factions raised") else [],
+            "factions_lowered": [t for t, _u in self._anchors(rows.get("factions lowered"))] if rows.get("factions lowered") else [],
+        }
+        current = self.db.entity(quest_id)
+        self.db.upsert_entity(
+            kind="quest",
+            name=current["name"],
+            source_page_id=source_page_id,
+            source_url=source_url,
+            external_id=current["external_id"],
+            zone=zone_name,
+            level_min=int(level) if level and level.isdigit() else None,
+            level_max=int(max_level) if max_level and max_level.isdigit() else None,
+            notes=current["notes"],
+            data=data,
+        )
+
+        # Explicit underlined task objectives are considerably safer to turn into
+        # steps than free-form walkthrough prose/comments.
+        objectives = [u.text().strip() for u in table.descendants("u") if u.text().strip()]
+        for order, objective in enumerate(objectives, 1):
+            rule, relation_specs = self._objective_rule(
+                objective, quest_id, item_ids, creature_ids, starter_ids, source_page_id
+            )
+            self.db.add_quest_step(
+                quest_id, order, objective,
+                zone=zone_name,
+                match=rule,
+                source_page_id=source_page_id,
+            )
+            stats["steps"] += 1
+            for target_id, relation, quantity, evidence, data_extra in relation_specs:
+                self.db.upsert_relationship(
+                    quest_id, target_id, relation,
+                    quantity=quantity,
+                    source_page_id=source_page_id,
+                    evidence=evidence,
+                    data=data_extra,
+                )
+                stats["relationships"] += 1
+
+        self._extract_quest_locations(
+            table, quest_id, zone_ids[0] if zone_ids else None,
+            starter_ids, creature_ids, source_page_id, stats
+        )
+
+    def _add_relationship(
+        self,
+        source_id: int,
+        target_id: int,
+        relation: str,
+        source_page_id: int,
+        stats: dict[str, int],
+        *,
+        quantity: int | None = None,
+        evidence: str = "",
+        data: dict | None = None,
+    ) -> None:
+        self.db.upsert_relationship(
+            source_id, target_id, relation,
+            quantity=quantity,
+            source_page_id=source_page_id,
+            evidence=evidence,
+            data=data or {"confidence": "structured"},
+        )
+        stats["relationships"] += 1
+
+    def _extract_npc(
+        self,
+        root: HtmlNode,
+        npc_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        current = self.db.entity(npc_id)
+        if current is None:
+            return
+
+        mobtype = self._first_with_class(root, "mobtype")
+        moblevel = self._first_with_class(root, "moblevel")
+        npcinfo = self._first_with_class(root, "npcinfo")
+        mobzones = self._first_with_class(root, "mobzones")
+        mobquest = self._first_with_class(root, "mobquest")
+
+        level_min = level_max = None
+        if moblevel:
+            m = re.search(r"Level\s*:\s*(\d+)", moblevel.text(), re.I)
+            if m:
+                level_min = level_max = int(m.group(1))
+
+        data: dict[str, object] = {}
+        if mobtype and mobtype.text():
+            data["npc_type"] = mobtype.text()
+        if moblevel:
+            m = re.search(r"Expansion\s*:\s*(.*)$", moblevel.text(), re.I)
+            if m and m.group(1).strip():
+                data["expansion"] = m.group(1).strip()
+        if npcinfo:
+            info = npcinfo.text()
+            m = re.search(r"NPC Added:\s*(.*?)\s+NPC Last Updated:", info, re.I)
+            if m:
+                data["npc_added"] = m.group(1).strip()
+            m = re.search(r"NPC Last Updated:\s*(.*?)(?:\s+Known Habitats\s*:|\s+Quests\s*:|\s+Report a correction|$)", info, re.I)
+            if m:
+                data["npc_last_updated"] = m.group(1).strip()
+
+        habitat_names: list[str] = []
+        zone_name: str | None = None
+        if mobzones:
+            for text, url in self._anchors(mobzones):
+                entity_id, kind = self._ensure_linked_entity(text, url, source_page_id, stats)
+                if entity_id is None or kind != "zone":
+                    continue
+                habitat_names.append(text)
+                zone_name = zone_name or text
+                self._add_relationship(
+                    npc_id, entity_id, "found_in", source_page_id, stats,
+                    evidence=mobzones.text(),
+                    data={"confidence": "structured", "source_field": "Known Habitats"},
+                )
+        if habitat_names:
+            data["known_habitats"] = habitat_names
+
+        if mobquest:
+            quests: list[str] = []
+            for text, url in self._anchors(mobquest):
+                entity_id, kind = self._ensure_linked_entity(text, url, source_page_id, stats)
+                if entity_id is None or kind != "quest":
+                    continue
+                quests.append(text)
+                self._add_relationship(
+                    npc_id, entity_id, "related_quest", source_page_id, stats,
+                    evidence=mobquest.text(),
+                    data={"confidence": "structured", "source_field": "Quests"},
+                )
+            if quests:
+                data["related_quests"] = quests
+
+        self.db.upsert_entity(
+            kind="npc",
+            name=current["name"],
+            source_page_id=source_page_id,
+            source_url=source_url,
+            external_id=current["external_id"],

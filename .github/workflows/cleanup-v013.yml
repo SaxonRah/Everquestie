@@ -1,0 +1,49 @@
+name: Clean v0.13 bootstrap scaffolding
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.cleanup/READY'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Confirm verified checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/VERIFIED_V013.md
+          test ! -e .bootstrap
+          line="$(git ls-files -s third_party/everquest1-mcp)"
+          test "$(printf '%s\n' "$line" | awk '{print $1}')" = '160000'
+          test "$(printf '%s\n' "$line" | awk '{print $2}')" = 'bd8a423a255d866b23df6cecaa1d79bc67232154'
+
+      - name: Remove one-shot bootstrap scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -r --ignore-unmatch .finalize .verify .cleanup || true
+          git rm --ignore-unmatch \
+            .github/workflows/bootstrap-source.yml \
+            .github/workflows/finalize-v013.yml \
+            .github/workflows/verify-v013.yml \
+            .github/workflows/cleanup-v013.yml || true
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Remove v0.13 bootstrap scaffolding'
+          git push origin HEAD:main
+
+          git tag -f -a v0.13 -m 'EverQuestie v0.13'
+          git push origin refs/tags/v0.13 --force

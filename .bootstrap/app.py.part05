@@ -1,0 +1,285 @@
+                restore = candidate
+        if restore is None and selected_quest is not None:
+            candidate = f"tracked:q:{selected_quest}"
+            if self.tracked_tree.exists(candidate):
+                restore = candidate
+        if restore:
+            self.tracked_tree.selection_set(restore)
+            self.tracked_tree.focus(restore)
+            self.tracked_tree.see(restore)
+
+        guides = self.quest_engine.guidance(self.state_model.current_zone)
+        self.guide_text.configure(state="normal")
+        self.guide_text.delete("1.0", "end")
+        if not guides:
+            self.guide_text.insert(
+                "end",
+                "No quest is tracked.\n\n"
+                "Search the Knowledge tab, select a quest, and press Track quest.",
+            )
+        else:
+            for g in guides:
+                self.guide_text.insert("end", f"{g.title}\n{g.text}\n\n")
+        self.guide_text.configure(state="disabled")
+
+    def _tracked_selected_quest_id(self) -> int | None:
+        if not hasattr(self, "tracked_tree"):
+            return None
+        selected = self.tracked_tree.selection()
+        if not selected:
+            return None
+        return self._tracked_quest_by_item.get(selected[0])
+
+    def _tracked_selected_step(self) -> tuple[int, int] | None:
+        if not hasattr(self, "tracked_tree"):
+            return None
+        selected = self.tracked_tree.selection()
+        if not selected:
+            return None
+        return self._tracked_step_by_item.get(selected[0])
+
+    def _tracked_tree_selected(self, _event=None) -> None:
+        selected_step = self._tracked_selected_step()
+        if not selected_step:
+            return
+        quest_id, order = selected_step
+        step = next((s for s in self.db.quest_steps(quest_id) if int(s["step_order"]) == order), None)
+        if step is None:
+            return
+        try:
+            rule = json.loads(step["match_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            rule = {}
+        target = None
+        target_kind = None
+        if rule.get("item"):
+            target, target_kind = str(rule["item"]), "item"
+        elif rule.get("npc"):
+            target, target_kind = str(rule["npc"]), "npc"
+        elif rule.get("target") and str(rule.get("event", "")).casefold() in {"kill", "consider", "target_npc"}:
+            target, target_kind = str(rule["target"]), "npc"
+        if not target:
+            return
+        row, _status = self.db.resolve_entity(target, target_kind)
+        if row is None:
+            row, _status = self.db.resolve_entity(target)
+        if row is not None and hasattr(self, "map_view"):
+            self.map_view.focus_entity(int(row["id"]))
+
+    def _search_knowledge(self):
+        term = self.search_var.get().strip()
+        kind = None if self.kind_var.get() == "all" else self.kind_var.get()
+        counts = self.db.entity_kind_counts(term, kind)
+
+        self._knowledge_search_term = term
+        self._knowledge_entity_by_item.clear()
+        self._knowledge_kind_nodes.clear()
+        self._knowledge_loaded_nodes.clear()
+        self._knowledge_counts = {str(r["kind"]): int(r["count"]) for r in counts}
+
+        self.entity_tree.delete(*self.entity_tree.get_children(""))
+        if not counts:
+            self.entity_tree.insert("", "end", iid="info:none", text="No local knowledge matches.")
+            self.entity_text.configure(state="normal")
+            self.entity_text.delete("1.0", "end")
+            self.entity_text.configure(state="disabled")
+            return
+
+        known_order = {name: i for i, name in enumerate(KNOWLEDGE_KIND_LABELS)}
+        ordered = sorted(
+            counts,
+            key=lambda r: (known_order.get(str(r["kind"]), 10_000), str(r["kind"])),
+        )
+        total_matches = sum(int(r["count"]) for r in ordered)
+        auto_expand = bool(kind) or (bool(term) and total_matches <= 500)
+
+        for row in ordered:
+            topic = str(row["kind"])
+            count = int(row["count"])
+            node = f"kind:{topic}"
+            label = self._knowledge_kind_label(topic)
+            self.entity_tree.insert(
+                "",
+                "end",
+                iid=node,
+                text=f"{label} ({count:,})",
+                open=False,
+            )
+            self._knowledge_kind_nodes[topic] = node
+            # A placeholder child gives the topic its native [+] expansion control
+            # without materializing huge MCP inventories up front.
+            self.entity_tree.insert(node, "end", iid=f"placeholder:{topic}", text="Loading…")
+            if auto_expand:
+                self._populate_knowledge_kind(topic, node)
+                self.entity_tree.item(node, open=True)
+
+    def _selected_entity_id(self) -> int | None:
+        if not hasattr(self, "entity_tree"):
+            return None
+        selected = self.entity_tree.selection()
+        if not selected:
+            return None
+        return self._knowledge_entity_by_item.get(selected[0])
+
+    def _show_entity(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        r = self.db.entity(entity_id)
+        if not r:
+            return
+
+        detail = entity_detail_text(self.db, entity_id, include_source_text=True)
+
+        self.entity_text.configure(state="normal")
+        self.entity_text.delete("1.0", "end")
+        self.entity_text.insert("end", detail)
+        self.entity_text.configure(state="disabled")
+
+    def _search_allakhazam(self):
+        term = self.search_var.get().strip()
+        if term:
+            open_allakhazam_search(term)
+
+    def _track_selected(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        r = self.db.entity(entity_id)
+        if r["kind"] != "quest":
+            messagebox.showinfo("EverQuestie", "Only quest entities can be tracked.")
+            return
+        self._track_and_reconcile(entity_id, announce="QUEST | tracking")
+        self._refresh_guidance()
+
+    def _untrack_selected(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        self.db.untrack_quest(entity_id)
+        self._refresh_guidance()
+
+    def _open_entity_source(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        r = self.db.entity(entity_id)
+        if r["source_url"]:
+            open_url(r["source_url"])
+
+    def _reconcile_selected_tracked(self):
+        quest_id = self._tracked_selected_quest_id()
+        if quest_id is None:
+            return
+        result = self._reconcile_tracked_quest(quest_id)
+        row = self.db.entity(quest_id)
+        if result is not None and row is not None:
+            self._append_event(
+                f"RECONCILE | {row['name']} | {result.confidence} confidence | {result.summary()}"
+            )
+        self._refresh_guidance()
+
+    def _open_tracked_source(self):
+        quest_id = self._tracked_selected_quest_id()
+        if quest_id is None:
+            return
+        r = self.db.entity(quest_id)
+        if r and r["source_url"]:
+            open_url(r["source_url"])
+
+    def _import_saved_html(self):
+        source_url = self.import_url_var.get().strip() or None
+
+        html_path = filedialog.askopenfilename(
+            title="Choose the saved Allakhazam HTML page",
+            initialdir=self._existing_initial_dir(self.settings.get_path("last_saved_html_dir")),
+            filetypes=[
+                ("HTML files", "*.html *.htm"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not html_path:
+            return
+        self.settings.set_path("last_saved_html_dir", str(Path(html_path).parent))
+        self.settings.save()
+
+        kind = self.import_type_var.get()
+        kind_hint = None if kind == "auto" else kind
+        name_hint = self.import_name_var.get().strip() or None
+
+        try:
+            result = self.importer.import_saved_html(
+                html_path,
+                source_url,
+                kind_hint=kind_hint,
+                name_hint=name_hint,
+            )
+        except Exception as exc:
+            messagebox.showerror("Import failed", str(exc))
+            return
+
+        if result.kind == "quest" and self.db.is_quest_tracked(result.entity_id):
+            self._reconcile_tracked_quest(result.entity_id)
+
+        messagebox.showinfo(
+            "Imported",
+            f"Imported {result.kind}: {result.name}\n\n"
+            f"Relationships: {result.relationships}\n"
+            f"Discovered linked entities: {result.discovered_entities}\n"
+            f"Quest steps: {result.quest_steps}\n"
+            f"Locations: {result.locations}\n\n"
+            f"SHA-256: {result.sha256}",
+        )
+        self.search_var.set(result.name)
+        self.kind_var.set(result.kind)
+        self._search_knowledge()
+        self._refresh_source_summary()
+
+    def _import_html_folder(self, folder_override: str | None = None):
+        folder = folder_override or filedialog.askdirectory(
+            title="Choose local Allakhazam DB mirror or saved HTML folder",
+            initialdir=self._existing_initial_dir(
+                self.settings.get_path("last_allakhazam_import_dir") or self.db_mirror_var.get().strip()
+            ),
+        )
+        if not folder:
+            return
+        self.settings.set_path("last_allakhazam_import_dir", folder)
+        self.settings.save()
+        try:
+            results = self.importer.import_folder(folder)
+        except Exception as exc:
+            messagebox.showerror("Folder import failed", str(exc))
+            return
+        if not results:
+            messagebox.showinfo("Import", "No recognizable Allakhazam entity pages were found.")
+            return
+        relationships = sum(r.relationships for r in results)
+        discovered = sum(r.discovered_entities for r in results)
+        steps = sum(r.quest_steps for r in results)
+        locations = sum(r.locations for r in results)
+        for imported in results:
+            if imported.kind == "quest" and self.db.is_quest_tracked(imported.entity_id):
+                self._reconcile_tracked_quest(imported.entity_id)
+        messagebox.showinfo(
+            "Imported folder",
+            f"Pages imported: {len(results)}\n"
+            f"Relationships: {relationships}\n"
+            f"Discovered linked entities: {discovered}\n"
+            f"Quest steps: {steps}\n"
+            f"Locations: {locations}",
+        )
+        self._search_knowledge()
+        self._refresh_guidance()
+        self._refresh_source_summary()
+
+    def _on_close(self):
+        self._stop()
+        self._save_settings_now()
+        self.db.close()
+        self.destroy()
+
+
+def main():
+    app = EverQuestieApp()
+    app.mainloop()

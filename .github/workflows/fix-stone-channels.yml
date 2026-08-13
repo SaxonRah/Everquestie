@@ -1,0 +1,62 @@
+name: Fix Classic EQ Stone RGB channels
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-stone-channels.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Correct stone texture channel order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          path = Path('eqquest/assets/classic_eq_stone.ppm')
+          data = path.read_bytes()
+          before = hashlib.sha256(data).hexdigest()
+          expected_before = '5ae0385712d52d388cdd0533b888cf2b1adc381baa4a6024dffcefb7d01f38fb'
+          print('before sha256:', before)
+          if before != expected_before:
+              raise SystemExit('stone asset is not the known red-channel version; refusing to transform it')
+
+          magic, dims, maxv, pixels = data.split(b'\n', 3)
+          if magic != b'P6' or dims != b'128 128' or maxv != b'255':
+              raise SystemExit(f'unexpected PPM header: {magic!r} {dims!r} {maxv!r}')
+          if len(pixels) != 128 * 128 * 3:
+              raise SystemExit(f'unexpected pixel payload size: {len(pixels)}')
+
+          corrected = bytearray(len(pixels))
+          for i in range(0, len(pixels), 3):
+              r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
+              corrected[i:i + 3] = bytes((g, b, r))
+
+          output = b'P6\n128 128\n255\n' + bytes(corrected)
+          path.write_bytes(output)
+          print('after sha256:', hashlib.sha256(output).hexdigest())
+          print('size:', len(output))
+          PY
+
+      - name: Commit corrected texture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-stone-channels.yml
+          git add -A
+          git commit -m "Correct Classic EQ Stone texture channel order"
+          git push

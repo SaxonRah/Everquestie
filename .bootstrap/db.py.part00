@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from .events import Event
+
+
+SCHEMA = r"""
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+PRAGMA busy_timeout=10000;
+
+CREATE TABLE IF NOT EXISTS source_pages (
+    id INTEGER PRIMARY KEY,
+    url TEXT NOT NULL UNIQUE,
+    source_name TEXT NOT NULL DEFAULT 'Allakhazam',
+    source_kind TEXT NOT NULL DEFAULT 'local_mirror',
+    source_key TEXT NOT NULL DEFAULT '',
+    source_version TEXT NOT NULL DEFAULT '',
+    local_path TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT,
+    title TEXT,
+    entity_type TEXT,
+    imported_at TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    plain_text TEXT NOT NULL,
+    raw_html TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE SET NULL,
+    source_url TEXT,
+    external_id TEXT NOT NULL DEFAULT '',
+    zone TEXT,
+    level_min INTEGER,
+    level_max INTEGER,
+    notes TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(kind, normalized_name, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_entities_name
+ON entities(normalized_name);
+CREATE INDEX IF NOT EXISTS ix_entities_external
+ON entities(kind, external_id);
+
+CREATE TABLE IF NOT EXISTS entity_sources (
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    source_page_id INTEGER NOT NULL REFERENCES source_pages(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'evidence',
+    confidence REAL,
+    PRIMARY KEY(entity_id, source_page_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS ix_entity_sources_entity
+ON entity_sources(entity_id);
+CREATE INDEX IF NOT EXISTS ix_entity_sources_source
+ON entity_sources(source_page_id);
+
+CREATE TABLE IF NOT EXISTS entity_external_ids (
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE SET NULL,
+    PRIMARY KEY(namespace, external_id),
+    UNIQUE(entity_id, namespace, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_entity_external_ids_entity
+ON entity_external_ids(entity_id);
+
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    id INTEGER PRIMARY KEY,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    normalized_alias TEXT NOT NULL,
+    alias_type TEXT NOT NULL DEFAULT 'source',
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    UNIQUE(entity_id, normalized_alias, alias_type, source_page_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_entity_aliases_normalized
+ON entity_aliases(normalized_alias);
+
+CREATE TABLE IF NOT EXISTS entity_relationships (
+    id INTEGER PRIMARY KEY,
+    source_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    target_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL,
+    quantity INTEGER,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    evidence TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(source_entity_id, target_entity_id, relation, source_page_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_relationships_source
+ON entity_relationships(source_entity_id, relation);
+CREATE INDEX IF NOT EXISTS ix_relationships_target
+ON entity_relationships(target_entity_id, relation);
+
+CREATE TABLE IF NOT EXISTS entity_locations (
+    id INTEGER PRIMARY KEY,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    zone_entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+    y REAL,
+    x REAL,
+    z REAL,
+    label TEXT NOT NULL DEFAULT '',
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    evidence TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS ix_locations_entity
+ON entity_locations(entity_id);
+
+CREATE TABLE IF NOT EXISTS quest_steps (
+    id INTEGER PRIMARY KEY,
+    quest_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    step_order INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    zone TEXT,
+    match_json TEXT NOT NULL DEFAULT '{}',
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    UNIQUE(quest_entity_id, step_order)
+);
+
+CREATE TABLE IF NOT EXISTS tracked_quests (
+    quest_entity_id INTEGER PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+    tracked_at TEXT NOT NULL,
+    active_step INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS quest_progress (
+    quest_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    step_order INTEGER NOT NULL,
+    progress_count INTEGER NOT NULL DEFAULT 0,
+    complete INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    PRIMARY KEY(quest_entity_id, step_order)
+);
+
+CREATE TABLE IF NOT EXISTS entity_details (
+    entity_id INTEGER PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE SET NULL,
+    detail_format TEXT NOT NULL DEFAULT 'text',
+    detail_text TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_entity_details_source
+ON entity_details(source_page_id);
+
+CREATE TABLE IF NOT EXISTS skill_caps (
+    class_id INTEGER NOT NULL,
+    skill_id INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    cap INTEGER NOT NULL,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    PRIMARY KEY(class_id, skill_id, level)
+);
+
+CREATE TABLE IF NOT EXISTS base_stats (
+    level INTEGER NOT NULL,
+    class_id INTEGER NOT NULL,
+    hp REAL,
+    mana REAL,
+    endurance REAL,
+    hp_regen REAL,
+    mana_regen REAL,
+    endurance_regen REAL,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    PRIMARY KEY(level, class_id)
+);
+
+CREATE TABLE IF NOT EXISTS ac_mitigation (
+    class_id INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    ac_cap REAL,
+    soft_cap_multiplier REAL,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
+    PRIMARY KEY(class_id, level)
+);
+
+CREATE TABLE IF NOT EXISTS spell_stacking (
+    spell_id INTEGER PRIMARY KEY,
+    stacking_group INTEGER,
+    rank INTEGER,
+    stacking_type INTEGER,
+    source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS observed_events (
+    id INTEGER PRIMARY KEY,
+    occurred_at TEXT,
+    kind TEXT NOT NULL,
+    actor TEXT,
+    target TEXT,
+    zone TEXT,
+    item TEXT,
+    amount INTEGER,
+    text TEXT,
+    fields_json TEXT NOT NULL,
+    raw TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_observed_events_kind
+ON observed_events(kind);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+
+def normalize_name(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+class Database:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.conn = sqlite3.connect(self.path)
+        self.conn.row_factory = sqlite3.Row
+        self._batch_depth = 0
+        self.conn.executescript(SCHEMA)
+        self._migrate()
+        self.fts_available = self._ensure_fts()
+        self._commit()
+
+    def _migrate(self) -> None:
+        """Additive migrations while preserving existing ~/.eqquest databases."""
+        # v0.9 generalizes source_pages into a multi-source provenance record while
+        # retaining the old table name so existing Allakhazam imports stay valid.
+        source_cols = {
+            r["name"] for r in self.conn.execute("PRAGMA table_info(source_pages)").fetchall()
+        }
+        additions = {
+            "source_kind": "TEXT NOT NULL DEFAULT 'local_mirror'",
+            "source_key": "TEXT NOT NULL DEFAULT ''",
+            "source_version": "TEXT NOT NULL DEFAULT ''",
+            "local_path": "TEXT NOT NULL DEFAULT ''",
+            "fetched_at": "TEXT",
+        }
+        for name, ddl in additions.items():
+            if name not in source_cols:
+                self.conn.execute(f"ALTER TABLE source_pages ADD COLUMN {name} {ddl}")
+
+        step_cols = {
+            r["name"] for r in self.conn.execute("PRAGMA table_info(quest_steps)").fetchall()
+        }
+        if "source_page_id" not in step_cols:
+            self.conn.execute(
+                "ALTER TABLE quest_steps ADD COLUMN source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE"
+            )
+
+        # Older databases constrained entity kinds to quest/npc/item/zone.  EverQuestie
+        # now owns a general knowledge DB, so rebuild only this table without the CHECK.
+        sql_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='entities'"
+        ).fetchone()
+        entity_sql = (sql_row["sql"] if sql_row else "") or ""
+        if "CHECK(kind IN" in entity_sql:
+            self._migrate_entities_without_kind_check()
+
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS entity_sources (
+                entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                source_page_id INTEGER NOT NULL REFERENCES source_pages(id) ON DELETE CASCADE,
+                role TEXT NOT NULL DEFAULT 'evidence',
+                confidence REAL,
+                PRIMARY KEY(entity_id, source_page_id, role)
+            );
+            CREATE INDEX IF NOT EXISTS ix_entity_sources_entity
+            ON entity_sources(entity_id);
+            CREATE INDEX IF NOT EXISTS ix_entity_sources_source
+            ON entity_sources(source_page_id);
+            CREATE TABLE IF NOT EXISTS entity_external_ids (
+                entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                namespace TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                source_page_id INTEGER REFERENCES source_pages(id) ON DELETE SET NULL,
+                PRIMARY KEY(namespace, external_id),
+                UNIQUE(entity_id, namespace, external_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_entity_external_ids_entity
+            ON entity_external_ids(entity_id);

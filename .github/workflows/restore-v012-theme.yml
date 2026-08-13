@@ -32,6 +32,23 @@ jobs:
           if not stone_parts:
               raise SystemExit('missing v0.12 stone asset parts')
 
+          # One transport chunk picked up a two-character transcription error in
+          # the previous repository repair. Correct that staged transport text
+          # first, then require the exact v0.12 hashes before committing anything.
+          last = stone_parts[-1]
+          last_text = last.read_text(encoding='ascii').strip()
+          bad = 'Ei0qaua3NLx1dmIv'
+          good = 'Ei0Jqua3NLx1dmIv'
+          if bad in last_text:
+              last_text = last_text.replace(bad, good, 1)
+              last.write_text(last_text, encoding='ascii')
+
+          expected_last = '9ca0103e8ce528d8cd12de447498e11693f0dc60ba22e05e1af7341a36bc0352'
+          actual_last = hashlib.sha256(last.read_bytes()).hexdigest()
+          print('last stone transport sha256:', actual_last)
+          if actual_last != expected_last:
+              raise SystemExit('v0.12 stone transport chunk still differs from the original')
+
           theme = bz2.decompress(base64.b64decode(theme_archive.read_text(encoding='ascii').strip()))
           encoded_stone = ''.join(p.read_text(encoding='ascii').strip() for p in stone_parts)
           stone = bz2.decompress(base64.b64decode(encoded_stone))
@@ -50,9 +67,8 @@ jobs:
           Path('eqquest/theme.py').write_bytes(theme)
           (assets / 'classic_eq_stone.ppm').write_bytes(stone)
 
-          # The original v0.12 runtime loads the real PPM file directly.  Remove
-          # the temporary compressed transport files so the checkout matches that
-          # behavior instead of going through a loader/monkey-patch layer.
+          # The original v0.12 runtime loads the real PPM file directly. Remove
+          # the temporary compressed transport files and loader indirection.
           theme_archive.unlink()
           for part in stone_parts:
               part.unlink()

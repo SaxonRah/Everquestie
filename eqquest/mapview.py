@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import colorsys
 import json
-import math
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -21,6 +22,17 @@ from .eqmap import (
 MAP_ROOT_META = "map_root"
 MAP_BIND_PREFIX = "map_binding::"
 MAP_VIEW_PREFIX = "map_view::"
+MAP_THEME_META = "map_theme"
+
+MAP_THEME_ORIGINAL = "original"
+MAP_THEME_STONE = "stone"
+MAP_THEME_PARCHMENT = "parchment"
+MAP_THEME_LABELS = {
+    MAP_THEME_STONE: "Classic EQ Stone",
+    MAP_THEME_PARCHMENT: "Parchment",
+    MAP_THEME_ORIGINAL: "Original map colors",
+}
+MAP_THEME_BY_LABEL = {label: key for key, label in MAP_THEME_LABELS.items()}
 
 
 def _hex_color(r: int, g: int, b: int) -> str:
@@ -31,8 +43,19 @@ def _binding_key(zone_name: str) -> str:
     return MAP_BIND_PREFIX + normalize_map_name(zone_name)
 
 
+def _mix_rgb(a: tuple[int, int, int], b: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
+    t = max(0.0, min(1.0, amount))
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))  # type: ignore[return-value]
+
+
 class MapViewerFrame(ttk.Frame):
-    """Native EverQuest vector map viewer with EverQuestie knowledge overlays."""
+    """Native EverQuest vector map viewer with fast persistent canvas objects.
+
+    Native map geometry is constructed only when map content/display options change.
+    Pan and zoom operate on existing Tk canvas items, while player/trail/knowledge
+    overlays are updated independently. This keeps Good/Brewall maps responsive even
+    when a zone contains many thousands of vector records.
+    """
 
     def __init__(
         self,
@@ -66,19 +89,41 @@ class MapViewerFrame(ttk.Frame):
         self.filter_elevation = tk.BooleanVar(value=False)
         self.elevation_span = tk.DoubleVar(value=150.0)
 
+        stored_map_theme = self.db.get_meta(MAP_THEME_META, MAP_THEME_STONE)
+        if stored_map_theme not in MAP_THEME_LABELS:
+            stored_map_theme = MAP_THEME_STONE
+        self.map_theme = tk.StringVar(value=MAP_THEME_LABELS[stored_map_theme])
+
         self.zone_map: ZoneMap | None = None
         self.scale = 1.0
         self.offset_x = 0.0
         self.offset_y = 0.0
         self._fit_pending = False
         self._pan_start: tuple[int, int] | None = None
+        self._pending_pan_dx = 0.0
+        self._pending_pan_dy = 0.0
+        self._pan_job: str | None = None
+        self._view_save_job: str | None = None
         self._overlay_entity_by_item: dict[int, int] = {}
         self._last_zone: str | None = None
         self._last_location: tuple[float, float, float] | None = None
+        self._last_filter_z: float | None = None
         self._trail: list[tuple[float, float, float]] = []
         self._trail_limit = 250
 
+        # DB-backed overlay data is intentionally cached. Panning/zooming never
+        # performs SQLite graph/location queries.
+        self._cached_zone: str | None = None
+        self._cached_locations: list = []
+        self._cached_quest_ids: set[int] = set()
+        self._cached_overlay_signature: tuple = ()
+        self._next_overlay_refresh = 0.0
+
+        # Theme color conversion is deterministic and reused for every native RGB.
+        self._color_cache: dict[tuple[str, int, int, int, bool], str] = {}
+
         self._build()
+        self._apply_map_background()
         self.after(250, self._poll_state)
 
     def _build(self) -> None:
@@ -109,19 +154,58 @@ class MapViewerFrame(ttk.Frame):
 
         options = ttk.Frame(self)
         options.grid(row=2, column=0, sticky="ew", pady=(6, 6))
-        ttk.Label(options, text="Layers:").pack(side="left")
+
+        line1 = ttk.Frame(options)
+        line1.pack(fill="x")
+        ttk.Label(line1, text="Layers:").pack(side="left")
         for i, name in enumerate(("Base", "1", "2", "3")):
-            ttk.Checkbutton(options, text=name, variable=self.layer_vars[i], command=self.redraw).pack(side="left", padx=(4, 0))
-        ttk.Checkbutton(options, text="Map labels", variable=self.show_labels, command=self.redraw).pack(side="left", padx=(12, 0))
-        ttk.Checkbutton(options, text="Player", variable=self.show_player, command=self.redraw).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(options, text="/loc trail", variable=self.show_trail, command=self.redraw).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(options, text="Follow player", variable=self.follow_player).pack(side="left", padx=(8, 0))
-        ttk.Button(options, text="Clear trail", command=self.clear_trail).pack(side="left", padx=(6, 0))
-        ttk.Checkbutton(options, text="Knowledge", variable=self.show_knowledge, command=self.redraw).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(options, text="Tracked quest", variable=self.show_quest, command=self.redraw).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(options, text="Near current Z ±", variable=self.filter_elevation, command=self.redraw).pack(side="left", padx=(12, 0))
-        span = ttk.Spinbox(options, from_=25, to=1000, increment=25, width=6, textvariable=self.elevation_span, command=self.redraw)
+            ttk.Checkbutton(
+                line1,
+                text=name,
+                variable=self.layer_vars[i],
+                command=self._apply_static_visibility,
+            ).pack(side="left", padx=(4, 0))
+        ttk.Checkbutton(
+            line1, text="Map labels", variable=self.show_labels, command=self._apply_static_visibility
+        ).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(
+            line1, text="Knowledge", variable=self.show_knowledge, command=self._redraw_overlays
+        ).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(
+            line1, text="Tracked quest", variable=self.show_quest, command=self._redraw_overlays
+        ).pack(side="left", padx=(8, 0))
+
+        line2 = ttk.Frame(options)
+        line2.pack(fill="x", pady=(4, 0))
+        ttk.Label(line2, text="Map style:").pack(side="left")
+        theme_box = ttk.Combobox(
+            line2,
+            textvariable=self.map_theme,
+            values=list(MAP_THEME_LABELS.values()),
+            state="readonly",
+            width=19,
+        )
+        theme_box.pack(side="left", padx=(4, 10))
+        theme_box.bind("<<ComboboxSelected>>", self._on_map_theme_changed)
+        ttk.Checkbutton(line2, text="Player", variable=self.show_player, command=self._redraw_position).pack(side="left")
+        ttk.Checkbutton(line2, text="/loc trail", variable=self.show_trail, command=self._redraw_position).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(line2, text="Follow player", variable=self.follow_player).pack(side="left", padx=(8, 0))
+        ttk.Button(line2, text="Clear trail", command=self.clear_trail).pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(
+            line2, text="Near current Z ±", variable=self.filter_elevation, command=self._on_elevation_changed
+        ).pack(side="left", padx=(12, 0))
+        span = ttk.Spinbox(
+            line2,
+            from_=25,
+            to=1000,
+            increment=25,
+            width=6,
+            textvariable=self.elevation_span,
+            command=self._on_elevation_changed,
+        )
         span.pack(side="left", padx=(3, 0))
+        span.bind("<Return>", lambda _e: self._on_elevation_changed())
+        span.bind("<FocusOut>", lambda _e: self._on_elevation_changed())
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.grid(row=3, column=0, sticky="nsew")
@@ -139,7 +223,7 @@ class MapViewerFrame(ttk.Frame):
         self.canvas.bind("<ButtonRelease-1>", self._pan_end)
         self.canvas.bind("<MouseWheel>", self._wheel)
         self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 1.12))
-        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1/1.12))
+        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, 1 / 1.12))
         self.canvas.bind("<Motion>", self._motion)
 
         side = ttk.Frame(body, padding=(8, 0, 0, 0))
@@ -185,12 +269,14 @@ class MapViewerFrame(ttk.Frame):
         if self.map_root.get().strip():
             return
         p = Path(log_path)
-        # .../EverQuest/Logs/eqlog_x.txt -> .../EverQuest/maps
         if p.parent.name.casefold() == "logs":
             maps = p.parent.parent / "maps"
             if maps.is_dir():
-                # Prefer known custom map subdirectories if exactly one is obvious.
-                subdirs = [d for d in maps.iterdir() if d.is_dir() and ("good" in d.name.casefold() or "brewall" in d.name.casefold())]
+                subdirs = [
+                    d
+                    for d in maps.iterdir()
+                    if d.is_dir() and ("good" in d.name.casefold() or "brewall" in d.name.casefold())
+                ]
                 if len(subdirs) == 1:
                     self.set_map_root(subdirs[0])
                 else:
@@ -212,12 +298,15 @@ class MapViewerFrame(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Map load failed", str(exc))
             return
+        self.canvas.delete("all")
+        self._overlay_entity_by_item.clear()
         self.map_file.set(str(self.zone_map.base_path))
         counts = []
         for layer, data in sorted(self.zone_map.layers.items()):
             counts.append(f"L{layer}:{len(data.lines)} lines/{len(data.points)} labels")
         self.map_status.set(f"{self.zone_map.stem} | " + " | ".join(counts))
         self._fit_pending = True
+        self._refresh_overlay_cache(force=True)
         self._refresh_marker_list()
         self.after_idle(lambda: None if self._restore_view() else self.fit())
 
@@ -246,6 +335,7 @@ class MapViewerFrame(ttk.Frame):
             self.map_status.set(
                 f"No unique map-file match for {zone}. Open the correct .txt once, then press Bind zone."
             )
+            self._refresh_overlay_cache(force=True)
             self._refresh_marker_list()
             return
         self.load_map(path)
@@ -261,22 +351,7 @@ class MapViewerFrame(ttk.Frame):
     def _enabled_layers(self) -> list[int]:
         return [i for i, var in self.layer_vars.items() if var.get()]
 
-    def _z_visible(self, z0: float, z1: float | None = None) -> bool:
-        if not self.filter_elevation.get():
-            return True
-        loc = self.get_location()
-        if not loc:
-            return True
-        z = loc[2]
-        span = max(1.0, float(self.elevation_span.get()))
-        if z1 is None:
-            return abs(z0 - z) <= span
-        lo, hi = sorted((z0, z1))
-        return not (hi < z - span or lo > z + span)
-
     def _world_to_screen(self, mx: float, my: float) -> tuple[float, float]:
-        # Match the EverQuest in-game map orientation: native map Y increases
-        # downward on screen, so we do not invert the vertical axis here.
         return self.offset_x + mx * self.scale, self.offset_y + my * self.scale
 
     def _screen_to_world(self, sx: float, sy: float) -> tuple[float, float]:
@@ -289,6 +364,7 @@ class MapViewerFrame(ttk.Frame):
         return MAP_VIEW_PREFIX + normalize_map_name(zone)
 
     def _save_view(self) -> None:
+        self._view_save_job = None
         if self.zone_map is None or self.follow_player.get():
             return
         key = self._view_key()
@@ -301,6 +377,14 @@ class MapViewerFrame(ttk.Frame):
             key,
             json.dumps({"scale": self.scale, "center_x": center_x, "center_y": center_y}),
         )
+
+    def _schedule_save_view(self, delay_ms: int = 350) -> None:
+        if self._view_save_job is not None:
+            try:
+                self.after_cancel(self._view_save_job)
+            except tk.TclError:
+                pass
+        self._view_save_job = self.after(delay_ms, self._save_view)
 
     def _restore_view(self) -> bool:
         key = self._view_key()
@@ -330,7 +414,7 @@ class MapViewerFrame(ttk.Frame):
         loc = self.get_location()
         if loc:
             self._trail.append(loc)
-        self.redraw()
+        self._redraw_position()
 
     def _append_trail_location(self, loc: tuple[float, float, float] | None) -> None:
         if loc is None:
@@ -360,6 +444,7 @@ class MapViewerFrame(ttk.Frame):
         self.offset_y = h * 0.5 - cy * self.scale
         self._fit_pending = False
         self.redraw()
+        self._schedule_save_view(500)
 
     def center_player(self) -> None:
         loc = self.get_location()
@@ -367,18 +452,20 @@ class MapViewerFrame(ttk.Frame):
             self.coord_status.set("No /loc has been observed yet.")
             return
         mx, my, _ = game_to_map(*loc)
-        self.offset_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
-        self.offset_y = self.canvas.winfo_height() * 0.5 - my * self.scale
-        self.redraw()
+        new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
+        new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
+        self._move_view_to(new_x, new_y)
+        self._schedule_save_view()
 
     def _on_resize(self, _event) -> None:
         if self._fit_pending:
             self.fit()
-        else:
-            self.redraw()
+        elif self.follow_player.get() and self.zone_map is not None and self.get_location():
+            self.center_player()
+        elif self.zone_map is None:
+            self._draw_empty_message()
 
     def _pan_begin(self, event) -> None:
-        # Entity overlay click wins over map panning.
         item = self.canvas.find_withtag("current")
         if item and item[0] in self._overlay_entity_by_item:
             entity_id = self._overlay_entity_by_item[item[0]]
@@ -395,12 +482,32 @@ class MapViewerFrame(ttk.Frame):
         dy = event.y - self._pan_start[1]
         self.offset_x += dx
         self.offset_y += dy
+        self._pending_pan_dx += dx
+        self._pending_pan_dy += dy
         self._pan_start = (event.x, event.y)
-        self.redraw()
+        if self._pan_job is None:
+            # Coalesce high-rate mouse motion into roughly one canvas operation/frame.
+            self._pan_job = self.after(8, self._flush_pan)
+
+    def _flush_pan(self) -> None:
+        if self._pan_job is not None:
+            self._pan_job = None
+        dx, dy = self._pending_pan_dx, self._pending_pan_dy
+        self._pending_pan_dx = 0.0
+        self._pending_pan_dy = 0.0
+        if dx or dy:
+            self.canvas.move("map_content", dx, dy)
 
     def _pan_end(self, _event) -> None:
+        if self._pan_job is not None:
+            try:
+                self.after_cancel(self._pan_job)
+            except tk.TclError:
+                pass
+            self._pan_job = None
+        self._flush_pan()
         self._pan_start = None
-        self._save_view()
+        self._schedule_save_view(180)
 
     def _wheel(self, event) -> None:
         factor = 1.12 if event.delta > 0 else 1 / 1.12
@@ -409,53 +516,99 @@ class MapViewerFrame(ttk.Frame):
     def _zoom_at(self, sx: float, sy: float, factor: float) -> None:
         if self.zone_map is None:
             return
-        wx, wy = self._screen_to_world(sx, sy)
-        self.scale = max(0.01, min(50.0, self.scale * factor))
-        self.offset_x = sx - wx * self.scale
-        self.offset_y = sy - wy * self.scale
-        self.redraw()
-        self._save_view()
+        old_scale = self.scale
+        new_scale = max(0.01, min(50.0, old_scale * factor))
+        actual = new_scale / old_scale
+        if abs(actual - 1.0) < 1e-9:
+            return
+        self.scale = new_scale
+        self.offset_x = sx + (self.offset_x - sx) * actual
+        self.offset_y = sy + (self.offset_y - sy) * actual
+        self.canvas.scale("map_content", sx, sy, actual, actual)
+        # Font sizes/line widths remain screen-readable; only coordinates scale.
+        self._schedule_save_view()
+
+    def _move_view_to(self, new_offset_x: float, new_offset_y: float) -> None:
+        dx = new_offset_x - self.offset_x
+        dy = new_offset_y - self.offset_y
+        self.offset_x = new_offset_x
+        self.offset_y = new_offset_y
+        if dx or dy:
+            self.canvas.move("map_content", dx, dy)
 
     def _motion(self, event) -> None:
         if self.zone_map is None:
             self.coord_status.set("")
             return
         mx, my = self._screen_to_world(event.x, event.y)
-        gx, gy, _ = (-mx, -my, 0.0)
+        gx, gy = -mx, -my
         self.coord_status.set(f"Cursor /loc approx: Y {gy:.1f}, X {gx:.1f}")
 
-    def _quest_related_ids(self) -> set[int]:
+    def _query_quest_related_ids(self) -> set[int]:
         related: set[int] = set()
         frontier: list[int] = []
         for quest in self.db.tracked_quests():
             qid = int(quest["id"])
             related.add(qid)
             for rel in self.db.relationships_for_entity(qid):
-                other = int(rel["target_entity_id"] if rel["direction"] == "out" else rel["source_entity_id"])
+                other = int(
+                    rel["target_entity_id"] if rel["direction"] == "out" else rel["source_entity_id"]
+                )
                 if other not in related:
                     related.add(other)
                     frontier.append(other)
-        # One extra hop catches quest item -> drops_from NPC and similar useful edges.
         for eid in frontier:
             for rel in self.db.relationships_for_entity(eid):
-                other = int(rel["target_entity_id"] if rel["direction"] == "out" else rel["source_entity_id"])
+                other = int(
+                    rel["target_entity_id"] if rel["direction"] == "out" else rel["source_entity_id"]
+                )
                 related.add(other)
         return related
 
-    def _locations_here(self):
+    def _refresh_overlay_cache(self, *, force: bool = False) -> bool:
         zone = self.get_zone()
         if not zone:
-            return []
-        return list(self.db.locations_in_zone(zone))
+            changed = bool(self._cached_locations or self._cached_quest_ids or self._cached_zone)
+            self._cached_zone = None
+            self._cached_locations = []
+            self._cached_quest_ids = set()
+            self._cached_overlay_signature = ()
+            return changed
+
+        rows = list(self.db.locations_in_zone(zone))
+        quest_ids = self._query_quest_related_ids()
+        row_signature = tuple(
+            (
+                int(row["entity_id"]),
+                row["x"],
+                row["y"],
+                row["z"],
+                row["kind"],
+                row["name"],
+            )
+            for row in rows
+        )
+        signature = (normalize_map_name(zone), tuple(sorted(quest_ids)), row_signature)
+        changed = force or signature != self._cached_overlay_signature
+        if changed:
+            self._cached_zone = zone
+            self._cached_locations = rows
+            self._cached_quest_ids = quest_ids
+            self._cached_overlay_signature = signature
+        return changed
+
+    def refresh_overlays(self) -> None:
+        """Public hook for quest/knowledge changes without rebuilding map geometry."""
+        self._refresh_overlay_cache(force=True)
+        self._refresh_marker_list()
+        self._redraw_overlays()
 
     def _refresh_marker_list(self) -> None:
-        rows = self._locations_here()
         self.marker_list.delete(0, "end")
         self._marker_ids = []
-        quest_ids = self._quest_related_ids()
-        for row in rows:
+        for row in self._cached_locations:
             eid = int(row["entity_id"])
-            star = "★ " if eid in quest_ids else ""
+            star = "★ " if eid in self._cached_quest_ids else ""
             coords = []
             if row["y"] is not None:
                 coords.append(f"Y {row['y']:g}")
@@ -474,7 +627,6 @@ class MapViewerFrame(ttk.Frame):
             self.on_entity(eid)
 
     def focus_entity(self, entity_id: int) -> None:
-        """Center the best known location for an entity without changing source data."""
         self._center_entity(entity_id)
 
     def _center_entity(self, entity_id: int) -> None:
@@ -487,78 +639,287 @@ class MapViewerFrame(ttk.Frame):
             if row["x"] is None or row["y"] is None:
                 continue
             mx, my, _ = game_to_map(float(row["x"]), float(row["y"]), float(row["z"] or 0.0))
-            self.offset_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
-            self.offset_y = self.canvas.winfo_height() * 0.5 - my * self.scale
-            self.redraw()
+            new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
+            new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
+            self._move_view_to(new_x, new_y)
+            self._schedule_save_view()
             return
 
-    def redraw(self) -> None:
-        self.canvas.delete("all")
-        self._overlay_entity_by_item.clear()
+    # ------------------------------------------------------------------
+    # Map-only visual themes
+
+    def _map_theme_id(self) -> str:
+        return MAP_THEME_BY_LABEL.get(self.map_theme.get(), MAP_THEME_STONE)
+
+    def _on_map_theme_changed(self, _event=None) -> None:
+        theme_id = self._map_theme_id()
+        self.db.set_meta(MAP_THEME_META, theme_id)
+        self._color_cache.clear()
+        self._apply_map_background()
+        self.redraw()
+
+    def _apply_map_background(self) -> None:
+        theme_id = self._map_theme_id()
+        background = {
+            MAP_THEME_ORIGINAL: "#f7f7f7",
+            MAP_THEME_STONE: "#2b3542",
+            MAP_THEME_PARCHMENT: "#d9cfad",
+        }[theme_id]
+        self.canvas.configure(background=background)
+
+    def _themed_map_color(self, r: int, g: int, b: int, *, label: bool = False) -> str:
+        theme_id = self._map_theme_id()
+        key = (theme_id, r, g, b, label)
+        cached = self._color_cache.get(key)
+        if cached is not None:
+            return cached
+
+        if theme_id == MAP_THEME_ORIGINAL:
+            if r > 245 and g > 245 and b > 245:
+                color = "#666666" if label else "#999999"
+            else:
+                color = _hex_color(r, g, b)
+            self._color_cache[key] = color
+            return color
+
+        rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+        hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)
+
+        if theme_id == MAP_THEME_STONE:
+            dark = (49, 60, 72)
+            light = (220, 221, 207)
+            if sat < 0.12:
+                rgb = _mix_rgb(dark, light, 0.18 + 0.72 * value)
+            else:
+                # Preserve source-map semantic hue families while translating them
+                # into the EverQuestie gray/blue stone palette.
+                if hue < 0.08 or hue >= 0.95:       # red
+                    base = (191, 139, 105)           # muted copper
+                elif hue < 0.18:                    # orange/yellow
+                    base = (201, 181, 119)           # aged gold
+                elif hue < 0.45:                    # green
+                    base = (122, 151, 137)           # sage
+                elif hue < 0.72:                    # cyan/blue
+                    base = (118, 145, 173)           # steel blue
+                else:                               # violet/magenta
+                    base = (150, 137, 166)           # slate violet
+                rgb = _mix_rgb(dark, base, 0.35 + 0.58 * value)
+            if label:
+                rgb = _mix_rgb(rgb, light, 0.12)
+        else:
+            ink = (68, 57, 42)
+            paper = (217, 207, 173)
+            if sat < 0.12:
+                rgb = _mix_rgb(ink, (118, 100, 72), 0.15 + 0.55 * value)
+            else:
+                if hue < 0.08 or hue >= 0.95:
+                    base = (132, 67, 51)             # rust
+                elif hue < 0.18:
+                    base = (143, 104, 53)            # ochre
+                elif hue < 0.45:
+                    base = (93, 105, 66)             # olive
+                elif hue < 0.72:
+                    base = (70, 91, 104)             # faded ink blue
+                else:
+                    base = (104, 75, 92)             # plum ink
+                rgb = _mix_rgb(ink, base, 0.42 + 0.48 * value)
+            if label:
+                rgb = _mix_rgb(rgb, ink, 0.10)
+            # Keep extremely bright original lines visible against paper.
+            if value > 0.94 and sat < 0.08:
+                rgb = _mix_rgb(ink, paper, 0.32)
+
+        color = _hex_color(*rgb)
+        self._color_cache[key] = color
+        return color
+
+    def _overlay_palette(self) -> dict[str, str]:
+        theme_id = self._map_theme_id()
+        if theme_id == MAP_THEME_STONE:
+            return {
+                "knowledge": "#6f91b8",
+                "quest": "#d0b665",
+                "quest_text": "#f0dfa1",
+                "outline": "#111820",
+                "trail": "#7aa88f",
+                "player": "#8ec59f",
+                "player_outline": "#294f39",
+                "player_text": "#c8ead1",
+            }
+        if theme_id == MAP_THEME_PARCHMENT:
+            return {
+                "knowledge": "#536f80",
+                "quest": "#a67836",
+                "quest_text": "#6c471f",
+                "outline": "#403626",
+                "trail": "#66754b",
+                "player": "#758650",
+                "player_outline": "#44502d",
+                "player_text": "#44502d",
+            }
+        return {
+            "knowledge": "#1f6feb",
+            "quest": "#ffbf00",
+            "quest_text": "#7a4b00",
+            "outline": "#111111",
+            "trail": "#39a85b",
+            "player": "#14a44d",
+            "player_outline": "#0b5d2a",
+            "player_text": "#0b5d2a",
+        }
+
+    # ------------------------------------------------------------------
+    # Rendering
+
+    def _z_context(self) -> tuple[bool, float, float]:
+        if not self.filter_elevation.get():
+            return False, 0.0, 0.0
+        loc = self.get_location()
+        if not loc:
+            return False, 0.0, 0.0
+        try:
+            span = max(1.0, float(self.elevation_span.get()))
+        except (ValueError, tk.TclError):
+            span = 150.0
+        return True, float(loc[2]), span
+
+    @staticmethod
+    def _z_visible_for_context(z0: float, z1: float | None, context: tuple[bool, float, float]) -> bool:
+        enabled, z, span = context
+        if not enabled:
+            return True
+        if z1 is None:
+            return abs(z0 - z) <= span
+        lo, hi = sorted((z0, z1))
+        return not (hi < z - span or lo > z + span)
+
+    def _on_elevation_changed(self) -> None:
+        loc = self.get_location()
+        self._last_filter_z = float(loc[2]) if loc and self.filter_elevation.get() else None
+        self._rebuild_static()
+        self._redraw_overlays()
+
+    def _draw_empty_message(self) -> None:
+        self.canvas.delete("map_message")
         if self.zone_map is None:
+            fill = "#d7d8cf" if self._map_theme_id() == MAP_THEME_STONE else "#665d4d"
             self.canvas.create_text(
                 self.canvas.winfo_width() / 2,
                 self.canvas.winfo_height() / 2,
                 text="Choose a map pack and load the current zone.",
-                fill="#666666",
+                fill=fill,
+                tags=("map_message",),
             )
+
+    def _rebuild_static(self) -> None:
+        self.canvas.delete("map_geometry")
+        self.canvas.delete("map_labels")
+        self.canvas.delete("map_message")
+        if self.zone_map is None:
+            self._draw_empty_message()
             return
 
-        # Native map geometry/labels.
-        for layer_no in self._enabled_layers():
-            layer = self.zone_map.layers.get(layer_no)
-            if not layer:
-                continue
+        z_context = self._z_context()
+        for layer_no, layer in self.zone_map.layers.items():
+            geometry_tag = f"map_geometry_layer_{layer_no}"
+            label_tag = f"map_label_layer_{layer_no}"
             for line in layer.lines:
-                if not self._z_visible(line.z0, line.z1):
+                if not self._z_visible_for_context(line.z0, line.z1, z_context):
                     continue
                 x0, y0 = self._world_to_screen(line.x0, line.y0)
                 x1, y1 = self._world_to_screen(line.x1, line.y1)
-                color = _hex_color(line.r, line.g, line.b)
-                # Pure white community-map strokes vanish on our light canvas.
-                if line.r > 245 and line.g > 245 and line.b > 245:
-                    color = "#999999"
-                self.canvas.create_line(x0, y0, x1, y1, fill=color, width=1)
+                self.canvas.create_line(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    fill=self._themed_map_color(line.r, line.g, line.b),
+                    width=1,
+                    tags=("map_content", "map_static", "map_geometry", geometry_tag),
+                )
 
-            if self.show_labels.get():
-                for point in layer.points:
-                    if not self._z_visible(point.z):
-                        continue
-                    x, y = self._world_to_screen(point.x, point.y)
-                    color = _hex_color(point.r, point.g, point.b)
-                    if point.r > 245 and point.g > 245 and point.b > 245:
-                        color = "#666666"
-                    font_size = {1: 8, 2: 10, 3: 12}.get(point.size, 9)
-                    self.canvas.create_text(x, y, text=point.display_text, fill=color, font=("TkDefaultFont", font_size), anchor="center")
+            for point in layer.points:
+                if not self._z_visible_for_context(point.z, None, z_context):
+                    continue
+                x, y = self._world_to_screen(point.x, point.y)
+                font_size = {1: 8, 2: 10, 3: 12}.get(point.size, 9)
+                self.canvas.create_text(
+                    x,
+                    y,
+                    text=point.display_text,
+                    fill=self._themed_map_color(point.r, point.g, point.b, label=True),
+                    font=("TkDefaultFont", font_size),
+                    anchor="center",
+                    tags=("map_content", "map_static", "map_labels", label_tag),
+                )
+        self._apply_static_visibility()
 
-        # EverQuestie knowledge overlays use game /loc coordinates -> native map coordinates.
-        quest_ids = self._quest_related_ids()
-        rows = self._locations_here() if self.show_knowledge.get() or self.show_quest.get() else []
-        for row in rows:
+    def _apply_static_visibility(self) -> None:
+        for layer_no in range(4):
+            enabled = bool(self.layer_vars[layer_no].get())
+            self.canvas.itemconfigure(
+                f"map_geometry_layer_{layer_no}", state="normal" if enabled else "hidden"
+            )
+            labels_enabled = enabled and bool(self.show_labels.get())
+            self.canvas.itemconfigure(
+                f"map_label_layer_{layer_no}", state="normal" if labels_enabled else "hidden"
+            )
+
+    def _redraw_overlays(self) -> None:
+        self.canvas.delete("eqquest_overlay")
+        self._overlay_entity_by_item.clear()
+        if self.zone_map is None:
+            return
+        if not (self.show_knowledge.get() or self.show_quest.get()):
+            return
+
+        z_context = self._z_context()
+        palette = self._overlay_palette()
+        for row in self._cached_locations:
             if row["x"] is None or row["y"] is None:
                 continue
             eid = int(row["entity_id"])
-            is_quest = eid in quest_ids
+            is_quest = eid in self._cached_quest_ids
             if is_quest and not self.show_quest.get():
                 continue
             if not is_quest and not self.show_knowledge.get():
                 continue
             z = float(row["z"] or 0.0)
-            if not self._z_visible(z):
+            if not self._z_visible_for_context(z, None, z_context):
                 continue
             mx, my, _ = game_to_map(float(row["x"]), float(row["y"]), z)
             x, y = self._world_to_screen(mx, my)
             radius = 6 if is_quest else 4
-            fill = "#ffbf00" if is_quest else "#1f6feb"
-            outline = "#111111"
-            item = self.canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=fill, outline=outline, width=2, tags=("eqquest_overlay",))
+            item = self.canvas.create_oval(
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
+                fill=palette["quest"] if is_quest else palette["knowledge"],
+                outline=palette["outline"],
+                width=2,
+                tags=("map_content", "eqquest_overlay"),
+            )
             self._overlay_entity_by_item[item] = eid
             if is_quest:
-                text_item = self.canvas.create_text(x + radius + 3, y, text=row["name"], anchor="w", fill="#7a4b00", font=("TkDefaultFont", 9, "bold"), tags=("eqquest_overlay",))
+                text_item = self.canvas.create_text(
+                    x + radius + 3,
+                    y,
+                    text=row["name"],
+                    anchor="w",
+                    fill=palette["quest_text"],
+                    font=("TkDefaultFont", 9, "bold"),
+                    tags=("map_content", "eqquest_overlay"),
+                )
                 self._overlay_entity_by_item[text_item] = eid
 
-        # Successive /loc observations form a historical trail.  No interpolation
-        # is attempted: these are only positions actually emitted by the EQ log.
+    def _redraw_position(self) -> None:
+        self.canvas.delete("eqquest_trail")
+        self.canvas.delete("eqquest_player")
+        if self.zone_map is None:
+            return
+        palette = self._overlay_palette()
+
         if self.show_trail.get() and len(self._trail) >= 2:
             points: list[float] = []
             for loc in self._trail:
@@ -566,24 +927,54 @@ class MapViewerFrame(ttk.Frame):
                 sx, sy = self._world_to_screen(mx, my)
                 points.extend((sx, sy))
             if len(points) >= 4:
-                self.canvas.create_line(*points, fill="#39a85b", width=2, tags=("eqquest_trail",))
+                self.canvas.create_line(
+                    *points,
+                    fill=palette["trail"],
+                    width=2,
+                    tags=("map_content", "eqquest_trail"),
+                )
 
-        # Last observed /loc. This is intentionally described as last-known rather
-        # than continuous position: EverQuestie never reads game memory.
         if self.show_player.get():
             loc = self.get_location()
             if loc:
                 mx, my, _ = game_to_map(*loc)
                 x, y = self._world_to_screen(mx, my)
                 size = 8
-                player = self.canvas.create_polygon(
-                    x, y-size,
-                    x+size, y+size,
-                    x, y+size/2,
-                    x-size, y+size,
-                    fill="#14a44d", outline="#0b5d2a", width=2,
+                self.canvas.create_polygon(
+                    x,
+                    y - size,
+                    x + size,
+                    y + size,
+                    x,
+                    y + size / 2,
+                    x - size,
+                    y + size,
+                    fill=palette["player"],
+                    outline=palette["player_outline"],
+                    width=2,
+                    tags=("map_content", "eqquest_player"),
                 )
-                self.canvas.create_text(x + 11, y - 10, text="last /loc", anchor="w", fill="#0b5d2a", font=("TkDefaultFont", 9, "bold"))
+                self.canvas.create_text(
+                    x + 11,
+                    y - 10,
+                    text="last /loc",
+                    anchor="w",
+                    fill=palette["player_text"],
+                    font=("TkDefaultFont", 9, "bold"),
+                    tags=("map_content", "eqquest_player"),
+                )
+
+    def redraw(self) -> None:
+        """Full rebuild for map/content option changes, never used for pan/zoom."""
+        self.canvas.delete("all")
+        self._overlay_entity_by_item.clear()
+        self._apply_map_background()
+        if self.zone_map is None:
+            self._draw_empty_message()
+            return
+        self._rebuild_static()
+        self._redraw_overlays()
+        self._redraw_position()
 
     def _poll_state(self) -> None:
         zone = self.get_zone()
@@ -592,17 +983,41 @@ class MapViewerFrame(ttk.Frame):
             self._last_zone = zone
             self._trail.clear()
             self._last_location = None
+            self._last_filter_z = None
+            self._refresh_overlay_cache(force=True)
             self._refresh_marker_list()
             if zone:
                 self.manual_zone.set(zone)
             if zone and self.map_root.get().strip():
                 self.load_current_zone()
+            elif self.zone_map is not None:
+                self._redraw_overlays()
+
         if loc != self._last_location:
             self._last_location = loc
             self._append_trail_location(loc)
             if self.follow_player.get() and loc and self.zone_map is not None:
                 mx, my, _ = game_to_map(*loc)
-                self.offset_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
-                self.offset_y = self.canvas.winfo_height() * 0.5 - my * self.scale
-            self.redraw()
+                new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
+                new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
+                self._move_view_to(new_x, new_y)
+
+            # Normal /loc updates touch only the small trail/player objects. The
+            # native map is rebuilt for movement only when elevation filtering is
+            # explicitly enabled and the current Z actually changes.
+            if self.filter_elevation.get() and loc:
+                z = float(loc[2])
+                if self._last_filter_z is None or z != self._last_filter_z:
+                    self._last_filter_z = z
+                    self._rebuild_static()
+                    self._redraw_overlays()
+            self._redraw_position()
+
+        now = time.monotonic()
+        if now >= self._next_overlay_refresh:
+            self._next_overlay_refresh = now + 2.0
+            if self._refresh_overlay_cache():
+                self._refresh_marker_list()
+                self._redraw_overlays()
+
         self.after(250, self._poll_state)

@@ -1,0 +1,300 @@
+        ttk.Entry(mirrors, textvariable=self.db_mirror_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.db_mirror_var)).grid(row=0, column=2)
+        ttk.Button(mirrors, text="Import / refresh DB mirror", command=self._import_db_mirror).grid(row=0, column=3, padx=(6, 0))
+
+        ttk.Label(mirrors, text="Wiki mirror").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(mirrors, textvariable=self.wiki_mirror_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.wiki_mirror_var)).grid(row=1, column=2, pady=(8, 0))
+        ttk.Button(mirrors, text="Index / refresh Wiki mirror", command=self._import_wiki_mirror).grid(row=1, column=3, padx=(6, 0), pady=(8, 0))
+
+        ttk.Label(
+            mirrors,
+            text="Manual only: EverQuestie does not scan, watch, index, modify, or otherwise open these mirror paths until you press the corresponding Import/Index button. Canonical Allakhazam URLs remain provenance keys; EverQuestie never fetches the mirror itself from the network.",
+            wraplength=950,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+        single = ttk.LabelFrame(root, text="Single saved Allakhazam page", padding=10)
+        single.pack(fill="x", pady=(8, 0))
+        single.columnconfigure(1, weight=1)
+        ttk.Label(single, text="Canonical URL").grid(row=0, column=0, sticky="w")
+        ttk.Entry(single, textvariable=self.import_url_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Label(single, text="Entity type").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(
+            single,
+            textvariable=self.import_type_var,
+            values=["auto", "quest", "npc", "item", "zone"],
+            state="readonly",
+        ).grid(row=1, column=1, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(single, text="Name override").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(single, textvariable=self.import_name_var).grid(row=2, column=1, sticky="ew", padx=8, pady=(8, 0))
+        buttons = ttk.Frame(single)
+        buttons.grid(row=3, column=1, sticky="w", padx=8, pady=(10, 0))
+        ttk.Button(buttons, text="Choose saved HTML and import…", command=self._import_saved_html).pack(side="left")
+        ttk.Button(
+            buttons,
+            text="Open URL in browser",
+            command=lambda: open_url(self.import_url_var.get().strip()) if self.import_url_var.get().strip() else None,
+        ).pack(side="left", padx=(6, 0))
+
+        summary = ttk.LabelFrame(root, text="Local knowledge sources", padding=8)
+        summary.pack(fill="both", expand=True, pady=(8, 0))
+        summary.rowconfigure(0, weight=1)
+        summary.columnconfigure(0, weight=1)
+        self.source_summary_text = tk.Text(summary, height=8, wrap="word", state="disabled")
+        self.source_summary_text.grid(row=0, column=0, sticky="nsew")
+        source_scroll = ttk.Scrollbar(summary, orient="vertical", command=self.source_summary_text.yview)
+        source_scroll.grid(row=0, column=1, sticky="ns")
+        self.source_summary_text.configure(yscrollcommand=source_scroll.set)
+        ttk.Button(summary, text="Refresh summary", command=self._refresh_source_summary).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+    def _set_online_result(self, text: str) -> None:
+        self.online_result_text.configure(state="normal")
+        self.online_result_text.delete("1.0", "end")
+        self.online_result_text.insert("end", text)
+        self.online_result_text.configure(state="disabled")
+
+    def _search_local_from_search_tab(self) -> None:
+        query = self.online_query_var.get().strip()
+        if not query:
+            return
+        rows = self.db.search_entities_fts(query)
+        if not rows:
+            self._set_online_result(f"LOCAL DB | no match: {query}")
+            self.online_status_var.set("Local-only search complete. No network request was made.")
+            return
+        lines = [f"LOCAL DB | {query} | {len(rows)} match(es)", ""]
+        for row in rows[:80]:
+            zone = f" | {row['zone']}" if row["zone"] else ""
+            lines.append(f"[{row['kind']}] {row['name']}{zone}")
+        if len(rows) > 80:
+            lines.append(f"\n...and {len(rows)-80} more")
+        self._set_online_result("\n".join(lines))
+        self.online_status_var.set("Local-only search complete. No network request was made.")
+
+    def _search_allakhazam_from_search_tab(self) -> None:
+        query = self.online_query_var.get().strip()
+        if not query:
+            return
+        self.online_status_var.set("Opening an explicit Allakhazam browser search.")
+        open_allakhazam_search(query)
+
+    def _search_mcp_local(self) -> None:
+        query = self.online_query_var.get().strip()
+        if not query:
+            return
+        eq_path = self.eq_game_path_var.get().strip()
+        if not eq_path:
+            messagebox.showerror(
+                "EverQuestie local MCP search",
+                "Choose your EverQuest installation in the Sources tab first.",
+            )
+            return
+        status = mcp_status(self.mcp_path_var.get().strip() or None)
+        if not status.ready:
+            messagebox.showerror("EverQuestie local MCP search", status.summary())
+            self.online_status_var.set("Local MCP search was not started. " + status.summary())
+            return
+
+        self.online_status_var.set("Searching installed EverQuest data through MCP (offline)…")
+        self._set_online_result("Searching local game data…")
+
+        def worker() -> None:
+            try:
+                with MCPStdioClient(status.path, eq_game_path=eq_path) as client:
+                    text = client.search(MCP_LOCAL_SEARCH_TOOL, query)
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._finish_mcp_local_error(exc))
+                return
+            self.after(0, lambda: self._finish_mcp_local(text))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_mcp_local(self, text: str) -> None:
+        self._set_online_result(text)
+        self.online_status_var.set(
+            "Local MCP search complete. Installed EQ files only; no community-site request was made."
+        )
+
+    def _finish_mcp_local_error(self, exc: Exception) -> None:
+        self._set_online_result(f"Local MCP search failed:\n\n{exc}")
+        self.online_status_var.set("Local MCP search failed; no online search was started.")
+
+    def _search_online_explicit(self) -> None:
+        query = self.online_query_var.get().strip()
+        source = self.online_source_var.get().strip()
+        tool_name = ONLINE_TOOLS.get(source)
+        if not query or not tool_name:
+            return
+        status = mcp_status(self.mcp_path_var.get().strip() or None)
+        if not status.ready:
+            messagebox.showerror("EverQuestie online search", status.summary())
+            self.online_status_var.set("Online search was not started. " + status.summary())
+            return
+
+        self.online_status_var.set(f"Explicit online search running: {source}…")
+        self._set_online_result("Searching…")
+        eq_path = self.eq_game_path_var.get().strip() or None
+
+        def worker() -> None:
+            try:
+                with MCPStdioClient(status.path, eq_game_path=eq_path) as client:
+                    text = client.search(tool_name, query)
+            except Exception as exc:
+                self.after(0, lambda source=source, exc=exc: self._finish_online_search_error(source, exc))
+                return
+            self.after(0, lambda: self._finish_online_search(source, text))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_online_search(self, source: str, text: str) -> None:
+        self._set_online_result(text)
+        self.online_status_var.set(
+            f"Explicit online search complete: {source}. Result is temporary and was not imported."
+        )
+
+    def _finish_online_search_error(self, source: str, exc: Exception) -> None:
+        self._set_online_result(f"Online search failed:\n\n{exc}")
+        self.online_status_var.set(f"Explicit online search failed: {source}.")
+
+    def _set_database_text(self, text: str) -> None:
+        if not hasattr(self, "database_text"):
+            return
+        self.database_text.configure(state="normal")
+        self.database_text.delete("1.0", "end")
+        self.database_text.insert("end", text)
+        self.database_text.configure(state="disabled")
+
+    def _database_diagnostic_text(self) -> str:
+        d = self.db.database_diagnostics()
+        try:
+            size = self.db.path.stat().st_size
+        except OSError:
+            size = 0
+        lines = [
+            "EverQuestie-owned SQLite database",
+            "",
+            f"Path: {d['path']}",
+            f"File size: {size / (1024 * 1024):.1f} MiB",
+            f"Integrity check: {d['integrity']}",
+            f"FTS5 available: {'yes' if d['fts_available'] else 'no (LIKE fallback active)'}",
+            f"FTS rows: {d['fts_rows']:,}",
+            f"FTS state: {'needs rebuild (safe LIKE fallback active)' if d['fts_dirty'] else 'current'}",
+            f"FTS last rebuild: {d['fts_last_rebuild'] or 'never'}",
+            "",
+            "Core rows:",
+        ]
+        for key, value in d["counts"].items():
+            lines.append(f"  {key}: {value:,}")
+        lines += ["", "Local client support tables:"]
+        for key, value in d["support"].items():
+            lines.append(f"  {key}: {value:,}")
+        lines += [
+            "",
+            "Source policy:",
+            "  EQ client: authoritative for local IDs/mechanics/zone identity",
+            "  Allakhazam: quest/world/community evidence when explicitly imported from the local mirror",
+            "  Good/Brewall/EQ maps: selected map geometry and POIs",
+            "  Conflicting evidence is retained through source provenance instead of silently fetching a replacement.",
+        ]
+        return "\n".join(lines)
+
+    def _refresh_database_diagnostics(self) -> None:
+        try:
+            self._set_database_text(self._database_diagnostic_text())
+        except Exception as exc:
+            self._set_database_text(f"Database diagnostics failed:\n\n{exc}")
+
+    def _rebuild_search_index(self) -> None:
+        if getattr(self, "_database_rebuild_running", False):
+            return
+        self._database_rebuild_running = True
+        self.database_rebuild_button.configure(state="disabled")
+        self.status.set("Rebuilding local full-text search index…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+                count = worker_db.rebuild_search_index()
+            except Exception as exc:
+                if worker_db is not None:
+                    try: worker_db.close()
+                    except Exception: pass
+                self.after(0, lambda exc=exc: self._finish_search_rebuild_error(exc))
+                return
+            worker_db.close()
+            self.after(0, lambda: self._finish_search_rebuild(count))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_search_rebuild(self, count: int) -> None:
+        self._database_rebuild_running = False
+        self.database_rebuild_button.configure(state="normal")
+        self.status.set(f"Local search index rebuilt: {count:,} entities")
+        self._refresh_database_diagnostics()
+        self._refresh_source_summary()
+
+    def _finish_search_rebuild_error(self, exc: Exception) -> None:
+        self._database_rebuild_running = False
+        self.database_rebuild_button.configure(state="normal")
+        self.status.set("Local search-index rebuild failed")
+        messagebox.showerror("EverQuestie search index", str(exc))
+        self._refresh_database_diagnostics()
+
+    def _backup_database(self) -> None:
+        target = filedialog.asksaveasfilename(
+            title="Back up EverQuestie SQLite database",
+            defaultextension=".sqlite3",
+            initialfile="eqquest-backup.sqlite3",
+            filetypes=[("SQLite database", "*.sqlite3 *.db"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            out = sqlite3.connect(target)
+            try:
+                self.db.conn.backup(out)
+            finally:
+                out.close()
+        except Exception as exc:
+            messagebox.showerror("EverQuestie database backup", str(exc))
+            return
+        messagebox.showinfo("EverQuestie database backup", f"Backup written to:\n{target}")
+
+    def _bind_settings_autosave(self) -> None:
+        variables = [
+            self.log_path,
+            self.eq_game_path_var,
+            self.mcp_path_var,
+            self.db_mirror_var,
+            self.wiki_mirror_var,
+        ]
+        if hasattr(self, "map_view"):
+            variables.append(self.map_view.map_root)
+        for variable in variables:
+            variable.trace_add("write", lambda *_args: self._schedule_settings_save())
+        self.ui_theme_var.trace_add("write", self._on_ui_theme_changed)
+
+    def _on_ui_theme_changed(self, *_args) -> None:
+        theme_id = ThemeManager.id_for_label(self.ui_theme_var.get())
+        self.theme_manager.apply(theme_id)
+        self._schedule_settings_save()
+
+    def _schedule_settings_save(self) -> None:
+        if self._settings_save_job is not None:
+            try:
+                self.after_cancel(self._settings_save_job)
+            except Exception:
+                pass
+        self._settings_save_job = self.after(350, self._save_settings_now)
+
+    def _save_settings_now(self) -> None:
+        pending = self._settings_save_job
+        self._settings_save_job = None
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass

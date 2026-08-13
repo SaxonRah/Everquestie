@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.spec
+
+# EverQuestie user/runtime state
+.eqquest/
+*.sqlite3
+*.sqlite3-*
+settings.ini
+
+# Local EverQuest logs / captures
+*eqlog*.txt
+
+# Local HTTrack mirrors and saved Allakhazam pages
+allakhazam/
+hts-cache/
+hts-log.txt
+*.tmp
+
+# Node / MCP build products
+third_party/everquest1-mcp/node_modules/
+third_party/everquest1-mcp/dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

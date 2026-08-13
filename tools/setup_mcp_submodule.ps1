@@ -28,25 +28,36 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "Git was not found in PATH. Install Git for Windows first."
 }
 
-# A normal Git checkout should use the pinned submodule recorded by EverQuestie.
-if (Test-Path (Join-Path $ProjectRoot ".git")) {
-    Write-Host "Initializing pinned everquest1-mcp submodule..."
+$IsGitCheckout = Test-Path (Join-Path $ProjectRoot ".git")
+
+if ($IsGitCheckout) {
+    Write-Host "Initializing everquest1-mcp dependency..."
     Push-Location $ProjectRoot
     try {
-        Invoke-Checked git submodule update --init --recursive -- third_party/everquest1-mcp
+        & git submodule update --init --recursive -- third_party/everquest1-mcp
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Git submodule initialization failed; falling back to a direct clone."
+        }
     }
     finally {
         Pop-Location
     }
 }
-# Keep ZIP/source-export compatibility: if there is no .git directory, clone the dependency.
-elseif (-not (Test-Path $McpPath)) {
-    Write-Host "This is not a Git checkout; cloning everquest1-mcp into third_party..."
+
+# If the repository export/check-out does not currently contain a usable gitlink,
+# or if this is a ZIP/source export, make the helper self-healing by cloning directly.
+if (-not (Test-Path (Join-Path $McpPath "package.json"))) {
+    if (Test-Path $McpPath) {
+        $Existing = Get-ChildItem -Force $McpPath -ErrorAction SilentlyContinue
+        if ($Existing) {
+            throw "'$McpPath' exists but does not look like an everquest1-mcp checkout. Remove or rename it, then rerun this script."
+        }
+        Remove-Item -Force $McpPath -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "Cloning everquest1-mcp into third_party..."
     New-Item -ItemType Directory -Force -Path (Split-Path $McpPath) | Out-Null
     Invoke-Checked git clone $McpUrl $McpPath
-}
-elseif (-not (Test-Path (Join-Path $McpPath "package.json"))) {
-    throw "'$McpPath' exists but does not look like an everquest1-mcp checkout. Remove or rename it, then rerun this script."
 }
 
 if (-not (Test-Path (Join-Path $McpPath "package.json"))) {
@@ -61,11 +72,10 @@ if ($Update) {
         Write-Host "Checking out requested ref: $Ref"
         Invoke-Checked git -C $McpPath checkout $Ref
     }
-    elseif (Test-Path (Join-Path $ProjectRoot ".git")) {
-        # In a real EverQuestie checkout, return to the commit pinned by the parent repo.
+    elseif ($IsGitCheckout) {
         Push-Location $ProjectRoot
         try {
-            Invoke-Checked git submodule update --init --recursive -- third_party/everquest1-mcp
+            & git submodule update --init --recursive -- third_party/everquest1-mcp
         }
         finally {
             Pop-Location

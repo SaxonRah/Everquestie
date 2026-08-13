@@ -1,1 +1,0 @@
-Run setup_mcp_submodule.cmd from the EverQuestie repository root. It initializes the pinned everquest1-mcp dependency and builds it with npm.

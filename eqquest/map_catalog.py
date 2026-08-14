@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .db import Database, normalize_name
-from .eqmap import discover_base_maps, load_zone_map, normalize_map_name
+from .eqmap import discover_base_maps, map_to_game, normalize_map_name, parse_map_file
 from .local_search import map_label_terms, parse_local_query
 
 
@@ -229,18 +229,22 @@ class MapCatalog:
         seen_paths: set[str] = set()
         files_indexed = 0
         files_unchanged = 0
+        stale_removed = 0
 
         with self.db.batch():
             for base in base_maps:
-                zone_map = load_zone_map(base)
-                zone_name = zone_by_stem.get(normalize_map_name(zone_map.stem), "")
-                for layer_no, layer in zone_map.layers.items():
-                    path = layer.path.resolve()
+                map_stem = base.stem
+                zone_name = zone_by_stem.get(normalize_map_name(map_stem), "")
+                for layer_no in range(4):
+                    path = root_path / (f"{map_stem}.txt" if layer_no == 0 else f"{map_stem}_{layer_no}.txt")
+                    if not path.exists():
+                        continue
+                    path = path.resolve()
                     seen_paths.add(str(path))
                     stat = path.stat()
                     source_id, unchanged = self._upsert_source(
                         root=root_s,
-                        map_stem=zone_map.stem,
+                        map_stem=map_stem,
                         zone_name=zone_name,
                         layer=layer_no,
                         path=path,
@@ -251,18 +255,17 @@ class MapCatalog:
                         files_unchanged += 1
                         continue
                     files_indexed += 1
+                    layer = parse_map_file(path, layer=layer_no)
                     self.db.conn.execute("DELETE FROM map_labels WHERE source_id=?", (source_id,))
                     rows = []
                     for point in layer.points:
                         raw = point.display_text
                         clean = self._canonical_text(raw)
-                        rows.append(
-                            (
-                                source_id, zone_map.stem, zone_name, layer_no, int(point.source_line),
-                                raw, clean, normalize_name(clean), float(point.x), float(point.y),
-                                float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
-                            )
-                        )
+                        rows.append((
+                            source_id, map_stem, zone_name, layer_no, int(point.source_line),
+                            raw, clean, normalize_name(clean), float(point.x), float(point.y),
+                            float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
+                        ))
                     if rows:
                         self.db.conn.executemany(
                             """
@@ -280,16 +283,16 @@ class MapCatalog:
             for row in stale:
                 if str(row["path"]) not in seen_paths:
                     self.db.conn.execute("DELETE FROM map_sources WHERE id=?", (int(row["id"]),))
+                    stale_removed += 1
             self.db.set_meta("map_catalog_root", root_s)
-            self.db.set_meta("map_links_dirty", "1")
+            if files_indexed or stale_removed:
+                self.db.set_meta("map_links_dirty", "1")
 
-        reconciliation = self.reconcile_all(force=True)
-        labels = int(
-            self.db.conn.execute(
-                "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
-                (root_s,),
-            ).fetchone()[0]
-        )
+        reconciliation = self.reconcile_all(force=bool(files_indexed or stale_removed))
+        labels = int(self.db.conn.execute(
+            "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
+            (root_s,),
+        ).fetchone()[0])
         return MapIndexStats(
             base_maps=len(base_maps),
             files_indexed=files_indexed,
@@ -537,6 +540,21 @@ class MapCatalog:
         fuzzy.sort(key=lambda hit: hit.score)
         return fuzzy[: max(1, int(limit))]
 
+    def hits_for_entity(self, entity_id: int, *, limit: int = 100) -> list[MapCatalogHit]:
+        self.ensure_reconciled()
+        rows = self.db.conn.execute(
+            """
+            SELECT ml.*,ms.path FROM map_labels ml
+            JOIN map_sources ms ON ms.id=ml.source_id
+            WHERE ml.linked_entity_id=?
+            ORDER BY CASE WHEN ml.zone_name<>'' THEN 0 ELSE 1 END,
+                     ml.zone_name,ml.map_stem,ml.layer,ml.source_line
+            LIMIT ?
+            """,
+            (int(entity_id), max(1, min(int(limit), 1000))),
+        ).fetchall()
+        return [self._hit(row, (0, i), "linked local map evidence") for i, row in enumerate(rows)]
+
     @staticmethod
     def _hit(row, score: tuple, reason: str) -> MapCatalogHit:
         return MapCatalogHit(
@@ -555,3 +573,30 @@ class MapCatalog:
             score=score,
             reason=reason,
         )
+
+def map_evidence_lines(db: Database, entity_id: int, *, limit: int = 50) -> list[str]:
+    """Render linked map-label evidence without promoting it to entity-location truth."""
+    try:
+        rows = db.conn.execute(
+            """
+            SELECT ml.*,ms.path FROM map_labels ml
+            JOIN map_sources ms ON ms.id=ml.source_id
+            WHERE ml.linked_entity_id=?
+            ORDER BY ml.zone_name,ml.map_stem,ml.layer,ml.source_line
+            LIMIT ?
+            """,
+            (int(entity_id), max(1, min(int(limit), 500))),
+        ).fetchall()
+    except Exception:
+        return []
+    if not rows:
+        return []
+    lines = ["", "Local map evidence:"]
+    for row in rows:
+        gx, gy, gz = map_to_game(float(row["x"]), float(row["y"]), float(row["z"]))
+        zone = str(row["zone_name"] or row["map_stem"])
+        lines.append(
+            f"  • {row['raw_text']} | {zone} | /loc Y {gy:g}, X {gx:g}, Z {gz:g} | "
+            f"layer {row['layer']} | {Path(str(row['path'])).name}:{row['source_line']}"
+        )
+    return lines

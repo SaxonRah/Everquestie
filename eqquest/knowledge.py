@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from .db import Database
 from .detail_renderers import render_structured_local_detail
+from .map_catalog import map_evidence_lines
+from .vendor import VENDOR_RELATIONS, vendor_section_lines
 
 
 RELATION_LABELS = {
@@ -22,6 +24,9 @@ RELATION_LABELS = {
     "found_in": "Found in",
     "connected_to": "Connected to",
     "starts_in": "Starts in",
+    "sells": "Sells",
+    "teaches_spell": "Teaches spell",
+    "trains_skill": "Trains skill",
 }
 
 
@@ -258,6 +263,8 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
             lines.append(f"{label}: " + ", ".join(values))
 
     lines.extend(_render_local_detail(db, entity_id, str(r["kind"])))
+    lines.extend(vendor_section_lines(db, entity_id))
+    lines.extend(map_evidence_lines(db, entity_id))
 
     locs = db.locations_for_entity(entity_id)
     if locs:
@@ -274,7 +281,7 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
             suffix = f" ({loc['label']})" if loc["label"] else ""
             lines.append(f"  • {where}: {', '.join(coords) if coords else 'coordinates unknown'}{suffix}")
 
-    rels = db.relationships_for_entity(entity_id)
+    rels = [rel for rel in db.relationships_for_entity(entity_id) if str(rel["relation"]) not in VENDOR_RELATIONS]
     if rels:
         lines += ["", "Relationships:"]
         for rel in rels:

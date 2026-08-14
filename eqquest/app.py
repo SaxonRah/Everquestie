@@ -19,6 +19,7 @@ from .knowledge import entity_detail_text, find_text, where_text
 from .local_search import count_local_entities_by_kind, query_summary, search_local_entities, search_local_hits
 from .db_audit import identity_audit_text
 from .mapview import MapViewerFrame
+from .mechanics import MechanicsFrame
 from .mcp_client import (
     ONLINE_TOOLS,
     MCP_LOCAL_SEARCH_TOOL,
@@ -195,6 +196,7 @@ class EverQuestieApp(tk.Tk):
         self.live_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
         self.map_tab = ttk.Frame(notebook)
         self.knowledge_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
+        self.mechanics_tab = ttk.Frame(notebook, style="Stone.TFrame")
         self.search_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
         self.database_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")
         self.import_tab = VerticalScrolledFrame(
@@ -204,6 +206,7 @@ class EverQuestieApp(tk.Tk):
         notebook.add(self.live_tab, text="Live")
         notebook.add(self.map_tab, text="Map")
         notebook.add(self.knowledge_tab, text="Knowledge")
+        notebook.add(self.mechanics_tab, text="Mechanics")
         notebook.add(self.search_tab, text="Search")
         notebook.add(self.database_tab, text="Database")
         notebook.add(self.import_tab, text="Sources")
@@ -211,6 +214,7 @@ class EverQuestieApp(tk.Tk):
         self._build_live()
         self._build_map()
         self._build_knowledge()
+        self._build_mechanics()
         self._build_search()
         self._build_database()
         self._build_import()
@@ -298,14 +302,20 @@ class EverQuestieApp(tk.Tk):
         self.search_var.set(row["name"])
         self.kind_var.set(row["kind"])
         self._search_knowledge()
+        self.notebook.select(self.knowledge_tab)
         iid = f"entity:{entity_id}"
-        if not hasattr(self, "entity_tree") or not self.entity_tree.exists(iid):
+        if not hasattr(self, "entity_tree"):
+            return
+        if not self.entity_tree.exists(iid):
+            kind_node = self._knowledge_kind_nodes.get(str(row["kind"]))
+            if kind_node and self.entity_tree.exists(kind_node):
+                self._populate_knowledge_kind(str(row["kind"]), kind_node)
+        if not self.entity_tree.exists(iid):
             return
         self.entity_tree.selection_set(iid)
         self.entity_tree.focus(iid)
         self.entity_tree.see(iid)
         self._show_entity()
-        self.notebook.select(self.knowledge_tab)
 
     def _map_label_to_knowledge(self, term: str) -> None:
         self.search_var.set(term)
@@ -435,6 +445,12 @@ class EverQuestieApp(tk.Tk):
                 text=f"… {remaining:,} more — use Search to narrow this topic",
             )
         self._knowledge_loaded_nodes.add(node)
+
+    def _build_mechanics(self):
+        self.mechanics_tab.rowconfigure(0, weight=1)
+        self.mechanics_tab.columnconfigure(0, weight=1)
+        self.mechanics_view = MechanicsFrame(self.mechanics_tab, db=self.db)
+        self.mechanics_view.grid(row=0, column=0, sticky="nsew")
 
     def _build_search(self):
         """Explicit search surface. Nothing here performs background network I/O."""

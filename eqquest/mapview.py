@@ -14,6 +14,7 @@ from .db import Database
 from .knowledge import entity_detail_text, relation_label
 from .local_search import map_label_terms, parse_local_query, resolve_local_hits, search_local_hits
 from .map_search import MapLabelHit, find_map_label_hits
+from .map_catalog import MapCatalog, MapCatalogHit
 from .mapraster import (
     RasterRequest,
     RasterResult,
@@ -88,6 +89,7 @@ class MapViewerFrame(ttk.Frame):
         self.set_zone_callback = set_zone
         self.on_entity = on_entity
         self.on_knowledge_search = on_knowledge_search
+        self.map_catalog = MapCatalog(db)
 
         self.map_root = tk.StringVar(value=self.db.get_meta(MAP_ROOT_META, ""))
         self.manual_zone = tk.StringVar()
@@ -167,14 +169,18 @@ class MapViewerFrame(ttk.Frame):
         self.lookup_query = tk.StringVar()
         self.lookup_status = tk.StringVar(value="Click a map name or search the local DB.")
         self._lookup_entity_by_item: dict[str, int] = {}
-        self._lookup_map_hit_by_item: dict[str, MapLabelHit] = {}
+        self._lookup_map_hit_by_item: dict[str, MapLabelHit | MapCatalogHit] = {}
         self._lookup_selected_entity: int | None = None
-        self._lookup_selected_map_hit: MapLabelHit | None = None
+        self._lookup_selected_map_hit: MapLabelHit | MapCatalogHit | None = None
+        self._catalog_index_results: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._catalog_indexing = False
 
         self._build()
         self._apply_map_background()
         self.after(30, self._poll_raster_results)
         self.after(250, self._poll_state)
+        self.after(300, self._poll_catalog_index_results)
+        self.after(700, self.ensure_map_catalog)
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -293,6 +299,7 @@ class MapViewerFrame(ttk.Frame):
         lookup_entry.grid(row=0, column=0, sticky="ew")
         lookup_entry.bind("<Return>", lambda _e: self._lookup_name(self.lookup_query.get()))
         ttk.Button(lookup_row, text="Search", command=lambda: self._lookup_name(self.lookup_query.get())).grid(row=0, column=1, padx=(4, 0))
+        ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog).grid(row=0, column=2, padx=(4, 0))
 
         self.lookup_tree = ttk.Treeview(side, columns=("kind", "relation"), show="tree headings", height=8, selectmode="browse")
         self.lookup_tree.heading("#0", text="Name")
@@ -320,6 +327,7 @@ class MapViewerFrame(ttk.Frame):
         lookup_actions = ttk.Frame(side)
         lookup_actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(3, 0))
         ttk.Button(lookup_actions, text="Open in Knowledge", command=self._open_lookup_in_knowledge).pack(side="left")
+        ttk.Button(lookup_actions, text="Open Map", command=self._open_lookup_on_map).pack(side="left", padx=(5, 0))
         ttk.Label(lookup_actions, textvariable=self.lookup_status).pack(side="left", padx=(6, 0))
 
         ttk.Label(side, text="Imported locations in this zone").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
@@ -360,6 +368,55 @@ class MapViewerFrame(ttk.Frame):
         self.db.set_meta(MAP_ROOT_META, root)
         count = len(discover_base_maps(root))
         self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")
+        self.after(50, self.ensure_map_catalog)
+
+    def ensure_map_catalog(self) -> None:
+        root = self.map_root.get().strip()
+        if not root or not Path(root).is_dir() or self._catalog_indexing:
+            return
+        self.index_map_catalog()
+
+    def index_map_catalog(self) -> None:
+        root = self.map_root.get().strip()
+        if not root or not Path(root).is_dir():
+            self.lookup_status.set("Choose a valid map pack before indexing.")
+            return
+        if self._catalog_indexing:
+            self.lookup_status.set("Map catalog indexing is already running.")
+            return
+        self._catalog_indexing = True
+        self.lookup_status.set("Indexing local map labels…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            thread_db = None
+            try:
+                thread_db = Database(db_path)
+                stats = MapCatalog(thread_db).index_root(root)
+                self._catalog_index_results.put(("ok", stats))
+            except Exception as exc:
+                self._catalog_index_results.put(("error", str(exc)))
+            finally:
+                if thread_db is not None:
+                    thread_db.close()
+
+        threading.Thread(target=worker, name="EverQuestieMapCatalog", daemon=True).start()
+
+    def _poll_catalog_index_results(self) -> None:
+        try:
+            while True:
+                status, payload = self._catalog_index_results.get_nowait()
+                self._catalog_indexing = False
+                if status == "ok":
+                    stats = payload
+                    self.lookup_status.set(
+                        f"Map catalog: {stats.labels:,} labels | {stats.linked:,} linked | {stats.ambiguous:,} ambiguous"
+                    )
+                else:
+                    self.lookup_status.set(f"Map catalog index failed: {payload}")
+        except queue.Empty:
+            pass
+        self.after(300, self._poll_catalog_index_results)
 
     def suggest_root_from_log(self, log_path: str | Path) -> None:
         """Infer EverQuest/maps from an eqlog path, without overriding a chosen pack."""
@@ -812,8 +869,32 @@ class MapViewerFrame(ttk.Frame):
             limit=limit,
         )
 
-    def _map_label_detail_text(self, hit: MapLabelHit) -> str:
+    def _map_label_detail_text(self, hit: MapLabelHit | MapCatalogHit) -> str:
         gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+        if isinstance(hit, MapCatalogHit):
+            zone = hit.zone_name or hit.map_stem
+            lines = [
+                f"[map label] {hit.text}",
+                f"Zone/map: {zone}",
+                f"Map stem: {hit.map_stem}",
+                f"Layer: {hit.layer}",
+                f"EQ /loc: Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f}",
+                f"Map file: {Path(hit.path).name}",
+                f"Map source line: {hit.source_line}",
+                f"Catalog link: {hit.link_status}" + (f" — {hit.link_reason}" if hit.link_reason else ""),
+            ]
+            if hit.linked_entity_id is not None:
+                entity = self.db.entity(hit.linked_entity_id)
+                if entity is not None:
+                    lines += ["", f"Linked local entity: [{entity['kind']}] {entity['name']}"]
+            else:
+                lines += [
+                    "",
+                    "Local map evidence only — no normalized EverQuestie knowledge entity is linked yet.",
+                    "The map label remains unclassified; EverQuestie will not guess NPC/item/quest semantics.",
+                ]
+            return "\n".join(lines)
+
         zone = self.get_zone() or self.manual_zone.get().strip() or (self.zone_map.stem if self.zone_map else "unknown")
         layer_path = None
         if self.zone_map is not None and hit.layer in self.zone_map.layers:
@@ -832,16 +913,27 @@ class MapViewerFrame(ttk.Frame):
             "",
             "Local map evidence only — no normalized EverQuestie knowledge entity matches this label yet.",
             "The map file does not encode whether this name is an NPC, quest, merchant, item, or another POI, so EverQuestie will not invent a type.",
-            "When a matching local entity is later available, this same label lookup will expose its quests, items, spells, merchant relationships, and other graph links automatically.",
         ]
         return "\n".join(lines)
 
     def map_label_search_summary(self, term: str, *, limit: int = 20) -> list[str]:
         lines: list[str] = []
+        catalog_hits = self.map_catalog.search(term, current_zone=self.get_zone(), limit=limit)
+        if catalog_hits:
+            for hit in catalog_hits:
+                gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+                zone = hit.zone_name or hit.map_stem
+                linked = f" | linked entity {hit.linked_entity_id}" if hit.linked_entity_id is not None else ""
+                lines.append(
+                    f"[map label] {hit.text} | {zone} | layer {hit.layer} | "
+                    f"/loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}{linked}"
+                )
+            return lines
         for hit in self.map_label_matches(term, limit=limit):
             gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
             lines.append(
-                f"[map label] {hit.text} | layer {hit.layer} | /loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}"
+                f"[map label] {hit.text} | current map layer {hit.layer} | "
+                f"/loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}"
             )
         return lines
 
@@ -857,14 +949,32 @@ class MapViewerFrame(ttk.Frame):
         self._lookup_selected_entity = None
         self._lookup_selected_map_hit = None
         if not hits:
+            catalog_hits = self.map_catalog.search(term, current_zone=self.get_zone(), limit=40)
+            if catalog_hits:
+                for index, hit in enumerate(catalog_hits):
+                    iid = f"catalog:{hit.label_id}:{index}"
+                    kind = "map label"
+                    if hit.linked_entity_id is not None:
+                        linked = self.db.entity(hit.linked_entity_id)
+                        if linked is not None:
+                            kind = f"map→{linked['kind']}"
+                    self.lookup_tree.insert("", "end", iid=iid, text=hit.text, values=(kind, hit.reason))
+                    self._lookup_map_hit_by_item[iid] = hit
+                first = self.lookup_tree.get_children()[0]
+                self.lookup_tree.selection_set(first)
+                self.lookup_tree.focus(first)
+                self.lookup_tree.see(first)
+                self._lookup_selected_map_hit = self._lookup_map_hit_by_item[first]
+                self.lookup_status.set(
+                    f"{len(catalog_hits)} global map evidence match" + ("es" if len(catalog_hits) != 1 else "")
+                )
+                self._set_lookup_detail(self._map_label_detail_text(self._lookup_selected_map_hit))
+                return
             map_hits = self.map_label_matches(term, limit=20)
             if map_hits:
                 for index, hit in enumerate(map_hits):
                     iid = f"maplabel:{index}"
-                    self.lookup_tree.insert(
-                        "", "end", iid=iid, text=hit.text,
-                        values=("map label", hit.reason),
-                    )
+                    self.lookup_tree.insert("", "end", iid=iid, text=hit.text, values=("map label", hit.reason))
                     self._lookup_map_hit_by_item[iid] = hit
                 first = self.lookup_tree.get_children()[0]
                 self.lookup_tree.selection_set(first)
@@ -877,8 +987,8 @@ class MapViewerFrame(ttk.Frame):
                 )
                 self._set_lookup_detail(self._map_label_detail_text(self._lookup_selected_map_hit))
                 return
-            self.lookup_status.set("No local DB or current-map label match")
-            self._set_lookup_detail(f"No local EverQuestie knowledge or current-map label matches: {term}")
+            self.lookup_status.set("No local DB or indexed/current-map label match")
+            self._set_lookup_detail(f"No local EverQuestie knowledge or map evidence matches: {term}")
             return
         for hit in hits:
             row = hit.row
@@ -956,6 +1066,10 @@ class MapViewerFrame(ttk.Frame):
         if self._lookup_selected_entity is not None and self.on_entity:
             self.on_entity(self._lookup_selected_entity)
             return
+        if isinstance(self._lookup_selected_map_hit, MapCatalogHit):
+            if self._lookup_selected_map_hit.linked_entity_id is not None and self.on_entity:
+                self.on_entity(self._lookup_selected_map_hit.linked_entity_id)
+                return
         term = ""
         if self._lookup_selected_map_hit is not None:
             term = self._lookup_selected_map_hit.text
@@ -963,6 +1077,39 @@ class MapViewerFrame(ttk.Frame):
             term = self.lookup_query.get().strip()
         if term and self.on_knowledge_search:
             self.on_knowledge_search(term)
+
+    def _center_map_point(self, x: float, y: float) -> None:
+        new_x = self.canvas.winfo_width() * 0.5 - float(x) * self.scale
+        new_y = self.canvas.winfo_height() * 0.5 - float(y) * self.scale
+        self._move_view_to(new_x, new_y)
+        self._schedule_save_view()
+
+    def _open_lookup_on_map(self, _event=None) -> None:
+        hit = self._lookup_selected_map_hit
+        if isinstance(hit, MapCatalogHit):
+            self.load_map(hit.path)
+            self.after(80, lambda: self._center_map_point(hit.x, hit.y))
+            self.lookup_status.set(f"Opened {hit.zone_name or hit.map_stem} at {hit.text}")
+            return
+        if isinstance(hit, MapLabelHit):
+            self._center_map_point(hit.x, hit.y)
+            return
+        if self._lookup_selected_entity is not None:
+            map_hits = self.map_catalog.hits_for_entity(self._lookup_selected_entity, limit=20)
+            if map_hits:
+                chosen = map_hits[0]
+                current = normalize_map_name(self.get_zone() or "")
+                for candidate in map_hits:
+                    if current and current in {
+                        normalize_map_name(candidate.zone_name), normalize_map_name(candidate.map_stem)
+                    }:
+                        chosen = candidate
+                        break
+                self.load_map(chosen.path)
+                self.after(80, lambda: self._center_map_point(chosen.x, chosen.y))
+                self.lookup_status.set(f"Opened linked map evidence for {chosen.text}")
+                return
+            self.focus_entity(self._lookup_selected_entity)
 
     # ------------------------------------------------------------------
     # Map-only visual themes

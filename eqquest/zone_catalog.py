@@ -218,6 +218,72 @@ class ZoneMapCatalog:
 
         return None, "unresolved", "no conservative canonical zone match"
 
+    def _sync_derived_map_short_names(self) -> int:
+        """Expose one unambiguous catalog stem to legacy/runtime map-file resolution.
+
+        The map viewer already understands ``data_json.map_short_name``. Builder-owned
+        hints let it benefit from the shipped catalog without making runtime rebuild or
+        reconcile knowledge. Explicit provider/client hints always win. If map packs
+        later disagree, only EverQuestie's own derived hint is removed.
+        """
+        stems_by_zone: dict[int, dict[str, set[str]]] = {}
+        for row in self.db.conn.execute(
+            "SELECT zone_entity_id,map_stem FROM zone_map_bindings "
+            "WHERE status='linked' AND zone_entity_id IS NOT NULL "
+            "ORDER BY zone_entity_id,map_stem"
+        ).fetchall():
+            zone_id = int(row["zone_entity_id"])
+            raw_stem = str(row["map_stem"] or "").strip()
+            normalized = normalize_map_name(raw_stem)
+            if not normalized:
+                continue
+            stems_by_zone.setdefault(zone_id, {}).setdefault(normalized, set()).add(raw_stem)
+
+        changed = 0
+        for row in self.db.conn.execute(
+            "SELECT id,data_json FROM entities WHERE kind='zone' ORDER BY id"
+        ).fetchall():
+            zone_id = int(row["id"])
+            try:
+                data = json.loads(row["data_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+
+            catalog_owned = str(data.get("map_short_name_source") or "") == "zone_map_catalog"
+            explicit_other_hint = any(
+                str(data.get(key) or "").strip()
+                for key in _SHORT_NAME_KEYS
+                if key != "map_short_name"
+            )
+            normalized_stems = stems_by_zone.get(zone_id, {})
+
+            updated = False
+            if len(normalized_stems) == 1:
+                raw_variants = next(iter(normalized_stems.values()))
+                # Equivalent spellings such as stonehive / stone_hive normalize to
+                # one identity. Prefer the shortest deterministic filename stem.
+                derived = sorted(raw_variants, key=lambda value: (len(value), value.casefold()))[0]
+                current = str(data.get("map_short_name") or "").strip()
+                if catalog_owned or (not current and not explicit_other_hint):
+                    if current != derived or not catalog_owned:
+                        data["map_short_name"] = derived
+                        data["map_short_name_source"] = "zone_map_catalog"
+                        updated = True
+            elif catalog_owned:
+                data.pop("map_short_name", None)
+                data.pop("map_short_name_source", None)
+                updated = True
+
+            if updated:
+                self.db.conn.execute(
+                    "UPDATE entities SET data_json=? WHERE id=?",
+                    (json.dumps(data, ensure_ascii=False), zone_id),
+                )
+                changed += 1
+        return changed
+
     def reconcile(self, *, source_name: str | None = None) -> ZoneMapBindingStats:
         """Reconcile all indexed map stems (or one source) to canonical zone entities."""
         if not getattr(self.db, "knowledge_writable", True):
@@ -333,6 +399,8 @@ class ZoneMapCatalog:
                         key,
                     )
                     changed += 1
+
+            changed += self._sync_derived_map_short_names()
 
         return ZoneMapBindingStats(
             maps=len(rows),

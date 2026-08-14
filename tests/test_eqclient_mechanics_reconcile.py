@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
 from eqquest.db import Database
 from eqquest.mechanics_context import build_class_mechanics_context
+from eqquest.mechanics_context_ui import ensure_builder_mechanics_catalog
 from eqquest.sources import EQClientImporter
+from eqquest.sources.eqclient import EQClientImporter as RawEQClientImporter
 
 
 class EQClientMechanicsReconcileTests(unittest.TestCase):
@@ -68,6 +71,39 @@ class EQClientMechanicsReconcileTests(unittest.TestCase):
             == int(self.db.entity_by_namespaced_external_id("eqclient:skill", "0")["id"])
         ]
         self.assertEqual(len(matching), 1)
+
+    def test_existing_raw_builder_db_is_backfilled_without_reimporting_files(self):
+        # Reproduce a pre-fix builder DB: support rows exist, but release finalization
+        # has never written its canonical mechanics catalog back into the working DB.
+        RawEQClientImporter(self.db).import_installation(self.eq)
+        self.assertIsNone(self.db.entity_by_namespaced_external_id("eqclient:class", "1"))
+
+        changed = ensure_builder_mechanics_catalog(self.db)
+
+        self.assertTrue(changed)
+        context, status = build_class_mechanics_context(self.db, "Warrior", 1)
+        self.assertEqual(status, "linked")
+        self.assertIsNotNone(context)
+        self.assertEqual(self.db.get_meta("mechanics_catalog_version", ""), "1")
+
+    def test_builder_compatibility_ensure_is_idempotent(self):
+        RawEQClientImporter(self.db).import_installation(self.eq)
+        self.assertTrue(ensure_builder_mechanics_catalog(self.db))
+        relationship_count = self.db.conn.execute(
+            "SELECT COUNT(*) FROM entity_relationships WHERE relation='can_train_skill'"
+        ).fetchone()[0]
+
+        self.assertFalse(ensure_builder_mechanics_catalog(self.db))
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM entity_relationships WHERE relation='can_train_skill'"
+            ).fetchone()[0],
+            relationship_count,
+        )
+
+    def test_packaged_read_only_database_never_runs_builder_reconciliation(self):
+        fake = SimpleNamespace(knowledge_writable=False)
+        self.assertFalse(ensure_builder_mechanics_catalog(fake))
 
 
 if __name__ == "__main__":

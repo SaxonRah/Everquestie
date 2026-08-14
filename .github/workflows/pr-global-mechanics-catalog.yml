@@ -1,4 +1,4 @@
-name: PR global mechanics catalog validation
+name: PR global zone mechanics validation
 
 on:
   push:
@@ -17,9 +17,9 @@ jobs:
           python-version: '3.12'
       - name: Compile Python source
         run: python -m compileall -q eqquest tools tests EverQuestie.py
-      - name: Run mechanics catalog tests
-        run: python -m unittest tests.test_mechanics_catalog -v
-      - name: Run mechanics and snapshot regressions
-        run: python -m unittest tests.test_mechanics_identity tests.test_knowledge_snapshot tests.test_runtime_database_split -v
+      - name: Run canonical catalog tests
+        run: python -m unittest tests.test_mechanics_catalog tests.test_zone_coverage -v
+      - name: Run identity, snapshot and runtime regressions
+        run: python -m unittest tests.test_mechanics_identity tests.test_knowledge_snapshot tests.test_runtime_database_split tests.test_zone_catalog tests.test_zone_travel -v
       - name: Run full regression suite
         run: python -m unittest discover -s tests -v

@@ -152,7 +152,8 @@ class PackagedMapCollectionRootTests(unittest.TestCase):
                 bound_stem=runtime.get_meta(key),
             )
             self.assertTrue(rebound.ready)
-            self.assertEqual(rebound.path, good)
+            self.assertIsNotNone(rebound.path)
+            self.assertTrue(rebound.path.samefile(good))
             self.assertEqual(rebound.reason, "user map binding")
         finally:
             runtime.close()

@@ -3,9 +3,32 @@ import unittest
 from pathlib import Path
 
 from eqquest.db import Database
+from eqquest.sources.eqclient import EQClientImporter
 
 
 class FutureSourceCompatibilityTests(unittest.TestCase):
+    def test_eqclient_zone_import_uses_namespaced_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "EverQuest"
+            resources = root / "Resources"
+            resources.mkdir(parents=True)
+            (resources / "ZoneNames.txt").write_text(
+                "396^Stone Hive^40^70\n",
+                encoding="utf-8",
+            )
+
+            db = Database(Path(td) / "knowledge.sqlite3")
+            try:
+                result = EQClientImporter(db).import_installation(root)
+                self.assertEqual(result.zones, 1)
+                zone = db.entity_by_namespaced_external_id("eqclient:zone", "396")
+                self.assertIsNotNone(zone)
+                self.assertEqual(zone["name"], "Stone Hive")
+                self.assertEqual(zone["level_min"], 40)
+                self.assertEqual(zone["level_max"], 70)
+            finally:
+                db.close()
+
     def test_future_allakhazam_identity_can_enrich_existing_entity(self):
         with tempfile.TemporaryDirectory() as td:
             db = Database(Path(td) / "knowledge.sqlite3")

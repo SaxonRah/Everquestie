@@ -1,0 +1,46 @@
+name: Knowledge snapshot boundary
+
+on:
+  push:
+    branches:
+      - agent/portable-manual-map-catalog
+    paths:
+      - 'eqquest/knowledge_snapshot.py'
+      - 'tools/finalize_knowledge_snapshot.py'
+      - 'tests/test_knowledge_snapshot.py'
+      - 'tools/apply_snapshot_runtime_boundary.py'
+      - '.github/workflows/knowledge-snapshot-boundary.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/portable-manual-map-catalog
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply runtime boundary cleanup
+        run: python tools/apply_snapshot_runtime_boundary.py
+      - name: Compile Python source
+        run: python -m compileall -q eqquest tools tests EverQuestie.py
+      - name: Import runtime and builder modules
+        run: python -c "import eqquest.app; import eqquest.knowledge_snapshot; print('imports OK')"
+      - name: Run regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Commit validated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add eqquest/app.py eqquest/allakhazam.py tools/README.md tests/test_runtime_source_policy.py
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Make knowledge finalization builder-only"
+            git push origin HEAD:agent/portable-manual-map-catalog
+          fi

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
@@ -11,6 +12,7 @@ from eqquest.map_catalog import MapCatalog
 from eqquest.nearby import nearby_points, nearby_text
 from eqquest.runtime import RuntimeDatabase
 from eqquest.state import SessionState
+from eqquest.travel import TravelFrame
 from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
@@ -187,6 +189,29 @@ class NearbyNavigationTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(state.current_zone, "Blightfire Moors")
         self.assertIsNone(state.last_location)
+
+    def test_map_nearest_hands_game_space_to_map_owner(self):
+        self._fixture()
+        emitted: list[tuple] = []
+        statuses: list[str] = []
+        fake = SimpleNamespace(
+            db=self.db,
+            _live_current_zone=lambda: "Stone Hive",
+            get_location=lambda: (0.0, 0.0, 0.0),
+            on_map_target=lambda *args: emitted.append(args),
+            status_var=SimpleNamespace(set=lambda value: statuses.append(str(value))),
+            _nearby_map_label=TravelFrame._nearby_map_label,
+        )
+
+        TravelFrame.map_nearest(fake)
+        self.assertEqual(len(emitted), 1)
+        zone, x, y, z, label = emitted[0]
+        self.assertEqual(zone, "Stone Hive")
+        # The closest provider statement is already normalized game-space X/Y/Z.
+        # Travel must not apply the native map sign reversal; the map owner does that.
+        self.assertEqual((x, y, z), (3.0, 4.0, 120.0))
+        self.assertEqual(label, "A Stone Worker [npc]")
+        self.assertIn("The Map tab owns", statuses[-1])
 
     def test_ambiguous_zone_identity_does_not_rank_points(self):
         north = self.db.upsert_entity(kind="zone", name="North Freeport", merge_by_name=True)

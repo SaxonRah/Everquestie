@@ -1,0 +1,104 @@
+name: Fix map catalog locking and progress v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-map-catalog-locking-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply locking fix
+        run: python tools/apply_map_catalog_lockfix.py
+      - name: Extend map catalog regression tests
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('tests/test_map_catalog.py')
+          s = p.read_text(encoding='utf-8')
+          if 'import threading\n' not in s:
+              s = s.replace('import tempfile\n', 'import tempfile\nimport threading\n', 1)
+          marker = '\n\nif __name__ == "__main__":\n'
+          addition = r'''
+
+class MapCatalogConcurrencyTests(unittest.TestCase):
+    def test_search_does_not_reconcile_dirty_catalog(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "maps"
+            root.mkdir()
+            (root / "alpha.txt").write_text(
+                "P 1,2,3,255,0,0,2,Some_NPC\n", encoding="utf-8"
+            )
+            db = Database(Path(td) / "test.sqlite3")
+            catalog = MapCatalog(db)
+            catalog.index_root(root)
+            db.set_meta("map_links_dirty", "1")
+            hits = catalog.search("Some NPC")
+            self.assertTrue(hits)
+            self.assertEqual(db.get_meta("map_links_dirty"), "1")
+            db.close()
+
+    def test_index_does_not_hold_write_lock_between_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "test.sqlite3"
+            main_db = Database(path)
+            root = Path(td) / "maps"
+            root.mkdir()
+            for stem in ("alpha", "beta"):
+                (root / f"{stem}.txt").write_text(
+                    f"P 1,2,3,255,0,0,2,{stem}_Label\n", encoding="utf-8"
+                )
+            reached = threading.Event()
+            release = threading.Event()
+            errors = []
+
+            def worker():
+                db = Database(path)
+                try:
+                    def progress(stage, current, total, detail):
+                        if stage == "index" and current == 1:
+                            reached.set()
+                            release.wait(2)
+                    MapCatalog(db).index_root(root, progress=progress)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    db.close()
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(reached.wait(3))
+            main_db.set_meta("foreground_write", "ok")
+            self.assertEqual(main_db.get_meta("foreground_write"), "ok")
+            release.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            main_db.close()
+'''
+          if 'class MapCatalogConcurrencyTests' not in s:
+              s = s.replace(marker, addition + marker, 1)
+          p.write_text(s, encoding='utf-8')
+      - name: Compile and test
+        run: |
+          python -m compileall -q eqquest EverQuestie.py
+          python -m unittest discover -s tests -v
+          python -c "import eqquest.app, eqquest.map_catalog; print('locking fix imports OK')"
+      - name: Commit fix
+        run: |
+          git config user.name "EverQuestie Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add eqquest/map_catalog.py eqquest/mapview.py tests/test_map_catalog.py
+          git commit -m "Prevent map catalog indexing from locking the UI"
+          git push

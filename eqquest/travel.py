@@ -169,8 +169,14 @@ class TravelFrame(ttk.Frame):
 
     def _ensure_navigation_catalog_ready(self) -> bool:
         """Refresh stale builder-only map/zone/travel derivatives before reads."""
+        db = getattr(self, "db", None)
+        # Lightweight headless UI surfaces may intentionally use a non-DB sentinel
+        # when testing behavior unrelated to knowledge reads. Real EverQuestie
+        # Database/RuntimeDatabase objects always expose conn/get_meta.
+        if db is None or not hasattr(db, "conn") or not hasattr(db, "get_meta"):
+            return True
         try:
-            refresh = ensure_builder_navigation_catalog(self.db)
+            refresh = ensure_builder_navigation_catalog(db)
         except Exception as exc:
             status = getattr(self, "status_var", None)
             if status is not None:

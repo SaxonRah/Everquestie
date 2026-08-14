@@ -8,17 +8,11 @@ import re
 from typing import Any
 
 from .db import Database
-from .eqmap import map_to_game, normalize_map_name
+from .eqmap import map_to_game
+from .zone_identity import ZoneIdentityIndex
 
 
 ZONE_TRAVEL_CATALOG_VERSION = "1"
-_SHORT_NAME_KEYS = (
-    "map_short_name",
-    "short_name",
-    "shortName",
-    "zone_short_name",
-    "zoneShortName",
-)
 
 _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("portal", re.compile(r"^(?:portal|teleport|teleporter)\s+(?:to\s+)?(.+)$", re.I)),
@@ -62,7 +56,8 @@ class ZoneTravelCatalog:
 
     Map labels are one evidence provider, not the topology schema. Future builder
     providers (including a later Allakhazam/wiki mirror) can add connections to the
-    same table without changing runtime route queries.
+    same table without changing runtime route queries. Destination identity is resolved
+    through the shared canonical zone index used by map/runtime navigation.
     """
 
     def __init__(self, db: Database):
@@ -139,80 +134,23 @@ class ZoneTravelCatalog:
         return None
 
     @staticmethod
-    def _add_token(tokens: dict[str, set[int]], token: str, entity_id: int) -> None:
-        normalized = normalize_map_name(token)
-        if normalized:
-            tokens.setdefault(normalized, set()).add(entity_id)
-
-    def _zone_tokens(self) -> dict[str, set[int]]:
-        tokens: dict[str, set[int]] = {}
-        zone_ids: set[int] = set()
-        for row in self.db.conn.execute(
-            "SELECT id,name,data_json FROM entities WHERE kind='zone' ORDER BY id"
-        ).fetchall():
-            entity_id = int(row["id"])
-            zone_ids.add(entity_id)
-            name = str(row["name"])
-            self._add_token(tokens, name, entity_id)
-            if name.casefold().startswith("the "):
-                self._add_token(tokens, name[4:], entity_id)
-            try:
-                data: Any = json.loads(row["data_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data = {}
-            if isinstance(data, dict):
-                for key in _SHORT_NAME_KEYS:
-                    value = str(data.get(key) or "").strip()
-                    if value:
-                        self._add_token(tokens, value, entity_id)
-
-        if zone_ids:
-            for row in self.db.conn.execute(
-                "SELECT entity_id,alias,alias_type FROM entity_aliases ORDER BY entity_id,id"
-            ).fetchall():
-                entity_id = int(row["entity_id"])
-                if entity_id not in zone_ids:
-                    continue
-                alias = str(row["alias"] or "").strip()
-                alias_type = str(row["alias_type"] or "").casefold()
-                if not alias or alias.isdigit() or alias_type == "eq_zone_id":
-                    continue
-                self._add_token(tokens, alias, entity_id)
-                if alias.casefold().startswith("the "):
-                    self._add_token(tokens, alias[4:], entity_id)
-
-        # Canonical map bindings are also strong exact short-name evidence.
-        table = self.db.conn.execute(
-            """
-            SELECT 1 FROM sqlite_temp_master
-            WHERE type IN ('table','view') AND name='zone_map_bindings'
-            UNION ALL
-            SELECT 1 FROM sqlite_master
-            WHERE type IN ('table','view') AND name='zone_map_bindings'
-            LIMIT 1
-            """
-        ).fetchone()
-        if table is not None:
-            for row in self.db.conn.execute(
-                "SELECT zone_entity_id,map_stem FROM zone_map_bindings "
-                "WHERE status='linked' AND zone_entity_id IS NOT NULL"
-            ).fetchall():
-                self._add_token(tokens, str(row["map_stem"]), int(row["zone_entity_id"]))
-        return tokens
-
     def _resolve_destination(
-        self,
         destination: str,
         source_zone_entity_id: int,
-        tokens: dict[str, set[int]],
+        identities: ZoneIdentityIndex,
     ) -> tuple[int | None, str, str]:
-        key = normalize_map_name(destination)
-        matches = sorted(tokens.get(key, set()))
-        if not matches:
+        resolved = identities.resolve(destination)
+        if resolved.status == "unresolved":
             return None, "unresolved", "travel destination has no exact canonical zone identity"
-        if len(matches) > 1:
-            return None, "ambiguous", f"travel destination matches {len(matches)} canonical zones"
-        target = matches[0]
+        if resolved.status == "ambiguous":
+            return (
+                None,
+                "ambiguous",
+                f"travel destination matches {len(resolved.candidates)} canonical zones",
+            )
+        target = resolved.entity_id
+        if target is None:
+            return None, "unresolved", "travel destination has no exact canonical zone identity"
         if target == source_zone_entity_id:
             return None, "unresolved", "travel label resolves back to its source zone"
         return target, "linked", "exact canonical zone name/alias/short-name match"
@@ -250,7 +188,9 @@ class ZoneTravelCatalog:
             args,
         ).fetchall()
 
-        tokens = self._zone_tokens()
+        # Map stems are already reconciled at this point, so confirmed zone/map
+        # bindings are legitimate exact destination aliases for travel labels.
+        identities = ZoneIdentityIndex(self.db, include_map_bindings=True)
         now = datetime.now().isoformat(timespec="seconds")
         candidates = linked = ambiguous = unresolved = 0
         with self.db.batch():
@@ -266,7 +206,7 @@ class ZoneTravelCatalog:
                 target_id, status, reason = self._resolve_destination(
                     destination,
                     source_zone_id,
-                    tokens,
+                    identities,
                 )
                 if status == "linked":
                     linked += 1

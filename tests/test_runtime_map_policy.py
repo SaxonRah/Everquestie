@@ -103,6 +103,13 @@ class RuntimeMapPolicyTests(unittest.TestCase):
             getattr(app_module.EverQuestieApp, "_everquestie_packaged_app_policy", False)
         )
 
+    def test_runtime_policy_routes_where_through_unified_location_projection(self):
+        install_runtime_policy()
+        from eqquest import app as app_module
+        from eqquest.locations import where_text as unified_where_text
+
+        self.assertIs(app_module.where_text, unified_where_text)
+
 
 if __name__ == "__main__":
     unittest.main()

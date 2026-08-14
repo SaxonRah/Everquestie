@@ -220,6 +220,10 @@ class TravelFrame(ttk.Frame):
             zone = self.from_var.get().strip()
         return zone
 
+    def _live_current_zone(self) -> str:
+        """Zone paired with the ephemeral SessionState.last_location callback."""
+        return " ".join(str(self.get_zone() or "").split()).strip()
+
     def show_zone_context(self) -> None:
         zone = self._selected_or_current_zone()
         if not zone:
@@ -241,9 +245,12 @@ class TravelFrame(ttk.Frame):
             self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
 
     def show_nearby(self) -> None:
-        zone = self._selected_or_current_zone()
+        # Nearby geometry is meaningful only in the zone that owns the observed /loc.
+        # Route/overview fields may intentionally contain some other zone, so never use
+        # the editable From token to pair coordinates with knowledge.
+        zone = self._live_current_zone()
         if not zone:
-            self.status_var.set("Choose a zone or wait for the current zone from the log.")
+            self.status_var.set("Current zone is unknown; nearby ranking requires the live current zone.")
             return
         location = self.get_location()
         self._set_result(nearby_text(self.db, zone, location, limit=50))
@@ -253,15 +260,16 @@ class TravelFrame(ttk.Frame):
                 "Current /loc is unknown. Use /loc in EverQuest; the observed coordinate is never written into shipped knowledge."
             )
         elif status == "ambiguous":
-            self.status_var.set("Zone identity is ambiguous; EverQuestie will not rank nearby points by guessing.")
+            self.status_var.set("Current zone identity is ambiguous; EverQuestie will not rank nearby points by guessing.")
         elif status != "linked":
-            self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
+            self.status_var.set("No canonical identity for the live current zone is present in shipped knowledge yet.")
         else:
             travel_count = sum(point.point_type == "travel" for point in points)
             entity_count = len(points) - travel_count
             self.status_var.set(
-                f"Nearby confirmed points: {len(points)} | {entity_count} entity location(s) | "
-                f"{travel_count} usable travel point(s). Straight-line X/Y only; ΔZ is shown separately."
+                f"Nearby in {zone}: {len(points)} confirmed point(s) | "
+                f"{entity_count} entity location(s) | {travel_count} usable travel point(s). "
+                "Straight-line X/Y only; ΔZ is shown separately."
             )
 
     def find_route(self) -> None:

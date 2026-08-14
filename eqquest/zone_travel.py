@@ -9,6 +9,7 @@ from typing import Any
 
 from .db import Database
 from .eqmap import map_to_game
+from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
@@ -140,6 +141,7 @@ class ZoneTravelCatalog:
         identities: ZoneIdentityIndex,
     ) -> tuple[int | None, str, str]:
         resolved = identities.resolve(destination)
+        resolved = prefer_eqclient_zone_resolution(resolved, destination)
         if resolved.status == "unresolved":
             return None, "unresolved", "travel destination has no exact canonical zone identity"
         if resolved.status == "ambiguous":

@@ -7,7 +7,7 @@ from tkinter import ttk
 from .db import Database
 from .nearby import nearby_points, nearby_text
 from .zone_context import build_zone_context, zone_context_text
-from .zone_identity import resolve_zone
+from .zone_authority import resolve_authoritative_zone
 from .zone_travel import ZoneTravelCatalog
 
 
@@ -24,7 +24,7 @@ def _resolve_zone(db: Database, value: str):
     text = " ".join((value or "").split()).strip()
     if not text:
         return None, "empty"
-    resolution = resolve_zone(db, text)
+    resolution = resolve_authoritative_zone(db, text)
     if resolution.identity is None:
         return None, resolution.status
     row = db.entity(resolution.identity.entity_id)

@@ -1,0 +1,408 @@
+name: Apply map Knowledge navigation pass
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-map-knowledge-nav.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Improve map label matching
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('eqquest/map_search.py')
+          p.write_text('''from __future__ import annotations
+
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+
+from .db import normalize_name
+from .eqmap import ZoneMap, normalize_map_name
+from .local_search import map_label_terms, parse_local_query
+
+
+@dataclass(frozen=True, slots=True)
+class MapLabelHit:
+    layer: int
+    text: str
+    x: float
+    y: float
+    z: float
+    source_line: int
+    score: tuple
+    reason: str
+
+
+def _query_zone_matches(zone_map: ZoneMap, current_zone: str | None, requested_zone: str | None) -> bool:
+    if not requested_zone:
+        return True
+    requested = requested_zone
+    if requested.casefold() == "current":
+        requested = current_zone or ""
+    if not requested:
+        return False
+    wanted = normalize_map_name(requested)
+    current = normalize_map_name(current_zone or "")
+    stem = normalize_map_name(zone_map.stem)
+    return bool(wanted and (wanted == current or wanted == stem))
+
+
+def _fuzzy_similarity(left: str, right: str) -> float:
+    left = normalize_name(left)
+    right = normalize_name(right)
+    if not left or not right or left[:1] != right[:1]:
+        return 0.0
+    best = SequenceMatcher(None, left, right).ratio()
+    left_words = [word for word in left.split() if len(word) >= 5]
+    right_words = [word for word in right.split() if len(word) >= 5]
+    for a in left_words:
+        for b in right_words:
+            if a[:1] != b[:1] or abs(len(a) - len(b)) > 2:
+                continue
+            best = max(best, SequenceMatcher(None, a, b).ratio())
+    return best
+
+
+def find_map_label_hits(
+    zone_map: ZoneMap | None,
+    raw_query: str,
+    *,
+    current_zone: str | None = None,
+    enabled_layers: list[int] | tuple[int, ...] | None = None,
+    limit: int = 40,
+) -> list[MapLabelHit]:
+    """Search selectable P-record labels from the currently loaded local map.
+
+    Map labels are evidence, not normalized knowledge entities. Structured filters are
+    accepted so a query copied from Knowledge/Search can still surface a map candidate.
+    ``type:`` is intentionally not asserted against the label because map files do not
+    encode entity type. If there is no direct label match, a conservative fuzzy pass can
+    suggest a likely NPC/name typo while keeping it explicitly marked as unclassified
+    map evidence rather than a normalized DB match.
+    """
+    if zone_map is None:
+        return []
+    query = parse_local_query(raw_query)
+    if not _query_zone_matches(zone_map, current_zone, query.zone):
+        return []
+    if query.source:
+        source = normalize_name(query.source)
+        if not any(token in source for token in ("map", "good", "brewall", "everquest")):
+            return []
+
+    text = query.text.strip()
+    if not text:
+        return []
+    raw_needles = [value for value in map_label_terms(text) if value]
+    needles = [normalize_name(value) for value in raw_needles]
+    needles = [value for value in needles if value]
+    if not needles:
+        return []
+
+    wanted_layers = set(enabled_layers) if enabled_layers is not None else set(zone_map.layers)
+    direct_hits: list[MapLabelHit] = []
+    fuzzy_hits: list[MapLabelHit] = []
+    allow_fuzzy = not query.kinds or "npc" in query.kinds
+
+    for layer_no in sorted(wanted_layers):
+        layer = zone_map.layers.get(layer_no)
+        if layer is None:
+            continue
+        for point in layer.points:
+            raw_variants = [value for value in map_label_terms(point.display_text) if value]
+            variants = [normalize_name(value) for value in raw_variants]
+            variants = [value for value in variants if value]
+            if not variants:
+                continue
+
+            best: tuple | None = None
+            reason = ""
+            for needle in needles:
+                if needle in variants:
+                    candidate = (0, len(point.display_text), layer_no, point.source_line)
+                    candidate_reason = "map label exact"
+                elif any(value.startswith(needle) or needle.startswith(value) for value in variants):
+                    candidate = (1, len(point.display_text), layer_no, point.source_line)
+                    candidate_reason = "map label prefix"
+                elif any(needle in value or value in needle for value in variants):
+                    candidate = (2, len(point.display_text), layer_no, point.source_line)
+                    candidate_reason = "map label contains"
+                else:
+                    continue
+                if best is None or candidate < best:
+                    best = candidate
+                    reason = candidate_reason
+            if best is not None:
+                if query.kinds:
+                    reason += " · type unclassified"
+                direct_hits.append(MapLabelHit(
+                    layer=layer_no, text=point.display_text,
+                    x=float(point.x), y=float(point.y), z=float(point.z),
+                    source_line=int(point.source_line), score=best, reason=reason,
+                ))
+                continue
+
+            if allow_fuzzy:
+                similarity = max(
+                    (_fuzzy_similarity(needle, variant) for needle in needles for variant in variants),
+                    default=0.0,
+                )
+                if similarity >= 0.74:
+                    fuzzy_reason = f"map label fuzzy suggestion {similarity:.0%}"
+                    if query.kinds:
+                        fuzzy_reason += " · type unclassified"
+                    fuzzy_hits.append(MapLabelHit(
+                        layer=layer_no, text=point.display_text,
+                        x=float(point.x), y=float(point.y), z=float(point.z),
+                        source_line=int(point.source_line),
+                        score=(3, -similarity, len(point.display_text), layer_no, point.source_line),
+                        reason=fuzzy_reason,
+                    ))
+
+    direct_hits.sort(key=lambda hit: hit.score)
+    if direct_hits:
+        return direct_hits[: max(1, int(limit))]
+    fuzzy_hits.sort(key=lambda hit: hit.score)
+    return fuzzy_hits[: max(1, int(limit))]
+''', encoding='utf-8')
+
+      - name: Wire Open in Knowledge navigation
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('eqquest/mapview.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''        set_zone: Callable[[str], None] | None = None,
+              on_entity: Callable[[int], None] | None = None,
+          ):
+          '''.replace('\n          ', '\n')
+          new = '''        set_zone: Callable[[str], None] | None = None,
+              on_entity: Callable[[int], None] | None = None,
+              on_knowledge_search: Callable[[str], None] | None = None,
+          ):
+          '''.replace('\n          ', '\n')
+          if old not in s:
+              raise SystemExit('constructor signature anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''        self.set_zone_callback = set_zone
+              self.on_entity = on_entity
+          '''.replace('\n              ', '\n')
+          new = '''        self.set_zone_callback = set_zone
+              self.on_entity = on_entity
+              self.on_knowledge_search = on_knowledge_search
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('callback state anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''        self._lookup_entity_by_item: dict[str, int] = {}
+              self._lookup_selected_entity: int | None = None
+          '''.replace('\n              ', '\n')
+          new = '''        self._lookup_entity_by_item: dict[str, int] = {}
+              self._lookup_map_hit_by_item: dict[str, MapLabelHit] = {}
+              self._lookup_selected_entity: int | None = None
+              self._lookup_selected_map_hit: MapLabelHit | None = None
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('lookup state anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''        self.lookup_tree.delete(*self.lookup_tree.get_children())
+              self._lookup_entity_by_item.clear()
+              self._lookup_selected_entity = None
+              if not hits:
+                  map_hits = self.map_label_matches(term, limit=20)
+                  if map_hits:
+                      for index, hit in enumerate(map_hits):
+                          self.lookup_tree.insert(
+                              "", "end", iid=f"maplabel:{index}", text=hit.text,
+                              values=("map label", hit.reason),
+                          )
+                      self.lookup_status.set(
+                          f"No normalized DB entity; {len(map_hits)} current-map label candidate" +
+                          ("s" if len(map_hits) != 1 else "")
+                      )
+                      self._set_lookup_detail(self._map_label_detail_text(map_hits[0]))
+                      return
+          '''.replace('\n              ', '\n')
+          new = '''        self.lookup_tree.delete(*self.lookup_tree.get_children())
+              self._lookup_entity_by_item.clear()
+              self._lookup_map_hit_by_item.clear()
+              self._lookup_selected_entity = None
+              self._lookup_selected_map_hit = None
+              if not hits:
+                  map_hits = self.map_label_matches(term, limit=20)
+                  if map_hits:
+                      for index, hit in enumerate(map_hits):
+                          iid = f"maplabel:{index}"
+                          self.lookup_tree.insert(
+                              "", "end", iid=iid, text=hit.text,
+                              values=("map label", hit.reason),
+                          )
+                          self._lookup_map_hit_by_item[iid] = hit
+                      first = self.lookup_tree.get_children()[0]
+                      self.lookup_tree.selection_set(first)
+                      self.lookup_tree.focus(first)
+                      self.lookup_tree.see(first)
+                      self._lookup_selected_map_hit = self._lookup_map_hit_by_item[first]
+                      self.lookup_status.set(
+                          f"No normalized DB entity; {len(map_hits)} current-map label candidate" +
+                          ("s" if len(map_hits) != 1 else "")
+                      )
+                      self._set_lookup_detail(self._map_label_detail_text(self._lookup_selected_map_hit))
+                      return
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('map no-hit anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''        self._lookup_selected_entity = entity_id
+              relationships = list(self.db.relationships_for_entity(entity_id))
+          '''.replace('\n              ', '\n')
+          new = '''        self._lookup_selected_entity = entity_id
+              self._lookup_selected_map_hit = None
+              relationships = list(self.db.relationships_for_entity(entity_id))
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('show entity state anchor missing')
+          s = s.replace(old, new, 1)
+
+          start = s.index('    def _lookup_tree_selected(self, _event=None) -> None:')
+          end = s.index('    # ------------------------------------------------------------------\n    # Map-only visual themes', start)
+          block = '''    def _lookup_tree_selected(self, _event=None) -> None:
+              sel = self.lookup_tree.selection()
+              if not sel:
+                  return
+              item = sel[0]
+              map_hit = self._lookup_map_hit_by_item.get(item)
+              if map_hit is not None:
+                  self._lookup_selected_entity = None
+                  self._lookup_selected_map_hit = map_hit
+                  self._set_lookup_detail(self._map_label_detail_text(map_hit))
+                  return
+              entity_id = self._lookup_entity_by_item.get(item)
+              if entity_id is None:
+                  return
+              self._show_entity_info(entity_id, tree_item=item)
+
+          def _open_lookup_in_knowledge(self, _event=None) -> None:
+              if self._lookup_selected_entity is not None and self.on_entity:
+                  self.on_entity(self._lookup_selected_entity)
+                  return
+              term = ""
+              if self._lookup_selected_map_hit is not None:
+                  term = self._lookup_selected_map_hit.text
+              else:
+                  term = self.lookup_query.get().strip()
+              if term and self.on_knowledge_search:
+                  self.on_knowledge_search(term)
+
+          '''
+          s = s[:start] + block + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+      - name: Make Knowledge callback switch tabs
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('eqquest/app.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''            on_entity=self._map_entity_selected,
+              )
+          '''.replace('\n              ', '\n')
+          new = '''            on_entity=self._map_entity_selected,
+                  on_knowledge_search=self._map_label_to_knowledge,
+              )
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('MapViewer callback anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = '''        self.entity_tree.see(iid)
+              self._show_entity()
+
+              def _build_knowledge(self):
+          '''.replace('\n              ', '\n')
+          new = '''        self.entity_tree.see(iid)
+              self._show_entity()
+              self.notebook.select(self.knowledge_tab)
+
+              def _map_label_to_knowledge(self, term: str) -> None:
+                  self.search_var.set(term)
+                  self.kind_var.set("all")
+                  self._search_knowledge()
+                  self.notebook.select(self.knowledge_tab)
+
+              def _build_knowledge(self):
+          '''.replace('\n              ', '\n')
+          if old not in s:
+              raise SystemExit('map entity navigation anchor missing')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+      - name: Extend regression tests
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('tests/test_map_search.py')
+          s = p.read_text(encoding='utf-8')
+          marker = '''    def test_wrong_zone_does_not_match(self):
+          '''
+          addition = '''    def test_typo_can_suggest_current_map_label(self):
+              tmp, zone_map = self._map()
+              try:
+                  hits = find_map_label_hits(
+                      zone_map,
+                      'type:npc zone:"Stone Hive" Waning',
+                      current_zone="Stone Hive",
+                  )
+                  self.assertTrue(hits)
+                  self.assertEqual(hits[0].text, "Warwing Wendlez (Q)")
+                  self.assertIn("fuzzy suggestion", hits[0].reason)
+              finally:
+                  tmp.cleanup()
+
+              def test_spell_filter_does_not_fuzzy_guess_unclassified_npc_label(self):
+                  tmp, zone_map = self._map()
+                  try:
+                      hits = find_map_label_hits(zone_map, 'type:spell "Waning"', current_zone="Stone Hive")
+                      self.assertEqual(hits, [])
+                  finally:
+                      tmp.cleanup()
+
+          '''.replace('\n              ', '\n')
+          if marker not in s:
+              raise SystemExit('map search test marker missing')
+          s = s.replace(marker, addition + marker, 1)
+          p.write_text(s, encoding='utf-8')
+
+      - name: Compile and test
+        run: |
+          python -m compileall -q eqquest EverQuestie.py
+          python -m unittest discover -s tests -v
+
+      - name: Commit integration
+        run: |
+          git config user.name "EverQuestie Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add eqquest/map_search.py eqquest/mapview.py eqquest/app.py tests/test_map_search.py
+          git rm .github/workflows/apply-map-knowledge-nav.yml
+          git commit -m "Open map lookups in Knowledge and suggest label typos"
+          git push

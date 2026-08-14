@@ -1,0 +1,246 @@
+name: Apply exact map zoom cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-exact-map-zoom-cache.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch exact zoom rasters
+        shell: python
+        run: |
+          from pathlib import Path
+
+          # ---------------- mapraster.py ----------------
+          p = Path('eqquest/mapraster.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '    # Lower-resolution wall rasters built once from the same vectors.\n    mip_levels: int = 0\n'
+          new = (
+              '    # Exact display levels to build from the original vectors. Each tuple is\n'
+              '    # (display_level, ratio_to_this_request). No Tk downsampling is needed.\n'
+              '    exact_levels: tuple[tuple[float, float], ...] = ()\n'
+          )
+          if old not in s:
+              raise SystemExit('RasterRequest mip field not found')
+          s = s.replace(old, new, 1)
+
+          old = '    # (divisor, PPM bytes): 2=half size, 4=quarter size, etc.\n    mipmaps: tuple[tuple[int, bytes], ...] = ()\n'
+          new = (
+              '    # (display zoom level, PPM bytes), each independently rasterized from vectors.\n'
+              '    exact_rasters: tuple[tuple[float, bytes], ...] = ()\n'
+          )
+          if old not in s:
+              raise SystemExit('RasterResult mip field not found')
+          s = s.replace(old, new, 1)
+
+          start = s.index('    mipmaps: list[tuple[int, bytes]] = []\n')
+          end = s.index('\n    return RasterResult(', start)
+          replacement = '''    exact_rasters: list[tuple[float, bytes]] = []
+              for zoom_level, ratio in req.exact_levels:
+                  zoom_level = float(zoom_level)
+                  ratio = float(ratio)
+                  if ratio <= 0.0:
+                      continue
+                  if abs(ratio - 1.0) < 1e-12:
+                      exact_rasters.append((zoom_level, ppm))
+                      continue
+                  exact_req = RasterRequest(
+                      generation=req.generation,
+                      zone_map=req.zone_map,
+                      canvas_width=max(1, int(round(req.canvas_width * ratio))),
+                      canvas_height=max(1, int(round(req.canvas_height * ratio))),
+                      buffer_px=max(0, int(round(req.buffer_px * ratio))),
+                      scale=req.scale * ratio,
+                      offset_x=req.offset_x * ratio,
+                      offset_y=req.offset_y * ratio,
+                      enabled_layers=req.enabled_layers,
+                      theme_id=req.theme_id,
+                      elevation_enabled=req.elevation_enabled,
+                      elevation_z=req.elevation_z,
+                      elevation_span=req.elevation_span,
+                      line_width=max(1, int(round(req.line_width * ratio))),
+                      exact_levels=(),
+                  )
+                  exact_result = render_map_raster(exact_req)
+                  exact_rasters.append((zoom_level, exact_result.ppm))
+          '''
+          import textwrap
+          replacement = textwrap.dedent(replacement)
+          s = s[:start] + replacement + s[end:]
+          if '        mipmaps=tuple(mipmaps),\n' not in s:
+              raise SystemExit('RasterResult mip return not found')
+          s = s.replace('        mipmaps=tuple(mipmaps),\n', '        exact_rasters=tuple(exact_rasters),\n', 1)
+          p.write_text(s, encoding='utf-8')
+
+          # ---------------- mapview.py ----------------
+          p = Path('eqquest/mapview.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('from fractions import Fraction\n', '', 1)
+
+          old = '''        self._wall_scaled_cache: dict[tuple[int, int, int], tk.PhotoImage] = {}
+              self._wall_mip_photos: dict[int, tk.PhotoImage] = {}
+          '''
+          old = textwrap.dedent(old)
+          old = ''.join(('        ' + line if line.strip() else line) for line in old.splitlines(True))
+          new = '''        # Exact vector-derived wall images keyed by the discrete map zoom level.
+              # Zoom never rescales an image: it only swaps one cached PhotoImage.
+              self._wall_exact_photos: dict[float, tk.PhotoImage] = {}
+          '''
+          new = textwrap.dedent(new)
+          new = ''.join(('        ' + line if line.strip() else line) for line in new.splitlines(True))
+          if old not in s:
+              raise SystemExit('viewer wall cache declaration not found')
+          s = s.replace(old, new, 1)
+
+          old = '        self._wall_scaled_cache.clear()\n        self._wall_mip_photos.clear()\n'
+          if old not in s:
+              raise SystemExit('viewer cache reset not found')
+          s = s.replace(old, '        self._wall_exact_photos.clear()\n', 1)
+
+          old = '            line_width=factor,\n            mip_levels=3,\n            elevation_enabled=enabled_z,\n'
+          new = (
+              '            line_width=factor,\n'
+              '            # Build each supported zoom level directly from vector geometry.\n'
+              '            # A zoom action later only swaps the matching cached image.\n'
+              '            exact_levels=tuple((level, level / factor) for level in MAP_ZOOM_LEVELS),\n'
+              '            elevation_enabled=enabled_z,\n'
+          )
+          if old not in s:
+              raise SystemExit('viewer RasterRequest zoom field not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        self._raster_photo = photo
+              self._display_photo = None
+              self._wall_scaled_cache.clear()
+              self._wall_mip_photos = {1: photo}
+              for divisor, mip_ppm in result.mipmaps:
+                  try:
+                      self._wall_mip_photos[int(divisor)] = tk.PhotoImage(data=mip_ppm, format="PPM")
+                  except tk.TclError:
+                      continue
+          '''
+          old = textwrap.dedent(old)
+          old = ''.join(('        ' + line if line.strip() else line) for line in old.splitlines(True))
+          new = '''        self._raster_photo = photo
+              self._display_photo = None
+              self._wall_exact_photos = {float(factor): photo}
+              for zoom_level, zoom_ppm in result.exact_rasters:
+                  level = float(zoom_level)
+                  if abs(level - float(factor)) < 1e-12:
+                      continue
+                  try:
+                      self._wall_exact_photos[level] = tk.PhotoImage(data=zoom_ppm, format="PPM")
+                  except tk.TclError:
+                      continue
+          '''
+          new = textwrap.dedent(new)
+          new = ''.join(('        ' + line if line.strip() else line) for line in new.splitlines(True))
+          if old not in s:
+              raise SystemExit('viewer raster install cache block not found')
+          s = s.replace(old, new, 1)
+
+          start = s.index('    def _scaled_wall_photo(self) -> tk.PhotoImage | None:')
+          end = s.index('    def _refresh_wall_display(self) -> None:', start)
+          replacement = '''    def _scaled_wall_photo(self) -> tk.PhotoImage | None:
+              """Return the exact vector-derived image for the current discrete zoom.
+
+              MAP_ZOOM_LEVELS is discrete, so there is no reason to resample map
+              geometry at interaction time. This deliberately contains no Tk
+              ``zoom``/``subsample`` operation.
+              """
+              if not self._wall_exact_photos:
+                  return self._raster_photo
+              current_level = self.scale / max(self._wall_fit_scale, 1e-9)
+              level = min(self._wall_exact_photos, key=lambda value: abs(value - current_level))
+              return self._wall_exact_photos[level]
+
+          '''
+          replacement = textwrap.dedent(replacement)
+          replacement = ''.join(('    ' + line if line.strip() else line) for line in replacement.splitlines(True))
+          s = s[:start] + replacement + s[end:]
+
+          old = '                f"{result.source_lines:,} source lines | {factor}x source image"\n'
+          new = '                f"{result.source_lines:,} source lines | {len(self._wall_exact_photos)} exact zoom images"\n'
+          if old not in s:
+              raise SystemExit('viewer map status line not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s, encoding='utf-8')
+
+          # ---------------- regression tests ----------------
+          p = Path('tests/test_mapraster.py')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('    def test_vector_mips_keep_diagonal_continuous(self) -> None:')
+          end = s.index('\nif __name__ ==', start)
+          test = '''    def test_exact_zoom_rasters_keep_diagonal_continuous(self) -> None:
+              layer = MapLayer(0, Path('diagonal.txt'))
+              layer.lines.append(MapLine(0, 0, 0, 31, 31, 0, 255, 0, 0))
+              zone = ZoneMap('diagonal', Path('.'), {0: layer})
+              req = RasterRequest(
+                  generation=9,
+                  zone_map=zone,
+                  canvas_width=128,
+                  canvas_height=128,
+                  buffer_px=0,
+                  scale=4.0,
+                  offset_x=0.0,
+                  offset_y=0.0,
+                  enabled_layers=(0,),
+                  theme_id=MAP_THEME_STONE,
+                  line_width=4,
+                  exact_levels=((0.5, 0.125), (0.75, 0.1875), (1.0, 0.25), (4.0, 1.0)),
+              )
+              result = render_map_raster(req)
+              self.assertEqual([level for level, _ppm in result.exact_rasters], [0.5, 0.75, 1.0, 4.0])
+              background = bytes(map_background_rgb(MAP_THEME_STONE))
+              for level, ppm in result.exact_rasters:
+                  _magic, dims, _maximum, pixels = ppm.split(b'\\n', 3)
+                  width, height = map(int, dims.split())
+                  # A diagonal rasterized directly at each requested level must
+                  # retain a wall pixel in each traversed row; no sampled dash pattern.
+                  active_rows = 0
+                  for y in range(height):
+                      row = pixels[y * width * 3:(y + 1) * width * 3]
+                      if any(row[x:x + 3] != background for x in range(0, len(row), 3)):
+                          active_rows += 1
+                  self.assertGreater(active_rows, 1, f'zoom {level} lost the diagonal')
+
+          '''
+          test = textwrap.dedent(test)
+          test = ''.join(('    ' + line if line.strip() else line) for line in test.splitlines(True))
+          s = s[:start] + test + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+      - name: Compile and test
+        run: |
+          python -m compileall -q eqquest EverQuestie.py
+          python -m unittest discover -s tests -v
+          grep -q 'exact_levels=tuple((level, level / factor) for level in MAP_ZOOM_LEVELS)' eqquest/mapview.py
+          if grep -A20 'def _scaled_wall_photo' eqquest/mapview.py | grep -q -- '-subsample'; then
+            echo 'Tk subsample still present in zoom display path' >&2
+            exit 1
+          fi
+
+      - name: Commit exact zoom cache
+        run: |
+          git config user.name "EverQuestie Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add eqquest/mapview.py eqquest/mapraster.py tests/test_mapraster.py
+          git rm .github/workflows/apply-exact-map-zoom-cache.yml
+          git commit -m "Cache exact vector raster for every map zoom level"
+          git push

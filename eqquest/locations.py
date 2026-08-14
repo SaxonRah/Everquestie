@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from .db import Database
@@ -242,3 +243,129 @@ def location_evidence_for_term(
     if entity is None:
         return None, status, []
     return entity, status, location_evidence_for_entity(db, int(entity["id"]))
+
+
+def _display_label(value: str) -> str:
+    return " ".join((value or "").replace("_", " ").split()).strip()
+
+
+def _location_line(location: LocationEvidence, *, prefix: str = "") -> str:
+    zone = location.zone_name or "unknown zone"
+    coordinate = location.loc_text or "location known"
+    label = _display_label(location.label)
+    details = [zone, coordinate]
+    if label:
+        details.append(label)
+    if location.source_label:
+        details.append(location.source_label)
+    return prefix + " | ".join(details)
+
+
+def where_text(db: Database, entity_id: int, current_zone: str | None = None) -> str:
+    """Render WHERE using every confirmed location source through one API.
+
+    This is the player-facing migration path from the old provider-only
+    ``Database.locations_for_entity`` calls. It preserves source provenance and includes
+    only map labels whose canonical entity link was confirmed by reconciliation.
+    """
+    entity = db.entity(entity_id)
+    if not entity:
+        return "Entity not found."
+
+    lines = [f"WHERE | [{entity['kind']}] {entity['name']}"]
+    locations = location_evidence_for_entity(db, entity_id)
+
+    if entity["kind"] == "zone":
+        lines.append(f"Zone: {entity['name']}")
+        for target in db.relationship_targets(entity_id, "connected_to"):
+            try:
+                rel_data = json.loads(target["relationship_data_json"] or "{}")
+            except json.JSONDecodeError:
+                rel_data = {}
+            direction = rel_data.get("direction")
+            lines.append(
+                f"Connects: {target['name']}" + (f" | {direction}" if direction else "")
+            )
+    elif entity["zone"]:
+        lines.append(f"Zone: {entity['zone']}")
+
+    for location in locations:
+        lines.append(_location_line(location))
+
+    if entity["kind"] == "item":
+        for relation, preferred_label in (
+            ("drops_from", "quest target"),
+            ("turn_in_to", "turn-in"),
+        ):
+            relation_name = "Drops from" if relation == "drops_from" else "Turn in to"
+            for target in db.relationship_targets(entity_id, relation):
+                target_locations = location_evidence_for_entity(db, int(target["id"]))
+                preferred = [
+                    location
+                    for location in target_locations
+                    if location.label.casefold() == preferred_label
+                ]
+                if preferred:
+                    target_locations = preferred
+                if target_locations:
+                    for location in target_locations:
+                        lines.append(
+                            _location_line(
+                                location,
+                                prefix=f"{relation_name}: {target['name']} | ",
+                            )
+                        )
+                else:
+                    try:
+                        rel_data = json.loads(target["relationship_data_json"] or "{}")
+                    except json.JSONDecodeError:
+                        rel_data = {}
+                    zone = rel_data.get("zone")
+                    lines.append(
+                        f"{relation_name}: {target['name']}" + (f" | {zone}" if zone else "")
+                    )
+
+        direct_zones = [
+            zone["name"] for zone in db.relationship_targets(entity_id, "found_in")
+        ]
+        if direct_zones:
+            lines.append("Found in zones: " + ", ".join(dict.fromkeys(direct_zones)))
+
+    if entity["kind"] == "quest":
+        for starter in db.relationship_targets(entity_id, "started_by"):
+            starter_locations = location_evidence_for_entity(db, int(starter["id"]))
+            preferred = [
+                location
+                for location in starter_locations
+                if location.label.casefold() == "quest starter"
+            ]
+            if preferred:
+                starter_locations = preferred
+            for location in starter_locations:
+                lines.append(
+                    _location_line(
+                        location,
+                        prefix=f"Starter: {starter['name']} | ",
+                    )
+                )
+
+    if len(lines) == 1:
+        zones: list[str] = []
+        for relation in db.relationships_for_entity(entity_id):
+            if relation["relation"] != "occurs_in":
+                continue
+            zone_name = (
+                relation["target_name"]
+                if relation["direction"] == "out"
+                else relation["source_name"]
+            )
+            zones.append(zone_name)
+        if zones:
+            lines.append("Related zone: " + ", ".join(dict.fromkeys(zones)))
+        else:
+            lines.append("No confirmed location is known yet.")
+
+    if current_zone:
+        lines.append(f"Current zone: {current_zone}")
+
+    return "\n".join(lines)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from eqquest.mechanics_context import (
     ACMitigationContext,
@@ -10,7 +12,11 @@ from eqquest.mechanics_context import (
     MechanicsSource,
     SkillCapContext,
 )
-from eqquest.mechanics_context_ui import mechanics_context_summary, mechanics_skill_rows
+from eqquest.mechanics_context_ui import (
+    MechanicsContextFrame,
+    mechanics_context_summary,
+    mechanics_skill_rows,
+)
 from eqquest.runtime_policy import install_runtime_policy
 
 
@@ -100,12 +106,43 @@ class MechanicsContextUITests(unittest.TestCase):
         self.assertEqual(rows[0], ("Triple Attack", 25, "cap changed", "EverQuest Client live-client"))
         self.assertEqual(rows[1], ("1H Blunt", 250, "from level 60", "EverQuest Client live-client"))
 
+    def test_spell_selection_delegates_to_canonical_stacking_renderer(self):
+        rendered: list[tuple[object, str]] = []
+        db = object()
+        fake = SimpleNamespace(
+            db=db,
+            spell_tree=SimpleNamespace(selection=lambda: ("spell-row",)),
+            _spell_entity_by_item={"spell-row": 42},
+            stacking_text=object(),
+            _set_text=lambda widget, text: rendered.append((widget, text)),
+        )
+        with patch(
+            "eqquest.mechanics_context_ui.spell_stacking_text",
+            return_value="canonical stacking sentinel",
+        ) as renderer:
+            MechanicsContextFrame._spell_selected(fake)
+
+        renderer.assert_called_once_with(db, 42)
+        self.assertEqual(rendered, [(fake.stacking_text, "canonical stacking sentinel")])
+
+    def test_spell_selection_without_selection_does_not_query_context(self):
+        fake = SimpleNamespace(
+            db=object(),
+            spell_tree=SimpleNamespace(selection=lambda: ()),
+            _spell_entity_by_item={},
+            stacking_text=object(),
+            _set_text=lambda *_args: self.fail("no text should be written"),
+        )
+        with patch("eqquest.mechanics_context_ui.spell_stacking_text") as renderer:
+            MechanicsContextFrame._spell_selected(fake)
+        renderer.assert_not_called()
+
     def test_packaged_runtime_substitutes_context_backed_mechanics_frame(self):
         install_runtime_policy()
         from eqquest import app as app_module
-        from eqquest.mechanics_context_ui import MechanicsContextFrame
+        from eqquest.mechanics_context_ui import MechanicsContextFrame as RuntimeMechanicsFrame
 
-        self.assertIs(app_module.MechanicsFrame, MechanicsContextFrame)
+        self.assertIs(app_module.MechanicsFrame, RuntimeMechanicsFrame)
 
 
 if __name__ == "__main__":

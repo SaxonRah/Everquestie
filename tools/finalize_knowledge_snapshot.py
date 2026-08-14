@@ -55,6 +55,14 @@ def main() -> int:
         )
     )
     print(
+        "zone coverage: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.zone_coverage.items()
+            if not name.startswith("zones_without_")
+        )
+    )
+    print(
         "map reconciliation: "
         + ", ".join(f"{name}={count}" for name, count in report.map_reconciliation.items())
     )

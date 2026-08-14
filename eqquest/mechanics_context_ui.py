@@ -4,9 +4,34 @@ import tkinter as tk
 from tkinter import ttk
 
 from .mechanics import MechanicsFrame
-from .mechanics_catalog import EQ_CLASS_VOCABULARY
+from .mechanics_catalog import (
+    EQ_CLASS_VOCABULARY,
+    MECHANICS_CATALOG_VERSION,
+    MechanicsCatalog,
+)
 from .mechanics_context import ClassMechanicsContext, build_class_mechanics_context
 from .spell_stacking_context import spell_stacking_text
+
+
+def ensure_builder_mechanics_catalog(db) -> bool:
+    """Backfill deterministic mechanics identities in an existing writable builder DB.
+
+    Release finalization already reconciles this catalog on the snapshot copy.  Older
+    source-checkout databases can therefore contain all raw client support rows while
+    still lacking the canonical class/skill identities the modern Mechanics UI reads.
+    This compatibility ensure is deliberately builder-only and source-independent: it
+    does not scan the EQ install or any mirror and never runs against immutable runtime
+    knowledge.
+    """
+    if not getattr(db, "knowledge_writable", True):
+        return False
+    version = db.get_meta("mechanics_catalog_version", "")
+    warrior = db.entity_by_namespaced_external_id("eqclient:class", "1")
+    if version == MECHANICS_CATALOG_VERSION and warrior is not None:
+        return False
+    with db.batch():
+        MechanicsCatalog(db).reconcile()
+    return True
 
 
 def mechanics_context_summary(context: ClassMechanicsContext) -> str:
@@ -58,9 +83,10 @@ def mechanics_skill_rows(context: ClassMechanicsContext) -> list[tuple[str, int,
 
 
 class MechanicsContextFrame(MechanicsFrame):
-    """Packaged mechanics browser backed by canonical read-only mechanics context."""
+    """Canonical mechanics browser shared by builder and packaged runtimes."""
 
     def __init__(self, master, *, db):
+        ensure_builder_mechanics_catalog(db)
         # Mirror the small state setup from MechanicsFrame so the Class/level tab can
         # start with canonical names rather than the legacy numeric display token.
         ttk.Frame.__init__(self, master, padding=8)

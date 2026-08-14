@@ -6,6 +6,7 @@ import json
 
 from .db import Database
 from .eqmap import normalize_map_name
+from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import SHORT_NAME_KEYS, ZoneIdentity, ZoneIdentityIndex
 
 
@@ -109,6 +110,7 @@ class ZoneMapCatalog:
             allow_significant_word=True,
             allow_containment=True,
         )
+        resolved = prefer_eqclient_zone_resolution(resolved, map_stem)
         if resolved.identity is not None:
             reason = {
                 "significant_word": "unique significant zone-name word",

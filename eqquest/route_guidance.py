@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .db import Database
 from .travel import TravelRouteResult, build_route_result
-from .zone_identity import resolve_zone
+from .zone_authority import resolve_authoritative_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +147,7 @@ def next_hop_for_zone(
     text = " ".join(str(zone_token or "").split()).strip()
     if not text:
         return None, "zone_unknown"
-    resolution = resolve_zone(db, text)
+    resolution = resolve_authoritative_zone(db, text)
     if resolution.identity is None:
         return None, "zone_ambiguous" if resolution.status == "ambiguous" else "zone_unknown"
     zone_id = resolution.identity.entity_id

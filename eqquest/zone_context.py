@@ -8,7 +8,8 @@ from .db import Database
 from .eqmap import map_to_game
 from .locations import LocationEvidence
 from .zone_catalog import ZoneMapBinding, ZoneMapCatalog
-from .zone_identity import ZoneIdentity, ZoneIdentityIndex
+from .zone_authority import resolve_authoritative_zone
+from .zone_identity import ZoneIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,7 +315,7 @@ def build_zone_context(
     therefore works against both the writable builder database and finalized packaged
     ``RuntimeDatabase`` views.
     """
-    resolution = ZoneIdentityIndex(db).resolve(zone_token)
+    resolution = resolve_authoritative_zone(db, zone_token)
     if resolution.identity is None:
         return None, resolution.status
 

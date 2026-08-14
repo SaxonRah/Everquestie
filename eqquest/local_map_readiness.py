@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .db import Database
 from .map_resolution import resolve_catalog_map_for_zone
-from .zone_identity import ZoneIdentityIndex
+from .runtime_zone_identity import resolve_runtime_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,8 +27,8 @@ class LocalMapReadiness:
 
 
 def _canonical_zone_hint(db: Database, zone_token: str) -> tuple[int | None, str, str, str]:
-    """Return canonical identity plus packaged short-name hint without writing state."""
-    resolution = ZoneIdentityIndex(db, include_map_bindings=True).resolve(zone_token)
+    """Return runtime canonical identity plus packaged short-name hint without writes."""
+    resolution = resolve_runtime_zone(db, zone_token, include_map_bindings=True)
     if resolution.identity is None:
         return None, "", "", resolution.status
     identity = resolution.identity
@@ -51,28 +51,20 @@ def resolve_local_map_readiness(
     *,
     bound_stem: str | None = None,
 ) -> LocalMapReadiness:
-    """Project whether one canonical zone can be rendered from a player's local pack.
+    """Project whether one live zone can be rendered from a player's local pack.
 
     This is a runtime/local-resource check only. It does not index map files, rebuild
     shipped bindings, or persist any player choice. ``bound_stem`` is supplied by the
     caller from user state when an explicit local override exists.
+
+    Canonical knowledge ambiguity does not automatically block rendering. The map
+    resolver may safely render shared geometry for duplicate literal zone names while
+    still leaving the underlying knowledge identities distinct. Alias ambiguity remains
+    a hard stop.
     """
     token = " ".join(str(zone_token or "").split()).strip()
     root_path = Path(root)
     entity_id, canonical_name, hinted_stem, identity_status = _canonical_zone_hint(db, token)
-
-    if identity_status == "ambiguous":
-        return LocalMapReadiness(
-            zone_token=token,
-            canonical_zone_entity_id=None,
-            canonical_zone_name="",
-            status="zone_ambiguous",
-            reason="canonical zone identity is ambiguous",
-            path=None,
-            candidates=(),
-            bound_stem=str(bound_stem or ""),
-            hinted_stem="",
-        )
 
     if not root_path.is_dir():
         return LocalMapReadiness(
@@ -112,6 +104,8 @@ def resolve_local_map_readiness(
         status = "zone_ambiguous"
     elif len(resolved.candidates) > 1:
         status = "map_ambiguous"
+    elif identity_status == "ambiguous":
+        status = "zone_ambiguous"
     else:
         status = "map_missing"
     return LocalMapReadiness(

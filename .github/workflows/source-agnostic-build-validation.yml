@@ -7,6 +7,8 @@ on:
     paths:
       - 'eqquest/knowledge_build.py'
       - 'tools/build_knowledge_db.py'
+      - 'tools/build_map_catalog.py'
+      - 'tools/finalize_knowledge_snapshot.py'
       - 'tests/test_knowledge_build.py'
       - 'tools/README.md'
       - '.github/workflows/source-agnostic-build-validation.yml'
@@ -25,7 +27,10 @@ jobs:
         run: python -m compileall -q eqquest tools tests EverQuestie.py
       - name: Import builder modules
         run: python -c "import eqquest.knowledge_build; import eqquest.knowledge_snapshot; print('builder imports OK')"
-      - name: Check builder CLI
-        run: python tools/build_knowledge_db.py --help > /dev/null
+      - name: Check documented builder CLIs
+        run: |
+          python tools/build_knowledge_db.py --help > /dev/null
+          python tools/build_map_catalog.py --help > /dev/null
+          python tools/finalize_knowledge_snapshot.py --help > /dev/null
       - name: Run regression suite
         run: python -m unittest discover -s tests -v

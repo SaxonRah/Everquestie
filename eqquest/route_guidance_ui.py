@@ -46,6 +46,32 @@ class RouteGuidanceFrame(TravelFrame):
             # resource check into a failure of canonical knowledge/navigation views.
             return None
 
+    def _emit_map_point(self, zone: str, point) -> bool:
+        """Preflight inherited Nearby map actions without teaching Travel about maps."""
+        readiness = RouteGuidanceFrame._local_readiness(self, zone)
+        label = TravelFrame._nearby_map_label(point)
+        if readiness is not None and not readiness.ready:
+            self.status_var.set(
+                f"Map target coordinate is confirmed for {zone}, but "
+                f"{local_map_readiness_text(readiness)}"
+            )
+            return False
+        if self.on_map_target is None:
+            self.status_var.set("Map targeting is not connected in this application surface.")
+            return False
+
+        self.on_map_target(zone, point.x, point.y, point.z, label)
+        local_suffix = (
+            f" | local map: {readiness.path.name}"
+            if readiness is not None and readiness.ready and readiness.path is not None
+            else ""
+        )
+        self.status_var.set(
+            f"Map target: {label} | {point.distance_text}{local_suffix}. "
+            "The Map tab owns local map selection, coordinate conversion and rendering."
+        )
+        return True
+
     def show_zone_context(self) -> None:
         """Render canonical zone knowledge plus source-safe route map actionability."""
         self._clear_nearby_points()

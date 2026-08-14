@@ -3,22 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
-import re
-from typing import Any
 
-from .db import Database, normalize_name
+from .db import Database
 from .eqmap import normalize_map_name
+from .zone_identity import SHORT_NAME_KEYS, ZoneIdentity, ZoneIdentityIndex
 
 
 ZONE_MAP_CATALOG_VERSION = "1"
-_SHORT_NAME_KEYS = (
-    "map_short_name",
-    "short_name",
-    "shortName",
-    "zone_short_name",
-    "zoneShortName",
-)
-_STOP_WORDS = {"the", "of", "a", "an", "and"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,15 +32,6 @@ class ZoneMapBindingStats:
     changed: int
 
 
-@dataclass(frozen=True, slots=True)
-class _ZoneSignals:
-    entity_id: int
-    name: str
-    normalized_name: str
-    exact_tokens: frozenset[str]
-    words: frozenset[str]
-
-
 class ZoneMapCatalog:
     """Canonical map-stem -> zone identity compiled into EverQuestie knowledge.
 
@@ -57,6 +39,9 @@ class ZoneMapCatalog:
     to expose display names. This catalog makes that join explicit and source-aware.
     It deliberately stores unresolved/ambiguous results rather than promoting fuzzy
     guesses into canonical identity.
+
+    Canonical identity signals are owned by :mod:`eqquest.zone_identity`; this class
+    only applies the builder-only map-stem inference policy and persists its evidence.
     """
 
     def __init__(self, db: Database):
@@ -103,118 +88,50 @@ class ZoneMapCatalog:
         ).fetchone() is not None
 
     @staticmethod
-    def _meaningful_words(value: str) -> set[str]:
-        return {
-            normalize_map_name(word)
-            for word in re.findall(r"[A-Za-z0-9`']+", value or "")
-            if normalize_map_name(word)
-            and normalize_map_name(word) not in _STOP_WORDS
-            and len(normalize_map_name(word)) >= 4
-        }
-
-    def _zone_signals(self) -> list[_ZoneSignals]:
-        aliases_by_entity: dict[int, list[str]] = {}
-        for row in self.db.conn.execute(
-            "SELECT entity_id,alias,alias_type FROM entity_aliases ORDER BY entity_id,id"
-        ).fetchall():
-            alias = str(row["alias"] or "").strip()
-            if not alias:
-                continue
-            # Numeric IDs are useful identity aliases, but never map-file names.
-            if alias.isdigit() or str(row["alias_type"] or "").casefold() == "eq_zone_id":
-                continue
-            aliases_by_entity.setdefault(int(row["entity_id"]), []).append(alias)
-
-        result: list[_ZoneSignals] = []
-        for row in self.db.conn.execute(
-            "SELECT id,name,normalized_name,data_json FROM entities "
-            "WHERE kind='zone' ORDER BY id"
-        ).fetchall():
-            entity_id = int(row["id"])
-            name = str(row["name"])
-            exact = {normalize_map_name(name)}
-            words = self._meaningful_words(name)
-            for alias in aliases_by_entity.get(entity_id, []):
-                token = normalize_map_name(alias)
-                if token:
-                    exact.add(token)
-                words.update(self._meaningful_words(alias))
-            try:
-                data: Any = json.loads(row["data_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data = {}
-            if isinstance(data, dict):
-                for key in _SHORT_NAME_KEYS:
-                    value = str(data.get(key) or "").strip()
-                    token = normalize_map_name(value)
-                    if token:
-                        exact.add(token)
-            exact.discard("")
-            result.append(
-                _ZoneSignals(
-                    entity_id=entity_id,
-                    name=name,
-                    normalized_name=str(row["normalized_name"] or normalize_name(name)),
-                    exact_tokens=frozenset(exact),
-                    words=frozenset(words),
-                )
-            )
-        return result
-
-    @staticmethod
-    def _unique(candidates: list[_ZoneSignals]) -> _ZoneSignals | None:
-        by_id = {candidate.entity_id: candidate for candidate in candidates}
-        return next(iter(by_id.values())) if len(by_id) == 1 else None
-
     def _resolve(
-        self,
         map_stem: str,
         existing_zone_name: str,
-        zones: list[_ZoneSignals],
-    ) -> tuple[_ZoneSignals | None, str, str]:
+        identities: ZoneIdentityIndex,
+    ) -> tuple[ZoneIdentity | None, str, str]:
         stem = normalize_map_name(map_stem)
         if not stem:
             return None, "unresolved", "empty map stem"
 
         if existing_zone_name:
-            normalized_existing = normalize_name(existing_zone_name)
-            existing = [z for z in zones if z.normalized_name == normalized_existing]
-            chosen = self._unique(existing)
-            if chosen is not None:
-                return chosen, "linked", "existing canonical map-zone name"
-            if len({z.entity_id for z in existing}) > 1:
+            existing = identities.resolve(existing_zone_name)
+            if existing.identity is not None:
+                return existing.identity, "linked", "existing canonical map-zone name"
+            if existing.status == "ambiguous":
                 return None, "ambiguous", "existing map-zone name matches multiple zones"
 
-        exact = [z for z in zones if stem in z.exact_tokens]
-        chosen = self._unique(exact)
-        if chosen is not None:
-            return chosen, "linked", "exact canonical name/alias/short-name match"
-        if len({z.entity_id for z in exact}) > 1:
-            return None, "ambiguous", f"map stem exactly matches {len({z.entity_id for z in exact})} zones"
+        # Historic map reconciliation intentionally did not treat numeric EQ zone IDs
+        # as map filenames. Keep that boundary even though the shared runtime identity
+        # service can resolve client IDs when a caller explicitly supplies one.
+        if map_stem.strip().isdigit():
+            return None, "unresolved", "numeric map stem is not a canonical map identity"
 
-        word = [z for z in zones if stem in z.words]
-        chosen = self._unique(word)
-        if chosen is not None:
-            return chosen, "linked", "unique significant zone-name word"
-        if len({z.entity_id for z in word}) > 1:
-            return None, "ambiguous", f"map stem is shared by {len({z.entity_id for z in word})} zone names"
-
-        # Containment is accepted only when it uniquely identifies one canonical
-        # exact token. It handles benign decoration such as map stems that append a
-        # numeric/variant suffix, while refusing broad fuzzy spelling guesses.
-        contained = [
-            z
-            for z in zones
-            if any(
-                len(token) >= 5 and (stem in token or token in stem)
-                for token in z.exact_tokens
+        resolved = identities.resolve(
+            map_stem,
+            allow_significant_word=True,
+            allow_containment=True,
+        )
+        if resolved.identity is not None:
+            reason = {
+                "significant_word": "unique significant zone-name word",
+                "containment": "unique canonical-name containment",
+            }.get(
+                resolved.match_kind,
+                "exact canonical name/alias/short-name match",
             )
-        ]
-        chosen = self._unique(contained)
-        if chosen is not None:
-            return chosen, "linked", "unique canonical-name containment"
-        if len({z.entity_id for z in contained}) > 1:
-            return None, "ambiguous", f"map stem overlaps {len({z.entity_id for z in contained})} zones"
+            return resolved.identity, "linked", reason
+
+        if resolved.status == "ambiguous":
+            count = len(resolved.candidates)
+            if resolved.match_kind == "significant_word":
+                return None, "ambiguous", f"map stem is shared by {count} zone names"
+            if resolved.match_kind == "containment":
+                return None, "ambiguous", f"map stem overlaps {count} zones"
+            return None, "ambiguous", f"map stem exactly matches {count} zones"
 
         return None, "unresolved", "no conservative canonical zone match"
 
@@ -254,7 +171,7 @@ class ZoneMapCatalog:
             catalog_owned = str(data.get("map_short_name_source") or "") == "zone_map_catalog"
             explicit_other_hint = any(
                 str(data.get(key) or "").strip()
-                for key in _SHORT_NAME_KEYS
+                for key in SHORT_NAME_KEYS
                 if key != "map_short_name"
             )
             normalized_stems = stems_by_zone.get(zone_id, {})
@@ -301,7 +218,11 @@ class ZoneMapCatalog:
             + " GROUP BY source_name,map_stem ORDER BY source_name,map_stem",
             args,
         ).fetchall()
-        zones = self._zone_signals()
+
+        # Do not feed the table being derived back into its own identity input. This
+        # prevents a stale zone_map_bindings row from preserving itself after stronger
+        # provider/client identity evidence changes.
+        identities = ZoneIdentityIndex(self.db, include_map_bindings=False)
         now = datetime.now().isoformat(timespec="seconds")
         linked = ambiguous = unresolved = changed = 0
         seen: set[tuple[str, str]] = set()
@@ -313,7 +234,7 @@ class ZoneMapCatalog:
                 version = str(row["source_version"] or "")
                 existing_name = str(row["zone_name"] or "")
                 seen.add((source, stem))
-                chosen, status, reason = self._resolve(stem, existing_name, zones)
+                chosen, status, reason = self._resolve(stem, existing_name, identities)
                 zone_id = chosen.entity_id if chosen is not None else None
                 zone_name = chosen.name if chosen is not None else existing_name
 

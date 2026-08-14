@@ -64,11 +64,23 @@ class ZoneIdentityIndex:
     Runtime callers use exact identity by default. Builder-only callers that must infer
     a map filename may opt into the same conservative significant-word/containment
     rules used by the historic map catalog. Ambiguity is always preserved.
+
+    ``include_derived_map_short_names`` separates finalized runtime knowledge from
+    builder inputs. Runtime/travel may consume the short-name hint derived from a
+    confirmed zone/map binding; map reconciliation itself disables that signal so a
+    previous derived binding cannot prove and perpetuate itself.
     """
 
-    def __init__(self, db, *, include_map_bindings: bool = True):
+    def __init__(
+        self,
+        db,
+        *,
+        include_map_bindings: bool = True,
+        include_derived_map_short_names: bool = True,
+    ):
         self.db = db
         self.include_map_bindings = bool(include_map_bindings)
+        self.include_derived_map_short_names = bool(include_derived_map_short_names)
         self._identities: dict[int, ZoneIdentity] = {}
         self._exact: dict[str, set[int]] = {}
         self._words: dict[str, set[int]] = {}
@@ -171,7 +183,16 @@ class ZoneIdentityIndex:
                 data = {}
             short_names: list[str] = []
             if isinstance(data, dict):
+                derived_map_short_name = (
+                    str(data.get("map_short_name_source") or "") == "zone_map_catalog"
+                )
                 for key in SHORT_NAME_KEYS:
+                    if (
+                        key == "map_short_name"
+                        and derived_map_short_name
+                        and not self.include_derived_map_short_names
+                    ):
+                        continue
                     value = str(data.get(key) or "").strip()
                     if value:
                         short_names.append(value)
@@ -353,9 +374,19 @@ class ZoneIdentityIndex:
         }
 
 
-def resolve_zone(db, value: str, *, include_map_bindings: bool = True) -> ZoneResolution:
+def resolve_zone(
+    db,
+    value: str,
+    *,
+    include_map_bindings: bool = True,
+    include_derived_map_short_names: bool = True,
+) -> ZoneResolution:
     """Resolve an exact zone identity without fuzzy/substring guessing."""
-    return ZoneIdentityIndex(db, include_map_bindings=include_map_bindings).resolve(value)
+    return ZoneIdentityIndex(
+        db,
+        include_map_bindings=include_map_bindings,
+        include_derived_map_short_names=include_derived_map_short_names,
+    ).resolve(value)
 
 
 def zone_identity_audit_text(db, *, detail_limit: int = 30) -> str:

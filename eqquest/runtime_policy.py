@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
@@ -122,8 +121,8 @@ def install_runtime_policy() -> None:
     state; it must never expose a path that recompiles the knowledge DB on the player's
     machine.
     """
+    from .local_map_readiness import resolve_local_map_readiness
     from .map_catalog import MapCatalog
-    from .map_resolution import resolve_catalog_map_for_zone
     from . import mapview as mapview_module
 
     if not getattr(MapCatalog.index_root, _MAP_POLICY_MARKER, False):
@@ -208,39 +207,36 @@ def install_runtime_policy() -> None:
                 self._navigation_target = None
                 self.canvas.delete("eqquest_navigation_target")
 
+            def local_map_readiness(self, zone: str):
+                """Expose local render readiness without leaking map internals to Travel."""
+                root = self.map_root.get().strip()
+                bound = self.db.get_meta(mapview_module._binding_key(zone), "")
+                return resolve_local_map_readiness(
+                    self.db,
+                    zone,
+                    root,
+                    bound_stem=bound,
+                )
+
             def load_current_zone(self) -> None:
                 if not self._packaged_runtime():
                     return super().load_current_zone()
 
                 zone = self.get_zone()
-                root = self.map_root.get().strip()
                 if not zone:
                     self.map_status.set("Current zone is not known from the log yet.")
                     return
-                if not root or not Path(root).is_dir():
-                    self.map_status.set("Choose a map pack folder first.")
-                    return
 
-                bound = self.db.get_meta(mapview_module._binding_key(zone), "")
-                hinted = None
-                zone_row, _ = self.db.resolve_entity(zone, "zone")
-                if zone_row is not None:
-                    try:
-                        data = json.loads(zone_row["data_json"] or "{}")
-                    except Exception:
-                        data = {}
-                    hinted = data.get("map_short_name") or data.get("short_name")
-
-                resolved = resolve_catalog_map_for_zone(
-                    self.db,
-                    zone,
-                    root,
-                    bound_stem=bound,
-                    hinted_stem=hinted,
-                )
-                if resolved.path is None:
-                    if resolved.candidates:
-                        choices = ", ".join(path.name for path in resolved.candidates[:6])
+                readiness = self.local_map_readiness(zone)
+                if not readiness.ready or readiness.path is None:
+                    if readiness.status == "root_unavailable":
+                        self.map_status.set("Choose a map pack folder first.")
+                    elif readiness.status == "zone_ambiguous":
+                        self.map_status.set(
+                            f"Canonical zone identity is ambiguous for {zone}; EverQuestie will not guess a local map."
+                        )
+                    elif readiness.status == "map_ambiguous":
+                        choices = ", ".join(path.name for path in readiness.candidates[:6])
                         self.map_status.set(
                             f"Multiple canonical maps are present for {zone}: {choices}. "
                             "Open the intended map once and press Bind zone."
@@ -254,8 +250,8 @@ def install_runtime_policy() -> None:
                     self._refresh_marker_list()
                     return
 
-                self.load_map(resolved.path)
-                self._base_map_status = f"{self._base_map_status} | {resolved.reason}"
+                self.load_map(readiness.path)
+                self._base_map_status = f"{self._base_map_status} | {readiness.reason}"
                 self.map_status.set(self._base_map_status)
 
         setattr(RuntimePolicyMapViewerFrame, _MAP_POLICY_MARKER, True)
@@ -317,6 +313,7 @@ def install_runtime_policy() -> None:
                 get_zone=lambda: self.state_model.current_zone,
                 get_location=lambda: self.state_model.last_location,
                 on_map_target=self._focus_navigation_map_target,
+                get_map_readiness=self.map_view.local_map_readiness,
             )
             # Live, Map, Travel, Knowledge, Mechanics keeps navigation-oriented
             # information close to the player's current location.

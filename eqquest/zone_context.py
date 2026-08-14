@@ -51,7 +51,7 @@ class ZoneConnection:
 
 @dataclass(frozen=True, slots=True)
 class ZoneLocatedEntity:
-    """One canonical entity plus one confirmed location-evidence statement."""
+    """One canonical non-zone entity plus one confirmed location statement."""
 
     entity_id: int
     name: str
@@ -168,7 +168,7 @@ def _provider_locations_in_zone(
         JOIN entities e ON e.id=l.entity_id
         JOIN entities z ON z.id=l.zone_entity_id
         LEFT JOIN source_pages sp ON sp.id=l.source_page_id
-        WHERE l.zone_entity_id=?
+        WHERE l.zone_entity_id=? AND e.kind<>'zone'
         ORDER BY e.kind,e.name,l.id
         LIMIT ?
         """,
@@ -235,6 +235,7 @@ def _map_locations_in_zone(
             WHERE zmb.zone_entity_id=?
               AND ml.link_status='linked'
               AND ml.linked_entity_id IS NOT NULL
+              AND e.kind<>'zone'
             ORDER BY e.kind,e.name,ms.source_name,ml.map_stem,ml.layer,ml.source_line
             LIMIT ?
             """,

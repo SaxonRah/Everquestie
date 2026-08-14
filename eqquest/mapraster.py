@@ -100,6 +100,10 @@ class RasterRequest:
     elevation_enabled: bool = False
     elevation_z: float = 0.0
     elevation_span: float = 150.0
+    # Width is expressed in raster pixels. A supersampled cached wall must scale
+    # its stroke width with the supersample factor; otherwise Tk's later subsample
+    # operation can simply skip 1-pixel lines and turn them into dots/dashes.
+    line_width: int = 1
 
 
 @dataclass(slots=True)
@@ -187,24 +191,47 @@ def _draw_line(
     x1: float,
     y1: float,
     color: RGB,
+    *,
+    line_width: int = 1,
 ) -> bool:
     clipped = _clip_line(x0, y0, x1, y1, width, height)
     if clipped is None:
         return False
 
     ix0, iy0, ix1, iy1 = (int(round(value)) for value in clipped)
-    dx = abs(ix1 - ix0)
+    dx_abs = abs(ix1 - ix0)
+    dy_abs = abs(iy1 - iy0)
+    dx = dx_abs
     sx = 1 if ix0 < ix1 else -1
-    dy = -abs(iy1 - iy0)
+    dy = -dy_abs
     sy = 1 if iy0 < iy1 else -1
     error = dx + dy
     r, g, b = color
+    stroke = max(1, int(line_width))
+    stroke_start = -(stroke // 2)
+    stroke_stop = stroke_start + stroke
+    # Paint across the minor axis. This costs O(stroke) rather than an O(stroke²)
+    # square brush while giving a continuous stroke that survives downsampling.
+    vertical_stroke = dx_abs >= dy_abs
 
     while True:
-        index = (iy0 * width + ix0) * 3
-        pixels[index] = r
-        pixels[index + 1] = g
-        pixels[index + 2] = b
+        if vertical_stroke:
+            for offset in range(stroke_start, stroke_stop):
+                py = iy0 + offset
+                if 0 <= ix0 < width and 0 <= py < height:
+                    index = (py * width + ix0) * 3
+                    pixels[index] = r
+                    pixels[index + 1] = g
+                    pixels[index + 2] = b
+        else:
+            for offset in range(stroke_start, stroke_stop):
+                px = ix0 + offset
+                if 0 <= px < width and 0 <= iy0 < height:
+                    index = (iy0 * width + px) * 3
+                    pixels[index] = r
+                    pixels[index + 1] = g
+                    pixels[index + 2] = b
+
         if ix0 == ix1 and iy0 == iy1:
             break
         twice = error * 2
@@ -270,7 +297,17 @@ def render_map_raster(req: RasterRequest) -> RasterResult:
             if color is None:
                 color = themed_map_rgb(req.theme_id, *key)
                 color_cache[key] = color
-            if _draw_line(pixels, width, height, x0, y0, x1, y1, color):
+            if _draw_line(
+                pixels,
+                width,
+                height,
+                x0,
+                y0,
+                x1,
+                y1,
+                color,
+                line_width=req.line_width,
+            ):
                 buffered_lines += 1
 
     header = f"P6\n{width} {height}\n255\n".encode("ascii")

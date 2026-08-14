@@ -224,6 +224,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
             map_root=_Var(str(local)),
             map_status=status,
             _base_map_status="Loaded stonehive",
+            _packaged_runtime=lambda: True,
             load_map=lambda path: loaded.append(Path(path)),
             _refresh_overlay_cache=lambda **_kwargs: None,
             _refresh_marker_list=lambda: None,

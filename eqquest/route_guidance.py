@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import Database
-from .travel import TravelRouteResult, _best_edge_for_hop, build_route_result
+from .travel import TravelRouteResult, build_route_result
 from .zone_identity import resolve_zone
 
 
@@ -48,10 +48,38 @@ class RouteGuidanceResult:
         return self.route.ok
 
 
+def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
+    """Choose deterministic hop evidence without hiding an actionable direct coordinate.
+
+    Direction ownership is the primary invariant: any direct source→target evidence
+    outranks reverse use of a bidirectional target→source row. Within the same
+    direction rank, prefer a row with X/Y so route guidance agrees with release
+    coverage's definition of a mappable source-side direction.
+    """
+    return db.conn.execute(
+        """
+        SELECT *,
+               CASE WHEN source_zone_entity_id=? AND target_zone_entity_id=?
+                    THEN 0 ELSE 1 END AS reverse_rank,
+               CASE WHEN x IS NOT NULL AND y IS NOT NULL THEN 0 ELSE 1 END AS coordinate_rank
+        FROM zone_travel_edges
+        WHERE status='linked' AND target_zone_entity_id IS NOT NULL
+          AND (
+              (source_zone_entity_id=? AND target_zone_entity_id=?)
+              OR
+              (bidirectional=1 AND source_zone_entity_id=? AND target_zone_entity_id=?)
+          )
+        ORDER BY reverse_rank,coordinate_rank,source_kind,source_name,source_key,id
+        LIMIT 1
+        """,
+        (source_id, target_id, source_id, target_id, target_id, source_id),
+    ).fetchone()
+
+
 def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuidance:
     source = db.entity(source_id)
     target = db.entity(target_id)
-    edge = _best_edge_for_hop(db, source_id, target_id)
+    edge = _best_guidance_edge_for_hop(db, source_id, target_id)
     source_name = str(source["name"]) if source is not None else f"zone {source_id}"
     target_name = str(target["name"]) if target is not None else f"zone {target_id}"
     if edge is None:

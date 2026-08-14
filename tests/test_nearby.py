@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 import tempfile
 import unittest
 
@@ -202,6 +202,10 @@ class NearbyNavigationTests(unittest.TestCase):
             status_var=SimpleNamespace(set=lambda value: statuses.append(str(value))),
             _nearby_map_label=TravelFrame._nearby_map_label,
         )
+        # map_nearest now shares the exact same emission path as Map selected. Bind
+        # that class helper onto the headless fake just as a real TravelFrame method is
+        # bound by Python's descriptor protocol.
+        fake._emit_map_point = MethodType(TravelFrame._emit_map_point, fake)
 
         TravelFrame.map_nearest(fake)
         self.assertEqual(len(emitted), 1)

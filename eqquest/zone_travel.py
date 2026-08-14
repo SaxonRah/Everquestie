@@ -218,7 +218,7 @@ class ZoneTravelCatalog:
         return target, "linked", "exact canonical zone name/alias/short-name match"
 
     def reconcile_from_maps(self, *, source_name: str | None = None) -> ZoneTravelBuildStats:
-        """Compile conservative directed travel candidates from canonicalized map labels."""
+        """Compile conservative directed travel candidates from original map labels."""
         if not getattr(self.db, "knowledge_writable", True):
             raise RuntimeError("zone travel compilation is builder-only")
         self.ensure_schema()
@@ -236,7 +236,7 @@ class ZoneTravelCatalog:
             args = (source_name,)
         rows = self.db.conn.execute(
             """
-            SELECT ml.id AS label_id,ml.clean_text,ml.source_line,ml.layer,
+            SELECT ml.id AS label_id,ml.raw_text,ml.clean_text,ml.source_line,ml.layer,
                    ml.x,ml.y,ml.z,ms.source_name,ms.source_version,ms.source_key,
                    ms.map_stem,zmb.zone_entity_id AS source_zone_entity_id,
                    zmb.zone_name AS source_zone_name
@@ -256,7 +256,8 @@ class ZoneTravelCatalog:
         with self.db.batch():
             self.db.conn.execute(delete_sql, delete_args)
             for row in rows:
-                candidate = self._travel_candidate(str(row["clean_text"] or ""))
+                original_label = str(row["raw_text"] or row["clean_text"] or "")
+                candidate = self._travel_candidate(original_label)
                 if candidate is None:
                     continue
                 candidates += 1
@@ -314,7 +315,7 @@ class ZoneTravelCatalog:
                         0,
                         status,
                         reason,
-                        str(row["clean_text"] or ""),
+                        self._human_text(original_label),
                         str(row["source_name"] or ""),
                         "map_label",
                         source_key,

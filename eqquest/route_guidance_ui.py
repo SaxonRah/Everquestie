@@ -36,10 +36,11 @@ class RouteGuidanceFrame(TravelFrame):
         ).pack(side="left", padx=(8, 0))
 
     def _local_readiness(self, zone: str):
-        if self.get_map_readiness is None:
+        callback = getattr(self, "get_map_readiness", None)
+        if callback is None:
             return None
         try:
-            return self.get_map_readiness(zone)
+            return callback(zone)
         except Exception:
             # Local filesystem readiness is supplemental. Never turn a transient local
             # resource check into a failure of canonical knowledge/navigation views.
@@ -55,7 +56,7 @@ class RouteGuidanceFrame(TravelFrame):
 
         view, status = build_zone_actionability(self.db, zone, location_limit=50)
         text = zone_actionability_text(self.db, zone, location_limit=50)
-        readiness = self._local_readiness(zone)
+        readiness = RouteGuidanceFrame._local_readiness(self, zone)
         if readiness is not None:
             text += "\n\nLocal map readiness:\n  " + local_map_readiness_text(readiness)
         self._set_result(text)
@@ -142,7 +143,7 @@ class RouteGuidanceFrame(TravelFrame):
                 )
             return
 
-        readiness = self._local_readiness(hop.source_name)
+        readiness = RouteGuidanceFrame._local_readiness(self, hop.source_name)
         if readiness is not None and not readiness.ready:
             self.status_var.set(
                 f"Next hop coordinate is confirmed for {hop.source_name}, but "

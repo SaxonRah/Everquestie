@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from eqquest.db import Database
 from eqquest.map_catalog import MapCatalog
+from eqquest.zone_catalog import ZoneMapCatalog
 
 
 def main() -> int:
@@ -37,15 +38,26 @@ def main() -> int:
         def progress(stage: str, current: int, total: int, detail: str) -> None:
             print(f"[{stage}] {current}/{total} {detail}")
 
-        stats = MapCatalog(db).index_root(
+        catalog = MapCatalog(db)
+        stats = catalog.index_root(
             maps,
             source_name=args.source_name,
             source_version=args.source_version,
             progress=progress,
         )
+        zone_stats = ZoneMapCatalog(db).reconcile(source_name=args.source_name)
+        # Canonical zone backfill can disambiguate otherwise-identical NPC/map
+        # labels, so run the label linker once more after zone identity is known.
+        label_links = catalog.reconcile_all(force=bool(zone_stats.changed), progress=progress)
         print(
             f"catalog ready: {stats.base_maps} base maps, {stats.labels} labels, "
-            f"{stats.linked} linked, {stats.ambiguous} ambiguous, {stats.unresolved} unresolved"
+            f"{label_links['linked']} linked, {label_links['ambiguous']} ambiguous, "
+            f"{label_links['unresolved']} unresolved"
+        )
+        print(
+            "zone/map identity: "
+            f"{zone_stats.linked}/{zone_stats.maps} linked, "
+            f"{zone_stats.ambiguous} ambiguous, {zone_stats.unresolved} unresolved"
         )
         return 0
     finally:

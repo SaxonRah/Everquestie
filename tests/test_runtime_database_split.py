@@ -9,7 +9,9 @@ import unittest
 from eqquest.db import Database
 from eqquest.events import Event
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.map_catalog import MapCatalog
 from eqquest.runtime import RuntimeDatabase
+from eqquest.zone_catalog import ZoneMapCatalog
 
 
 class RuntimeDatabaseSplitTests(unittest.TestCase):
@@ -140,6 +142,64 @@ class RuntimeDatabaseSplitTests(unittest.TestCase):
             self.assertEqual(len(db.observed_event_history()), 1)
         finally:
             db.close()
+
+    def test_packaged_zone_map_catalog_is_queryable_read_only(self):
+        working = self.root / "zone-working.sqlite3"
+        knowledge = self.root / "everquestie-knowledge.sqlite3"
+        state = self.root / "everquestie-user.sqlite3"
+        maps = self.root / "maps"
+        maps.mkdir()
+        (maps / "stonehive.txt").write_text(
+            "P 1,2,3,255,0,0,2,Zone_Line\n",
+            encoding="utf-8",
+        )
+
+        builder = Database(working)
+        try:
+            zone_id = builder.upsert_entity(
+                kind="zone",
+                name="Stone Hive",
+                external_id="396",
+                external_namespace="eqclient:zone",
+                merge_by_name=True,
+                data={"map_short_name": "stonehive"},
+            )
+            MapCatalog(builder).index_root(
+                maps,
+                source_name="Brewall",
+                source_version="runtime-test",
+            )
+            stats = ZoneMapCatalog(builder).reconcile(source_name="Brewall")
+            self.assertEqual(stats.linked, 1)
+        finally:
+            builder.close()
+
+        create_knowledge_snapshot(
+            working,
+            knowledge,
+            snapshot_version="zone-runtime-test",
+        )
+        before = self._digest(knowledge)
+
+        runtime = RuntimeDatabase(knowledge, state)
+        try:
+            catalog = ZoneMapCatalog(runtime)
+            binding = catalog.binding_for_map("Brewall", "stonehive")
+            self.assertIsNotNone(binding)
+            self.assertEqual(binding.status, "linked")
+            self.assertEqual(binding.zone_entity_id, zone_id)
+            self.assertEqual(binding.zone_name, "Stone Hive")
+            maps_for_zone = catalog.maps_for_zone(zone_id)
+            self.assertEqual(len(maps_for_zone), 1)
+            self.assertEqual(maps_for_zone[0].map_stem, "stonehive")
+            with self.assertRaises(RuntimeError):
+                catalog.reconcile(source_name="Brewall")
+        finally:
+            runtime.close()
+
+        self.assertEqual(self._digest(knowledge), before)
+        self.assertFalse(Path(str(knowledge) + "-wal").exists())
+        self.assertFalse(Path(str(knowledge) + "-shm").exists())
 
     def test_state_survives_snapshot_row_id_change_and_future_provider_enrichment(self):
         knowledge = self.root / "everquestie-knowledge.sqlite3"

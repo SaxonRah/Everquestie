@@ -7,7 +7,7 @@ from typing import Any
 from .db import Database
 
 
-ZONE_COVERAGE_VERSION = "1"
+ZONE_COVERAGE_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,8 @@ class ZoneCoverageRow:
     map_bindings: int
     travel_outgoing: int
     travel_incoming: int
+    route_outgoing: int
+    route_outgoing_mappable: int
     source_count: int
     alias_count: int
 
@@ -30,6 +32,14 @@ class ZoneCoverageRow:
     def has_travel(self) -> bool:
         return self.travel_outgoing > 0 or self.travel_incoming > 0
 
+    @property
+    def has_route_outgoing(self) -> bool:
+        return self.route_outgoing > 0
+
+    @property
+    def has_mappable_route_exit(self) -> bool:
+        return self.route_outgoing_mappable > 0
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "entity_id": self.entity_id,
@@ -39,6 +49,8 @@ class ZoneCoverageRow:
             "map_bindings": self.map_bindings,
             "travel_outgoing": self.travel_outgoing,
             "travel_incoming": self.travel_incoming,
+            "route_outgoing": self.route_outgoing,
+            "route_outgoing_mappable": self.route_outgoing_mappable,
             "source_count": self.source_count,
             "alias_count": self.alias_count,
         }
@@ -58,9 +70,16 @@ class ZoneCoverageSummary:
     travel_edges_linked: int
     travel_edges_ambiguous: int
     travel_edges_unresolved: int
+    travel_edges_with_source_coordinates: int
+    travel_edges_without_source_coordinates: int
+    route_directions_linked: int
+    route_directions_mappable: int
+    route_directions_unmappable: int
+    zones_with_mappable_route_exit: int
     zones_without_client_identity: tuple[str, ...]
     zones_without_maps: tuple[str, ...]
     zones_without_travel: tuple[str, ...]
+    zones_with_route_but_no_mappable_exit: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -77,9 +96,18 @@ class ZoneCoverageSummary:
             "travel_edges_linked": self.travel_edges_linked,
             "travel_edges_ambiguous": self.travel_edges_ambiguous,
             "travel_edges_unresolved": self.travel_edges_unresolved,
+            "travel_edges_with_source_coordinates": self.travel_edges_with_source_coordinates,
+            "travel_edges_without_source_coordinates": self.travel_edges_without_source_coordinates,
+            "route_directions_linked": self.route_directions_linked,
+            "route_directions_mappable": self.route_directions_mappable,
+            "route_directions_unmappable": self.route_directions_unmappable,
+            "zones_with_mappable_route_exit": self.zones_with_mappable_route_exit,
             "zones_without_client_identity": list(self.zones_without_client_identity),
             "zones_without_maps": list(self.zones_without_maps),
             "zones_without_travel": list(self.zones_without_travel),
+            "zones_with_route_but_no_mappable_exit": list(
+                self.zones_with_route_but_no_mappable_exit
+            ),
         }
 
 
@@ -90,6 +118,11 @@ class ZoneCoverageCatalog:
     than another zone database. A zone remains one ``entities(kind='zone')`` row;
     client IDs, map bindings, travel topology, aliases, level data and future source
     evidence accumulate around that same entity.
+
+    Travel evidence rows and player-usable route directions are intentionally audited
+    separately. One bidirectional evidence row creates two traversable directions, but
+    its stored X/Y belongs only to the row's canonical source zone. A reverse direction
+    becomes mappable only when independent direct evidence supplies a source-owned X/Y.
     """
 
     def __init__(self, db: Database):
@@ -108,9 +141,35 @@ class ZoneCoverageCatalog:
             (name, name),
         ).fetchone() is not None
 
+    def _route_direction_sets(self) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+        routes: dict[int, set[int]] = {}
+        mappable: dict[int, set[int]] = {}
+        if not self._object_exists("zone_travel_edges"):
+            return routes, mappable
+
+        rows = self.db.conn.execute(
+            """
+            SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,x,y
+            FROM zone_travel_edges
+            WHERE status='linked' AND target_zone_entity_id IS NOT NULL
+            """
+        ).fetchall()
+        for row in rows:
+            source_id = int(row["source_zone_entity_id"])
+            target_id = int(row["target_zone_entity_id"])
+            routes.setdefault(source_id, set()).add(target_id)
+            if row["x"] is not None and row["y"] is not None:
+                # Stored travel coordinates always belong to the stored edge source.
+                mappable.setdefault(source_id, set()).add(target_id)
+            if bool(row["bidirectional"]):
+                # Topology is usable in reverse, but the stored coordinate is not.
+                routes.setdefault(target_id, set()).add(source_id)
+        return routes, mappable
+
     def rows(self) -> list[ZoneCoverageRow]:
         map_available = self._object_exists("zone_map_bindings")
         travel_available = self._object_exists("zone_travel_edges")
+        route_targets, mappable_targets = self._route_direction_sets()
 
         map_expr = (
             "(SELECT COUNT(*) FROM zone_map_bindings zmb "
@@ -150,15 +209,18 @@ class ZoneCoverageCatalog:
             ORDER BY e.name,e.id
             """
         ).fetchall():
+            entity_id = int(row["id"])
             result.append(
                 ZoneCoverageRow(
-                    entity_id=int(row["id"]),
+                    entity_id=entity_id,
                     name=str(row["name"]),
                     has_client_identity=bool(row["has_client_identity"]),
                     has_level_data=row["level_min"] is not None or row["level_max"] is not None,
                     map_bindings=int(row["map_bindings"] or 0),
                     travel_outgoing=int(row["travel_outgoing"] or 0),
                     travel_incoming=int(row["travel_incoming"] or 0),
+                    route_outgoing=len(route_targets.get(entity_id, ())),
+                    route_outgoing_mappable=len(mappable_targets.get(entity_id, ())),
                     source_count=int(row["source_count"] or 0),
                     alias_count=int(row["alias_count"] or 0),
                 )
@@ -178,13 +240,36 @@ class ZoneCoverageCatalog:
                 counts[status] = int(row["count"] or 0)
         return counts
 
+    def _travel_coordinate_counts(self) -> tuple[int, int]:
+        if not self._object_exists("zone_travel_edges"):
+            return 0, 0
+        row = self.db.conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN x IS NOT NULL AND y IS NOT NULL THEN 1 ELSE 0 END) AS present,
+                SUM(CASE WHEN x IS NULL OR y IS NULL THEN 1 ELSE 0 END) AS missing
+            FROM zone_travel_edges
+            WHERE status='linked' AND target_zone_entity_id IS NOT NULL
+            """
+        ).fetchone()
+        return int(row["present"] or 0), int(row["missing"] or 0)
+
     def summary(self) -> ZoneCoverageSummary:
         rows = self.rows()
         maps = self._status_counts("zone_map_bindings")
         travel = self._status_counts("zone_travel_edges")
+        coordinate_present, coordinate_missing = self._travel_coordinate_counts()
+        route_targets, mappable_targets = self._route_direction_sets()
+        route_directions = sum(len(targets) for targets in route_targets.values())
+        mappable_directions = sum(len(targets) for targets in mappable_targets.values())
         no_client = tuple(row.name for row in rows if not row.has_client_identity)
         no_maps = tuple(row.name for row in rows if not row.has_map)
         no_travel = tuple(row.name for row in rows if not row.has_travel)
+        route_coordinate_gaps = tuple(
+            row.name
+            for row in rows
+            if row.has_route_outgoing and not row.has_mappable_route_exit
+        )
         return ZoneCoverageSummary(
             zones=len(rows),
             client_identity=sum(row.has_client_identity for row in rows),
@@ -198,9 +283,16 @@ class ZoneCoverageCatalog:
             travel_edges_linked=travel["linked"],
             travel_edges_ambiguous=travel["ambiguous"],
             travel_edges_unresolved=travel["unresolved"],
+            travel_edges_with_source_coordinates=coordinate_present,
+            travel_edges_without_source_coordinates=coordinate_missing,
+            route_directions_linked=route_directions,
+            route_directions_mappable=mappable_directions,
+            route_directions_unmappable=max(0, route_directions - mappable_directions),
+            zones_with_mappable_route_exit=sum(row.has_mappable_route_exit for row in rows),
             zones_without_client_identity=no_client,
             zones_without_maps=no_maps,
             zones_without_travel=no_travel,
+            zones_with_route_but_no_mappable_exit=route_coordinate_gaps,
         )
 
     def compile_summary(self) -> ZoneCoverageSummary:
@@ -226,16 +318,24 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
         f"Zones with client level fields: {summary.level_data}/{summary.zones}",
         f"Zones with confirmed map binding: {summary.mapped}/{summary.zones}",
         f"Zones connected to confirmed travel: {summary.travel_connected}/{summary.zones}",
+        f"Zones with mappable route exit: {summary.zones_with_mappable_route_exit}/{summary.zones}",
         f"Zones with neither map nor travel evidence: {summary.isolated}/{summary.zones}",
         "",
         "Map evidence: "
         f"linked={summary.map_bindings_linked}, "
         f"ambiguous={summary.map_bindings_ambiguous}, "
         f"unresolved={summary.map_bindings_unresolved}",
-        "Travel evidence: "
+        "Travel evidence rows: "
         f"linked={summary.travel_edges_linked}, "
         f"ambiguous={summary.travel_edges_ambiguous}, "
         f"unresolved={summary.travel_edges_unresolved}",
+        "Linked travel edge source coordinates: "
+        f"present={summary.travel_edges_with_source_coordinates}, "
+        f"missing={summary.travel_edges_without_source_coordinates}",
+        "Canonical route directions: "
+        f"linked={summary.route_directions_linked}, "
+        f"mappable={summary.route_directions_mappable}, "
+        f"without source coordinate={summary.route_directions_unmappable}",
     ]
 
     def add_gap(label: str, names: tuple[str, ...]) -> None:
@@ -249,4 +349,8 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
     add_gap("Zones without EQ-client identity", summary.zones_without_client_identity)
     add_gap("Zones without confirmed map binding", summary.zones_without_maps)
     add_gap("Zones without confirmed travel", summary.zones_without_travel)
+    add_gap(
+        "Zones with confirmed outgoing route but no mappable source coordinate",
+        summary.zones_with_route_but_no_mappable_exit,
+    )
     return "\n".join(lines)

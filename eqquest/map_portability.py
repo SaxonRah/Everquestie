@@ -8,7 +8,7 @@ from .db import Database
 from .eqmap import normalize_map_name
 
 
-_LEGACY_SOURCE_NAMES = {"", "legacy-local"}
+LEGACY_SOURCE_NAME = "legacy-local"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +53,7 @@ def _safe_relative(value: str) -> str:
 def _relative_to_root(value: str, root: str) -> str:
     raw_value = str(value or "").strip()
     raw_root = str(root or "").strip()
-    if not raw_value or not raw_root or not _looks_absolute(raw_value):
+    if not raw_value or not raw_root or not _looks_absolute(raw_value) or not _looks_absolute(raw_root):
         return ""
     path_cls = _path_class(raw_value)
     if path_cls is not _path_class(raw_root):
@@ -76,28 +76,35 @@ def _portable_path(source_name: str, source_key: str) -> str:
     return f"mapcatalog://{source_token}/{source_key}"
 
 
-def _target_for_row(row) -> tuple[str, str, str]:
-    source_name = " ".join(str(row["source_name"] or "").split()).strip()
+def _legacy_target(row) -> tuple[str, str, str] | None:
+    """Return a safe portable identity for one schema-migrated legacy-local row.
+
+    The old catalog recorded the selected map-pack directory in ``root`` and absolute
+    filenames in both ``source_key`` and ``path``. The root basename is therefore the
+    original pack identity (for example ``Good's Maps``), while the path relative to
+    that root is exactly the key the current catalog builder would write.
+    """
+    if str(row["source_name"] or "").strip().casefold() != LEGACY_SOURCE_NAME:
+        return None
+
     root = str(row["root"] or "").strip()
     source_key = str(row["source_key"] or "").strip()
     path = str(row["path"] or "").strip()
     map_stem = str(row["map_stem"] or "").strip()
     layer = int(row["layer"] or 0)
 
-    if source_name.casefold() in _LEGACY_SOURCE_NAMES:
-        inferred = _basename(root)
-        if inferred:
-            source_name = inferred
+    source_name = _basename(root)
     if not source_name:
-        source_name = "legacy-local"
+        return None
 
-    portable_key = _safe_relative(source_key)
-    if not portable_key:
-        for candidate in (source_key, path):
-            portable_key = _relative_to_root(candidate, root)
-            if portable_key:
-                break
+    portable_key = ""
+    for candidate in (source_key, path):
+        portable_key = _relative_to_root(candidate, root)
+        if portable_key:
+            break
 
+    # Some very early rows may have lost a usable root but still contain the exact
+    # stem/layer filename. Only that deterministic leaf is accepted as a fallback.
     if not portable_key:
         expected = _expected_filename(map_stem, layer)
         for candidate in (source_key, path):
@@ -107,36 +114,43 @@ def _target_for_row(row) -> tuple[str, str, str]:
                 break
 
     if not portable_key:
-        raise ValueError(
-            "Cannot safely derive a portable map source key for "
-            f"map_sources id {row['id']}: source_key={source_key!r}, path={path!r}, root={root!r}"
-        )
+        return None
 
     return source_name, portable_key, _portable_path(source_name, portable_key)
 
 
-def _already_target(row, target: tuple[str, str, str]) -> bool:
-    source_name, source_key, path = target
-    return (
-        str(row["source_name"] or "") == source_name
-        and str(row["source_key"] or "") == source_key
-        and str(row["path"] or "") == path
-        and str(row["root"] or "") == source_name
+def _merge_labels(db: Database, *, winner_id: int, loser_id: int) -> None:
+    table = db.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='map_labels'"
+    ).fetchone()
+    if table is None:
+        return
+    # Preserve source lines that do not already exist in the preferred portable row.
+    db.conn.execute(
+        """
+        UPDATE map_labels AS ml
+        SET source_id=?
+        WHERE ml.source_id=?
+          AND NOT EXISTS (
+              SELECT 1 FROM map_labels existing
+              WHERE existing.source_id=?
+                AND existing.source_line=ml.source_line
+          )
+        """,
+        (winner_id, loser_id, winner_id),
     )
 
 
 def normalize_legacy_map_sources(db: Database) -> MapPortabilityMigration:
-    """Normalize pre-portable map catalog rows inside a release/build database.
+    """Normalize pre-portable ``legacy-local`` map rows in a release/build DB copy.
 
-    Older EverQuestie catalogs persisted the builder machine's absolute map path in
-    ``root``, ``source_key`` and ``path``. Current catalogs use a source-relative key
-    and a synthetic ``mapcatalog://`` provenance URI. This migration is deterministic
-    from the row's existing root/stem/layer metadata and never needs the source map
-    files to still exist.
+    Current map indexing is already portable. This function exists solely for builder
+    databases cataloged before that change, where ``source_name`` was later backfilled
+    to ``legacy-local`` and absolute builder paths remained in the row.
 
-    If a long-lived builder DB contains both an old absolute row and a newer portable
-    row for the same source file, the already-portable/newer row wins. Non-conflicting
-    labels are retained before the duplicate source row is removed.
+    Named sources are never guessed or rewritten here. If a named source still carries
+    absolute filesystem paths, the existing snapshot portability audit continues to
+    reject it. That keeps this migration narrow and deterministic.
     """
     table = db.conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='map_sources'"
@@ -146,64 +160,51 @@ def normalize_legacy_map_sources(db: Database) -> MapPortabilityMigration:
 
     rows = db.conn.execute(
         "SELECT id,root,source_name,source_key,map_stem,layer,path,mtime_ns,size,indexed_at "
-        "FROM map_sources ORDER BY id"
+        "FROM map_sources WHERE lower(trim(source_name))=? ORDER BY id",
+        (LEGACY_SOURCE_NAME,),
     ).fetchall()
     if not rows:
         return MapPortabilityMigration()
 
-    targets = {int(row["id"]): _target_for_row(row) for row in rows}
-    by_identity: dict[tuple[str, str], list] = {}
-    for row in rows:
-        source_name, source_key, _path = targets[int(row["id"])]
-        by_identity.setdefault((source_name, source_key), []).append(row)
-
     normalized = 0
     deduplicated = 0
     with db.batch():
-        for _identity, group in by_identity.items():
-            ranked = sorted(
-                group,
-                key=lambda row: (
-                    1 if _already_target(row, targets[int(row["id"])]) else 0,
-                    1 if str(row["path"] or "").startswith("mapcatalog://") else 0,
-                    int(row["mtime_ns"] or 0),
-                    str(row["indexed_at"] or ""),
-                    int(row["id"]),
-                ),
-                reverse=True,
-            )
-            winner = ranked[0]
-            winner_id = int(winner["id"])
+        for row in rows:
+            row_id = int(row["id"])
+            target = _legacy_target(row)
+            if target is None:
+                # Leave genuinely non-derivable evidence untouched. The final
+                # portability audit will emit the release-blocking diagnostic.
+                continue
+            source_name, source_key, portable_path = target
 
-            for loser in ranked[1:]:
-                loser_id = int(loser["id"])
-                if db.conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='map_labels'"
-                ).fetchone() is not None:
-                    # Preserve any source lines the preferred row does not contain.
-                    db.conn.execute(
-                        """
-                        UPDATE map_labels AS ml
-                        SET source_id=?
-                        WHERE ml.source_id=?
-                          AND NOT EXISTS (
-                              SELECT 1 FROM map_labels existing
-                              WHERE existing.source_id=?
-                                AND existing.source_line=ml.source_line
-                          )
-                        """,
-                        (winner_id, loser_id, winner_id),
-                    )
-                db.conn.execute("DELETE FROM map_sources WHERE id=?", (loser_id,))
-                deduplicated += 1
-
-            target = targets[winner_id]
-            if not _already_target(winner, target):
-                source_name, source_key, portable_path = target
-                db.conn.execute(
-                    "UPDATE map_sources SET root=?,source_name=?,source_key=?,path=? WHERE id=?",
-                    (source_name, source_name, source_key, portable_path, winner_id),
+            existing = db.conn.execute(
+                """
+                SELECT id FROM map_sources
+                WHERE id<>? AND (
+                    (source_name=? AND source_key=?) OR path=?
                 )
-                normalized += 1
+                ORDER BY
+                    CASE WHEN path LIKE 'mapcatalog://%' THEN 0 ELSE 1 END,
+                    mtime_ns DESC,
+                    indexed_at DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (row_id, source_name, source_key, portable_path),
+            ).fetchone()
+
+            if existing is not None:
+                winner_id = int(existing["id"])
+                _merge_labels(db, winner_id=winner_id, loser_id=row_id)
+                db.conn.execute("DELETE FROM map_sources WHERE id=?", (row_id,))
+                deduplicated += 1
+                continue
+
+            db.conn.execute(
+                "UPDATE map_sources SET root=?,source_name=?,source_key=?,path=? WHERE id=?",
+                (source_name, source_name, source_key, portable_path, row_id),
+            )
+            normalized += 1
 
     return MapPortabilityMigration(normalized=normalized, deduplicated=deduplicated)

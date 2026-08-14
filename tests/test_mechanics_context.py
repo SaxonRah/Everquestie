@@ -61,6 +61,8 @@ class ClassMechanicsContextTests(unittest.TestCase):
             [
                 (1, 0, 1, 10),
                 (1, 0, 2, 15),
+                (1, 10, 1, 5),
+                (1, 10, 2, 0),
                 (1, 76, 60, 1),
                 (1, 76, 61, 25),
                 (5, 1, 1, 5),
@@ -141,6 +143,16 @@ class ClassMechanicsContextTests(unittest.TestCase):
         self.assertFalse(blunt.new_this_level)
         self.assertFalse(blunt.changed_this_level)
         self.assertEqual(blunt.source.source_key, "Resources/skillcaps.txt")
+
+    def test_explicit_zero_cap_withdraws_older_positive_skill(self):
+        at_one, _ = build_class_mechanics_context(self.db, "Warrior", 1)
+        self.assertIn("Bash", {skill.name for skill in at_one.skills})
+
+        at_two, _ = build_class_mechanics_context(self.db, "Warrior", 2)
+        self.assertNotIn("Bash", {skill.name for skill in at_two.skills})
+
+        at_three, _ = build_class_mechanics_context(self.db, "Warrior", 3)
+        self.assertNotIn("Bash", {skill.name for skill in at_three.skills})
 
     def test_new_and_changed_skill_progression_are_distinct(self):
         at_sixty, _ = build_class_mechanics_context(self.db, 1, 60)

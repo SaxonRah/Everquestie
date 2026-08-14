@@ -3,6 +3,7 @@ param(
     [string]$Version,
     [string]$WorkingDb = "",
     [string]$OutputRoot = "",
+    [string]$PythonExe = "",
     [switch]$OneFile,
     [switch]$SkipTests,
     [switch]$Force
@@ -23,6 +24,23 @@ function Resolve-FromProject([string]$Value, [string]$DefaultValue) {
         return [System.IO.Path]::GetFullPath($Chosen)
     }
     return [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $Chosen))
+}
+
+function Resolve-Python([string]$Requested) {
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $Command = Get-Command $Requested -ErrorAction SilentlyContinue
+        if (-not $Command) {
+            throw "Requested Python interpreter '$Requested' was not found."
+        }
+        return $Command.Source
+    }
+    foreach ($Candidate in @("python", "py")) {
+        $Command = Get-Command $Candidate -ErrorAction SilentlyContinue
+        if ($Command) {
+            return $Command.Source
+        }
+    }
+    throw "No Python interpreter was found in PATH. Pass -PythonExe explicitly."
 }
 
 $Version = $Version.Trim()
@@ -59,10 +77,7 @@ if (Test-Path $StagingRoot) {
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
-$Python = Get-Command py -ErrorAction SilentlyContinue
-if (-not $Python) {
-    throw "The Python launcher 'py' was not found in PATH."
-}
+$PythonCommand = Resolve-Python $PythonExe
 if (-not (Test-Path $FinalizeTool -PathType Leaf)) {
     throw "Knowledge finalizer was not found: $FinalizeTool"
 }
@@ -73,10 +88,11 @@ if (-not (Test-Path $WindowsBuilder -PathType Leaf)) {
 Write-Host "=== EverQuestie release $Version ==="
 Write-Host "Builder DB: $WorkingDb"
 Write-Host "Release output: $ReleaseDir"
+Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
 Write-Host "[1/4] Finalizing immutable knowledge snapshot..."
-& py $FinalizeTool --input $WorkingDb --output $Snapshot --version $Version --force
+& $PythonCommand $FinalizeTool --input $WorkingDb --output $Snapshot --version $Version --force
 if ($LASTEXITCODE -ne 0) {
     throw "Knowledge finalization failed with exit code $LASTEXITCODE."
 }
@@ -91,7 +107,7 @@ else {
     Write-Host "[2/4] Running complete regression suite..."
     Push-Location $ProjectRoot
     try {
-        & py -m unittest discover -s tests -v
+        & $PythonCommand -m unittest discover -s tests -v
         if ($LASTEXITCODE -ne 0) {
             throw "Regression suite failed with exit code $LASTEXITCODE. Release packaging aborted."
         }
@@ -105,6 +121,7 @@ Write-Host "[3/4] Building Windows application and attaching knowledge snapshot.
 $BuilderArgs = @(
     "-KnowledgeDb", $Snapshot,
     "-DistPath", $ReleaseDir,
+    "-PythonExe", $PythonCommand,
     "-CleanOutput"
 )
 if ($OneFile) {

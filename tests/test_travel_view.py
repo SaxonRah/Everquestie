@@ -56,6 +56,61 @@ class TravelRouteViewTests(unittest.TestCase):
         self.assertIn("Future Provider", result.text)
         self.assertIn("confirmed client zone line", result.text)
 
+    def test_route_endpoints_accept_shared_zone_identity_signals(self):
+        source = self.db.upsert_entity(
+            kind="zone",
+            name="The Nexus",
+            external_id="152",
+            external_namespace="eqclient:zone",
+            merge_by_name=True,
+            data={"map_short_name": "nexus"},
+        )
+        target = self.db.upsert_entity(
+            kind="zone",
+            name="The Plane of Knowledge",
+            external_id="202",
+            external_namespace="eqclient:zone",
+            merge_by_name=True,
+            data={"short_name": "poknowledge"},
+        )
+        self.db.add_alias(target, "PoK", alias_type="provider_alias")
+        ZoneTravelCatalog(self.db).add_provider_connection(
+            source,
+            target,
+            connection_kind="portal",
+            source_name="Topology Source",
+            source_key="nexus-pok",
+        )
+
+        for start, destination in (
+            ("152", "202"),
+            ("nexus", "PoK"),
+            ("The Nexus", "Plane of Knowledge"),
+            ("The Nexus", "poknowledge"),
+        ):
+            with self.subTest(start=start, destination=destination):
+                result = build_route_result(self.db, start, destination)
+                self.assertTrue(result.ok)
+                self.assertEqual(result.path, (source, target))
+                self.assertIn("The Nexus → The Plane of Knowledge", result.text)
+
+    def test_unique_substring_is_not_promoted_to_zone_identity(self):
+        source = self._zone("Stone Hive")
+        target = self._zone("The Plane of Knowledge")
+        ZoneTravelCatalog(self.db).add_provider_connection(
+            source,
+            target,
+            source_name="Topology Source",
+            source_key="stonehive-pok",
+        )
+
+        # Generic entity search previously treated the unique substring "Knowledge"
+        # as sufficient. Route endpoints now require a canonical zone identity token.
+        result = build_route_result(self.db, "Stone Hive", "Knowledge")
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.target_entity_id)
+        self.assertIn("was not found", result.text)
+
     def test_route_view_honors_explicit_bidirectional_evidence(self):
         a = self._zone("Zone A")
         b = self._zone("Zone B")

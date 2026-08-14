@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import shlex
-from typing import Iterable
 
 from .db import Database, normalize_name
 
@@ -207,7 +206,10 @@ def _current_zone_ids(db: Database, current_zone: str | None) -> set[int]:
 def _reason_for(db: Database, row, text: str, zone_match: bool, fts_rank: float | None) -> tuple[tuple, str]:
     norm = normalize_name(text)
     name = str(row["normalized_name"] or "")
-    aliases = [str(a["normalized_alias"]) for a in db.aliases_for_entity(int(row["id"]))]
+    aliases = (
+        [str(a["normalized_alias"]) for a in db.aliases_for_entity(int(row["id"]))]
+        if norm else []
+    )
     if norm and name == norm:
         base, reason = 0, "exact name"
     elif norm and norm in aliases:
@@ -271,21 +273,17 @@ def search_local_hits(
         sql += " WHERE " + " AND ".join(clauses)
     # Pull extra candidates before contextual ranking, then apply the requested page.
     candidate_limit = min(5000, max(safe_limit * 8, safe_limit + safe_offset, 250))
-    sql += " ORDER BY e.kind, e.name LIMIT ?"
+    if use_fts:
+        sql += " ORDER BY fts_rank, e.kind, e.name LIMIT ?"
+    else:
+        sql += " ORDER BY e.kind, e.name LIMIT ?"
     args.append(candidate_limit)
     try:
         rows = db.conn.execute(sql, args).fetchall()
     except Exception:
         # FTS is an acceleration layer, not a correctness dependency.
         if use_fts:
-            return search_local_hits(
-                db,
-                LocalQuery(query.text, query.kinds, query.zone, query.source, query.exact),
-                default_kind=default_kind,
-                current_zone=current_zone,
-                limit=limit,
-                offset=offset,
-            ) if False else _search_like_fallback(db, query, default_kind, current_zone, limit, offset)
+            return _search_like_fallback(db, query, default_kind, current_zone, limit, offset)
         raise
 
     zone_ids = _current_zone_ids(db, current_zone)

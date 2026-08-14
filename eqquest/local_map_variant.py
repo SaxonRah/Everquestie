@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .db import Database
+from .eqmap import player_map_binding_value
 from .local_map_readiness import LocalMapReadiness, resolve_local_map_readiness
 
 
@@ -44,8 +45,10 @@ def bind_local_map_variant(
 
     The candidate set is recomputed at apply time. Only an exact current candidate may
     be persisted, which rejects arbitrary paths and stale dialog choices after a zone,
-    map-root, or local-file change. The write goes through ``db.set_meta``; packaged
-    ``RuntimeDatabase`` routes ``map_binding::`` metadata to the separate user DB.
+    map-root, or local-file change. A direct single-pack choice retains the historic
+    stem-only value; a nested collection-root choice stores only a portable root-relative
+    file key. The write goes through ``db.set_meta`` so packaged ``RuntimeDatabase``
+    routes it to the separate player-state DB.
     """
     readiness, candidates = current_local_map_variants(db, zone_token, root)
     if readiness.status == "zone_ambiguous":
@@ -87,12 +90,23 @@ def bind_local_map_variant(
             readiness,
         )
 
-    db.set_meta(key, chosen.stem)
+    try:
+        binding_value = player_map_binding_value(root, chosen)
+    except ValueError:
+        return LocalMapVariantResult(
+            False,
+            "outside_root",
+            "selected path is not inside the current local map root",
+            None,
+            readiness,
+        )
+
+    db.set_meta(key, binding_value)
     verified = resolve_local_map_readiness(
         db,
         zone_token,
         root,
-        bound_stem=chosen.stem,
+        bound_stem=binding_value,
     )
     if not verified.ready or verified.path is None or verified.path.resolve() != chosen.resolve():
         return LocalMapVariantResult(

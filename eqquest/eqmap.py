@@ -183,6 +183,11 @@ def load_zone_map(path: str | Path) -> ZoneMap:
 
 
 def discover_base_maps(root: str | Path) -> list[Path]:
+    """Return base maps directly inside one map-pack directory.
+
+    Builder catalog ingestion deliberately keeps this single-pack boundary: callers
+    pass a source name/version for exactly one Good/Brewall/EQ map source.
+    """
     root = Path(root)
     if not root.exists():
         return []
@@ -190,6 +195,67 @@ def discover_base_maps(root: str | Path) -> list[Path]:
         (p for p in root.glob("*.txt") if not is_layer_stem(p.stem)),
         key=lambda p: p.stem.casefold(),
     )
+
+
+def discover_local_base_maps(root: str | Path) -> list[Path]:
+    """Return renderable base maps from a player-selected local map collection.
+
+    The normal player may select either one concrete pack (for example
+    ``maps/Good's Maps``) or the parent EverQuest ``maps`` directory containing
+    multiple packs. Runtime rendering therefore searches the selected directory and
+    its immediate children while builder catalog ingestion remains source-scoped via
+    :func:`discover_base_maps`.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+
+    candidates: dict[Path, None] = {}
+    for pattern in ("*.txt", "*/*.txt"):
+        for path in root.glob(pattern):
+            if path.is_file() and not is_layer_stem(path.stem):
+                candidates[path] = None
+    return sorted(
+        candidates,
+        key=lambda p: (normalize_map_name(p.stem), str(p.parent).casefold(), p.name.casefold()),
+    )
+
+
+def player_map_binding_value(root: str | Path, selected: str | Path) -> str:
+    """Encode a local map choice without persisting a machine-specific absolute path.
+
+    Historic bindings stored only a filename stem and remain ideal when the selected
+    root is one concrete map pack. When the player selected a parent collection root,
+    retain the pack identity using a POSIX root-relative file key such as
+    ``Good's Maps/stonehive.txt``. The value belongs only in writable player state.
+    """
+    root_path = Path(root).expanduser().resolve()
+    selected_path = Path(selected).expanduser().resolve()
+    relative = selected_path.relative_to(root_path)
+    if selected_path.parent == root_path:
+        return selected_path.stem
+    return relative.as_posix()
+
+
+def _resolve_relative_player_binding(root: Path, binding: str) -> Path | None:
+    """Resolve one root-relative player binding while preventing path escape."""
+    token = str(binding or "").strip()
+    if not token or ("/" not in token and "\\" not in token and not token.casefold().endswith(".txt")):
+        return None
+    # Persisted bindings use POSIX separators so they stay deterministic. Accept a
+    # legacy/backslash spelling too when running on Windows or reading hand-edited state.
+    relative = Path(*[part for part in token.replace("\\", "/").split("/") if part])
+    if relative.is_absolute():
+        return None
+    root_resolved = root.expanduser().resolve()
+    candidate = (root_resolved / relative).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        return None
+    if candidate.is_file() and candidate.suffix.casefold() == ".txt" and not is_layer_stem(candidate.stem):
+        return candidate
+    return None
 
 
 def _zone_words(zone_name: str) -> list[str]:
@@ -201,6 +267,13 @@ def _zone_words(zone_name: str) -> list[str]:
     ]
 
 
+def _local_maps_by_normalized_stem(root: str | Path) -> dict[str, list[Path]]:
+    by_norm: dict[str, list[Path]] = {}
+    for path in discover_local_base_maps(root):
+        by_norm.setdefault(normalize_map_name(path.stem), []).append(path)
+    return by_norm
+
+
 def resolve_map_for_zone(
     zone_name: str,
     root: str | Path,
@@ -208,38 +281,56 @@ def resolve_map_for_zone(
     bound_stem: str | None = None,
     hinted_stem: str | None = None,
 ) -> Path | None:
-    """Best-effort map resolver. Explicit bindings always win.
+    """Best-effort local map resolver. Explicit bindings always win when unique.
 
     EverQuest logs expose long zone names while map files are normally named by
-    client short names. For unknown short names the UI lets the user bind once and
-    persists that choice. This resolver handles the easy/common cases automatically.
+    client short names. ``root`` may be either one concrete map pack or the parent
+    ``EverQuest/maps`` collection containing Good/Brewall subdirectories. Historic
+    player bindings contain only a stem; newer collection-root bindings may contain a
+    root-relative file key. When two unbound local packs contain the same candidate
+    stem, this function returns ``None`` rather than choosing by filesystem order.
     """
-    root = Path(root)
-    maps = discover_base_maps(root)
-    if not maps:
+    root_path = Path(root)
+    if bound_stem:
+        relative_binding = _resolve_relative_player_binding(root_path, bound_stem)
+        if relative_binding is not None:
+            return relative_binding
+
+    by_norm = _local_maps_by_normalized_stem(root_path)
+    if not by_norm:
         return None
 
-    by_norm = {normalize_map_name(p.stem): p for p in maps}
-    for stem in (bound_stem, hinted_stem):
-        if stem:
-            candidate = by_norm.get(normalize_map_name(stem))
-            if candidate:
-                return candidate
+    def unique_for_norm(value: str | None) -> Path | None:
+        if not value:
+            return None
+        matches = by_norm.get(normalize_map_name(value), [])
+        return matches[0] if len(matches) == 1 else None
+
+    if bound_stem:
+        candidate = unique_for_norm(bound_stem)
+        if candidate is not None:
+            return candidate
+    candidate = unique_for_norm(hinted_stem)
+    if candidate is not None:
+        return candidate
 
     full = normalize_map_name(zone_name)
-    if full in by_norm:
-        return by_norm[full]
+    candidate = unique_for_norm(full)
+    if candidate is not None:
+        return candidate
 
-    words = _zone_words(zone_name)
-    exact_word_matches = [by_norm[w] for w in words if w in by_norm]
-    if len({p for p in exact_word_matches}) == 1:
-        return exact_word_matches[0]
+    exact_word_matches: list[Path] = []
+    for word in _zone_words(zone_name):
+        exact_word_matches.extend(by_norm.get(word, []))
+    unique_words = list(dict.fromkeys(exact_word_matches))
+    if len(unique_words) == 1:
+        return unique_words[0]
 
     candidates: list[Path] = []
-    for norm, path in by_norm.items():
+    for norm, paths in by_norm.items():
         if len(norm) < 4:
             continue
         if norm in full or full in norm:
-            candidates.append(path)
+            candidates.extend(paths)
     unique = list(dict.fromkeys(candidates))
     return unique[0] if len(unique) == 1 else None

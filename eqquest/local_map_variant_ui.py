@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 import tkinter as tk
 from tkinter import simpledialog, ttk
+
+
+def local_map_variant_labels(candidates: tuple[Path, ...]) -> tuple[str, ...]:
+    """Return concise chooser labels that distinguish same-name map files."""
+    paths = tuple(Path(path) for path in candidates)
+    counts = Counter(path.name.casefold() for path in paths)
+    labels: list[str] = []
+    for path in paths:
+        if counts[path.name.casefold()] > 1:
+            parent = path.parent.name or str(path.parent)
+            labels.append(f"{parent} / {path.name}")
+        else:
+            labels.append(path.name)
+    return tuple(labels)
 
 
 class _LocalMapVariantDialog(simpledialog.Dialog):
@@ -18,7 +33,7 @@ class _LocalMapVariantDialog(simpledialog.Dialog):
             master,
             text=(
                 f"Multiple canonical local map files are valid for {self.zone_name}.\n"
-                "Choose the one this local map pack should use."
+                "Choose the local map pack this zone should use."
             ),
             justify="left",
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
@@ -26,8 +41,8 @@ class _LocalMapVariantDialog(simpledialog.Dialog):
         self._listbox.grid(row=1, column=0, sticky="nsew")
         master.rowconfigure(1, weight=1)
         master.columnconfigure(0, weight=1)
-        for path in self.candidates:
-            self._listbox.insert("end", path.name)
+        for label in local_map_variant_labels(self.candidates):
+            self._listbox.insert("end", label)
         if self.candidates:
             self._listbox.selection_set(0)
             self._listbox.activate(0)
@@ -54,7 +69,12 @@ def ask_local_map_variant(
     candidates: tuple[Path, ...],
 ) -> Path | None:
     """Ask the player to choose only among an already-safe canonical candidate set."""
-    ordered = tuple(sorted((Path(path) for path in candidates), key=lambda path: path.name.casefold()))
+    ordered = tuple(
+        sorted(
+            (Path(path) for path in candidates),
+            key=lambda path: (path.name.casefold(), path.parent.name.casefold(), str(path).casefold()),
+        )
+    )
     if not ordered:
         return None
     if len(ordered) == 1:

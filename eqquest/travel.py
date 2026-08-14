@@ -6,6 +6,7 @@ from tkinter import ttk
 
 from .db import Database
 from .nearby import nearby_points, nearby_text
+from .navigation_catalog import ensure_builder_navigation_catalog
 from .zone_context import build_zone_context, zone_context_text
 from .zone_authority import resolve_authoritative_zone
 from .zone_travel import ZoneTravelCatalog
@@ -165,6 +166,32 @@ class TravelFrame(ttk.Frame):
         self._nearby_points_by_item: dict[str, object] = {}
         self._nearby_zone = ""
         self._build()
+
+    def _ensure_navigation_catalog_ready(self) -> bool:
+        """Refresh stale builder-only map/zone/travel derivatives before reads."""
+        db = getattr(self, "db", None)
+        # Lightweight headless UI surfaces may intentionally use a non-DB sentinel
+        # when testing behavior unrelated to knowledge reads. Real EverQuestie
+        # Database/RuntimeDatabase objects always expose conn/get_meta.
+        if db is None or not hasattr(db, "conn") or not hasattr(db, "get_meta"):
+            return True
+        try:
+            refresh = ensure_builder_navigation_catalog(db)
+        except Exception as exc:
+            status = getattr(self, "status_var", None)
+            if status is not None:
+                status.set(f"Navigation catalog refresh failed: {exc}")
+            return False
+        if refresh.refreshed:
+            status = getattr(self, "status_var", None)
+            if status is not None:
+                linked = refresh.map_bindings.linked if refresh.map_bindings is not None else 0
+                routes = refresh.travel.linked if refresh.travel is not None else 0
+                status.set(
+                    f"Navigation catalog refreshed from stored map knowledge: "
+                    f"{linked:,} map binding(s), {routes:,} linked travel edge(s)."
+                )
+        return True
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -351,6 +378,8 @@ class TravelFrame(ttk.Frame):
 
     def show_zone_context(self) -> None:
         self._clear_nearby_points()
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         zone = self._selected_or_current_zone()
         if not zone:
             self.status_var.set("Choose a zone or wait for the current zone from the log.")
@@ -371,6 +400,8 @@ class TravelFrame(ttk.Frame):
             self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
 
     def show_nearby(self) -> None:
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         # Nearby geometry is meaningful only in the zone that owns the observed /loc.
         # Route/overview fields may intentionally contain some other zone, so never use
         # the editable From token to pair coordinates with knowledge.
@@ -402,6 +433,8 @@ class TravelFrame(ttk.Frame):
 
     def map_nearest(self) -> None:
         """Send the nearest confirmed live-zone point to the Map owner in game space."""
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         zone = self._live_current_zone()
         if not zone:
             self.status_var.set("Current zone is unknown; map targeting requires the live current zone.")
@@ -433,6 +466,8 @@ class TravelFrame(ttk.Frame):
 
     def find_route(self) -> None:
         self._clear_nearby_points()
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         source = self.from_var.get().strip()
         target = self.to_var.get().strip()
         if not source:

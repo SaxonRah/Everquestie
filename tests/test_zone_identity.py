@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.map_catalog import MapCatalog
 from eqquest.map_resolution import resolve_catalog_map_for_zone
 from eqquest.runtime import RuntimeDatabase
 from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_identity import ZoneIdentityIndex, resolve_zone, zone_identity_audit_text
+from eqquest.zone_travel import ZoneTravelCatalog
 
 
 class ZoneIdentityTests(unittest.TestCase):
@@ -46,6 +49,14 @@ class ZoneIdentityTests(unittest.TestCase):
             ),
         )
         self.db.conn.commit()
+
+    def _write_map(self, folder: Path, stem: str, *labels: str) -> None:
+        folder.mkdir(parents=True, exist_ok=True)
+        lines = [
+            f"P {index * 10},{index * 20},3,255,0,0,2,{label}"
+            for index, label in enumerate(labels or ("Test_Label",), start=1)
+        ]
+        (folder / f"{stem}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def test_one_zone_identity_resolves_name_alias_short_name_client_id_and_map_stem(self):
         zone_id = self.db.upsert_entity(
@@ -116,6 +127,102 @@ class ZoneIdentityTests(unittest.TestCase):
         shared = index.resolve("qeynos", allow_significant_word=True)
         self.assertEqual(shared.status, "ambiguous")
         self.assertEqual(len(shared.candidates), 2)
+
+    def test_map_catalog_can_link_article_stripped_canonical_name(self):
+        zone_id = self.db.upsert_entity(
+            kind="zone",
+            name="The Plane of Knowledge",
+            merge_by_name=True,
+        )
+        maps = self.root / "article-maps"
+        self._write_map(maps, "planeofknowledge")
+        MapCatalog(self.db).index_root(maps, source_name="Brewall")
+
+        stats = ZoneMapCatalog(self.db).reconcile(source_name="Brewall")
+        self.assertEqual(stats.linked, 1)
+        binding = ZoneMapCatalog(self.db).binding_for_map("Brewall", "planeofknowledge")
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding.status, "linked")
+        self.assertEqual(binding.zone_entity_id, zone_id)
+        self.assertEqual(binding.zone_name, "The Plane of Knowledge")
+
+    def test_derived_map_short_name_cannot_preserve_stale_binding(self):
+        zone_id = self.db.upsert_entity(kind="zone", name="Zone Alpha", merge_by_name=True)
+        self.db.add_alias(zone_id, "oldstem", alias_type="provider_short_name")
+        maps = self.root / "stale-maps"
+        self._write_map(maps, "oldstem")
+        MapCatalog(self.db).index_root(maps, source_name="Brewall")
+        catalog = ZoneMapCatalog(self.db)
+
+        first = catalog.reconcile(source_name="Brewall")
+        self.assertEqual(first.linked, 1)
+        first_binding = catalog.binding_for_map("Brewall", "oldstem")
+        self.assertIsNotNone(first_binding)
+        self.assertEqual(first_binding.zone_entity_id, zone_id)
+        first_data = json.loads(self.db.entity(zone_id)["data_json"] or "{}")
+        self.assertEqual(first_data.get("map_short_name"), "oldstem")
+        self.assertEqual(first_data.get("map_short_name_source"), "zone_map_catalog")
+
+        # Remove the independent provider identity evidence. map_sources.zone_name,
+        # zone_map_bindings and the derived map_short_name all still contain the old
+        # answer; none is permitted to bootstrap the next catalog pass.
+        self.db.conn.execute(
+            "DELETE FROM entity_aliases WHERE entity_id=? AND normalized_alias='oldstem'",
+            (zone_id,),
+        )
+        self.db.conn.commit()
+
+        second = catalog.reconcile(source_name="Brewall")
+        self.assertEqual(second.unresolved, 1)
+        second_binding = catalog.binding_for_map("Brewall", "oldstem")
+        self.assertIsNotNone(second_binding)
+        self.assertEqual(second_binding.status, "unresolved")
+        self.assertIsNone(second_binding.zone_entity_id)
+        second_data = json.loads(self.db.entity(zone_id)["data_json"] or "{}")
+        self.assertNotIn("map_short_name", second_data)
+        self.assertNotIn("map_short_name_source", second_data)
+
+    def test_runtime_can_consume_finalized_catalog_derived_short_name(self):
+        zone_id = self.db.upsert_entity(kind="zone", name="Zone Alpha", merge_by_name=True)
+        self.db.merge_entity_data(
+            zone_id,
+            {
+                "map_short_name": "alphamap",
+                "map_short_name_source": "zone_map_catalog",
+            },
+        )
+        runtime_index = ZoneIdentityIndex(self.db)
+        self.assertEqual(runtime_index.resolve("alphamap").entity_id, zone_id)
+
+        rebuild_index = ZoneIdentityIndex(
+            self.db,
+            include_map_bindings=False,
+            include_derived_map_short_names=False,
+        )
+        self.assertEqual(rebuild_index.resolve("alphamap").status, "unresolved")
+
+    def test_travel_catalog_resolves_article_stripped_destination(self):
+        source = self.db.upsert_entity(
+            kind="zone",
+            name="The Nexus",
+            merge_by_name=True,
+            data={"map_short_name": "nexus"},
+        )
+        target = self.db.upsert_entity(
+            kind="zone",
+            name="The Plane of Knowledge",
+            merge_by_name=True,
+        )
+        maps = self.root / "travel-maps"
+        self._write_map(maps, "nexus", "To_Plane_of_Knowledge")
+        MapCatalog(self.db).index_root(maps, source_name="Brewall")
+        ZoneMapCatalog(self.db).reconcile(source_name="Brewall")
+
+        stats = ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Brewall")
+        self.assertEqual(stats.candidates, 1)
+        self.assertEqual(stats.linked, 1)
+        edge = ZoneTravelCatalog(self.db).edges_from(source)[0]
+        self.assertEqual(edge.target_zone_entity_id, target)
 
     def test_runtime_map_resolution_accepts_canonical_article_variant(self):
         zone_id = self.db.upsert_entity(

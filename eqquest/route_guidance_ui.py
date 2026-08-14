@@ -75,6 +75,8 @@ class RouteGuidanceFrame(TravelFrame):
     def show_zone_context(self) -> None:
         """Render canonical zone knowledge plus source-safe route map actionability."""
         self._clear_nearby_points()
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         zone = self._selected_or_current_zone()
         if not zone:
             self.status_var.set("Choose a zone or wait for the current zone from the log.")
@@ -109,6 +111,8 @@ class RouteGuidanceFrame(TravelFrame):
 
     def find_route(self) -> None:
         self._clear_nearby_points()
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return
         source = self.from_var.get().strip()
         target = self.to_var.get().strip()
         if not source:

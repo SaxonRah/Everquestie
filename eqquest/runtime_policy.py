@@ -265,7 +265,7 @@ def install_runtime_policy() -> None:
     from . import app as app_module
     from .locations import where_text as unified_where_text
     from .mechanics_context_ui import MechanicsContextFrame
-    from .travel import TravelFrame
+    from .route_guidance_ui import RouteGuidanceFrame as TravelFrame
 
     # The application historically imported knowledge.where_text directly. Route the
     # live WHERE command through the unified evidence projection so confirmed map POIs

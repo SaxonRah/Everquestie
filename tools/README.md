@@ -2,7 +2,43 @@
 
 These commands are builder/developer tooling. Normal EverQuestie users should not need them for a packaged release.
 
-## Build a release knowledge database
+## Build a complete Windows release
+
+Once the builder database contains the map catalog and other knowledge you want to ship, use the release coordinator rather than manually copying the working database:
+
+```powershell
+.\tools\build_release.ps1 `
+  -Version 2026.08.14 `
+  -WorkingDb "$HOME\.eqquest\eqquest.sqlite3"
+```
+
+or from `cmd.exe`:
+
+```cmd
+.\tools\build_release.cmd -Version 2026.08.14 -WorkingDb "%USERPROFILE%\.eqquest\eqquest.sqlite3"
+```
+
+If `-WorkingDb` is omitted, the command uses the normal source-checkout builder database at `~/.eqquest/eqquest.sqlite3`.
+
+The release command performs the distribution boundary in one operation:
+
+1. copies/finalizes the working database into an immutable, versioned `everquestie-knowledge.sqlite3`;
+2. reruns canonical mechanics, map, zone and travel reconciliation as part of snapshot finalization;
+3. strips player/session rows, builder-local paths and builder-only payloads;
+4. rebuilds FTS, checks identity/integrity, removes WAL dependence and optimizes the snapshot;
+5. runs the complete regression suite;
+6. builds the Windows application with PyInstaller;
+7. places the knowledge snapshot beside `EverQuestie.exe` in the default one-folder build;
+8. writes `release-manifest.json` with SHA-256 hashes and confirms that neither the builder DB nor a user-state DB is included;
+9. creates a versioned Windows ZIP suitable for distribution.
+
+The default output is `release/<version>/EverQuestie/` plus `EverQuestie-<version>-windows.zip`. The one-folder layout is preferred because future updates can replace the application and immutable knowledge snapshot independently while preserving each player's writable `everquestie-user.sqlite3`.
+
+Use `-OneFile` only when a single executable is specifically desired. In that mode the finalized knowledge snapshot is embedded in the executable. `-PythonExe PATH` can pin a specific Python interpreter; otherwise the release command resolves one interpreter once and uses it for finalization, tests, and PyInstaller so multi-Python Windows installations cannot silently switch environments mid-build.
+
+`-SkipTests` exists for developer iteration but should not be used for a publishable release. `-Force` replaces an existing output directory for the same version; it never overwrites the working builder database.
+
+## Build a release knowledge database from providers
 
 The source-agnostic coordinator creates a fresh working database from the providers explicitly selected for that build, then finalizes a separate distributable snapshot:
 
@@ -30,15 +66,17 @@ python .\tools\build_map_catalog.py --db .\build\working.sqlite3 --maps "C:\EQ M
 
 Run the command once per approved map pack/source. Catalog rows store portable relative map keys, not builder-machine file paths, so the database can later ship with EverQuestie. The user's local map root is only needed when opening/rendering the corresponding map file.
 
+`Map catalog ready` means the catalog/reconciliation work is persisted in the builder database. It does **not** mean the builder database itself should be distributed. Run `build_release.ps1` (or explicitly finalize a snapshot) to create the immutable file users receive.
+
 ## Finalize a distributable knowledge snapshot
 
-If the working database was populated separately, finalize from a **copy** of it:
+If the working database was populated separately and you only need the knowledge artifact, finalize from a **copy** of it:
 
 ```powershell
 python .\tools\finalize_knowledge_snapshot.py --input .\build\working.sqlite3 --output .\dist\everquestie-knowledge.sqlite3 --version 2026.08.14
 ```
 
-The finalizer leaves the input database untouched. The output has player/session rows and builder-local paths removed, map links reconciled, FTS rebuilt, separate knowledge schema/content versions recorded, SQLite integrity checked, WAL sidecars eliminated, and the file vacuumed/optimized. A non-portable legacy map path is a release-blocking error rather than something the tool silently packages.
+The finalizer leaves the input database untouched. The output has player/session rows and builder-local paths removed, canonical mechanics/map/zone/travel knowledge reconciled, FTS rebuilt, separate knowledge schema/content versions recorded, SQLite integrity checked, WAL sidecars eliminated, and the file vacuumed/optimized. A non-portable legacy map path is a release-blocking error rather than something the tool silently packages.
 
 Allakhazam DB/Wiki mirrors are not prerequisites for this process. If those providers are available in a future build, their normalized records and provenance can be present before finalization just like any other source.
 

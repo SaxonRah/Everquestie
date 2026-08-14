@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .db import Database
+from .zone_context import build_zone_context, zone_context_text
 from .zone_identity import resolve_zone
 from .zone_travel import ZoneTravelCatalog
 
@@ -136,7 +137,7 @@ def build_route_result(db: Database, source_text: str, target_text: str) -> Trav
 
 
 class TravelFrame(ttk.Frame):
-    """Read-only travel UI over the finalized canonical zone graph."""
+    """Read-only navigation UI over finalized canonical zone knowledge."""
 
     def __init__(self, master, *, db: Database, get_zone):
         super().__init__(master, padding=8)
@@ -145,7 +146,7 @@ class TravelFrame(ttk.Frame):
         self.from_var = tk.StringVar()
         self.to_var = tk.StringVar()
         self.status_var = tk.StringVar(
-            value="Routes use shipped canonical travel knowledge; no map parsing or network access occurs here."
+            value="Routes and zone overviews use shipped canonical knowledge; no map parsing or network access occurs here."
         )
         self._build()
 
@@ -153,7 +154,7 @@ class TravelFrame(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
 
-        controls = ttk.LabelFrame(self, text="Zone route", padding=10)
+        controls = ttk.LabelFrame(self, text="Zone navigation", padding=10)
         controls.grid(row=0, column=0, sticky="ew")
         controls.columnconfigure(1, weight=1)
 
@@ -163,21 +164,24 @@ class TravelFrame(ttk.Frame):
         ttk.Button(controls, text="Use current zone", command=self.use_current_zone).grid(
             row=0, column=2
         )
+        ttk.Button(controls, text="Show zone", command=self.show_zone_context).grid(
+            row=0, column=3, padx=(6, 0)
+        )
 
         ttk.Label(controls, text="To").grid(row=1, column=0, sticky="w", pady=(8, 0))
         to_entry = ttk.Entry(controls, textvariable=self.to_var)
         to_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(controls, text="Find route", command=self.find_route).grid(
-            row=1, column=2, pady=(8, 0)
+            row=1, column=2, columnspan=2, sticky="ew", pady=(8, 0)
         )
-        from_entry.bind("<Return>", lambda _e: self.find_route())
+        from_entry.bind("<Return>", lambda _e: self.show_zone_context())
         to_entry.bind("<Return>", lambda _e: self.find_route())
 
         ttk.Label(self, textvariable=self.status_var, wraplength=1000, justify="left").grid(
             row=1, column=0, sticky="ew", pady=(8, 6)
         )
 
-        frame = ttk.LabelFrame(self, text="Confirmed route", padding=6)
+        frame = ttk.LabelFrame(self, text="Canonical navigation knowledge", padding=6)
         frame.grid(row=2, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
@@ -200,6 +204,29 @@ class TravelFrame(ttk.Frame):
             self.status_var.set(f"Start zone set to current zone: {zone}")
         else:
             self.status_var.set("Current zone is not known yet.")
+
+    def show_zone_context(self) -> None:
+        zone = self.from_var.get().strip()
+        if not zone:
+            self.use_current_zone()
+            zone = self.from_var.get().strip()
+        if not zone:
+            self.status_var.set("Choose a zone or wait for the current zone from the log.")
+            return
+
+        context, status = build_zone_context(self.db, zone, location_limit=50)
+        self._set_result(zone_context_text(self.db, zone, location_limit=50))
+        if context is not None:
+            self.status_var.set(
+                f"Canonical zone context loaded: {context.identity.name} | "
+                f"{len(context.maps)} map binding(s) | "
+                f"{len(context.usable_connections)} usable connection(s) | "
+                f"{context.entity_count} located entity/entities."
+            )
+        elif status == "ambiguous":
+            self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess.")
+        else:
+            self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
 
     def find_route(self) -> None:
         source = self.from_var.get().strip()

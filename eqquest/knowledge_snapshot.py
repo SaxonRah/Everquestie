@@ -209,12 +209,14 @@ def finalize_knowledge_snapshot(
         raise ValueError("snapshot_version is required")
     built = built_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    # Reconcile after every provider has run. This makes provider order irrelevant:
+    # Ensure the base map schema exists even for client-only/mapless knowledge builds,
+    # then reconcile after every provider has run. This makes provider order irrelevant:
     # aliases/identities supplied late in a build can resolve map stems, labels and
     # travel candidates that were imported earlier. Future Allakhazam/wiki providers
     # therefore enrich the same canonical catalogs instead of becoming runtime deps.
+    map_catalog = MapCatalog(db)
     zone_map = ZoneMapCatalog(db).reconcile()
-    map_reconciliation = MapCatalog(db).reconcile_all(force=True)
+    map_reconciliation = map_catalog.reconcile_all(force=True)
     zone_travel = ZoneTravelCatalog(db).reconcile_from_maps()
     map_reconciliation.update(
         {

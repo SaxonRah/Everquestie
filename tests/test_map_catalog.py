@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,61 @@ class MapCatalogTests(unittest.TestCase):
             [],
         )
         self.assertEqual(len(self.catalog.search('zone:"Stone Hive"', current_zone="Stone Hive")), 2)
+
+    def test_search_is_read_only_when_links_are_dirty(self):
+        self.catalog.index_root(self.root)
+        self.db.set_meta("map_links_dirty", "1")
+        hits = self.catalog.search("Warwing")
+        self.assertTrue(hits)
+        self.assertEqual(self.db.get_meta("map_links_dirty"), "1")
+
+
+class MapCatalogConcurrencyTests(unittest.TestCase):
+    def test_index_does_not_hold_write_lock_between_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.sqlite3"
+            root = Path(td) / "maps"
+            root.mkdir()
+            for stem in ("alpha", "beta"):
+                (root / f"{stem}.txt").write_text(
+                    f"P 1,2,3,255,0,0,2,{stem}_Label\n",
+                    encoding="utf-8",
+                )
+
+            main_db = Database(db_path)
+            reached_between_files = threading.Event()
+            release_worker = threading.Event()
+            errors: list[Exception] = []
+
+            def worker() -> None:
+                worker_db = Database(db_path)
+                try:
+                    def progress(stage, current, total, detail):
+                        if stage == "index" and current == 1:
+                            reached_between_files.set()
+                            release_worker.wait(2)
+
+                    MapCatalog(worker_db).index_root(root, progress=progress)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    worker_db.close()
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(reached_between_files.wait(3))
+
+            # The indexer is deliberately paused between map files. A foreground UI
+            # metadata write must still succeed because the previous file transaction
+            # has already committed.
+            main_db.set_meta("foreground_write", "ok")
+            self.assertEqual(main_db.get_meta("foreground_write"), "ok")
+
+            release_worker.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            main_db.close()
 
 
 if __name__ == "__main__":

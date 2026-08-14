@@ -71,6 +71,7 @@ jobs:
                   exact_result = render_map_raster(exact_req)
                   exact_rasters.append((zoom_level, exact_result.ppm))
           ''').lstrip('\n')
+          replacement = ''.join(('    ' + line if line.strip() else line) for line in replacement.splitlines(True))
           s = s[:start] + replacement + s[end:]
           s = s.replace('        mipmaps=tuple(mipmaps),\n', '        exact_rasters=tuple(exact_rasters),\n', 1)
           if 'exact_rasters=tuple(exact_rasters)' not in s:

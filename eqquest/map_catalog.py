@@ -12,7 +12,7 @@ from .eqmap import discover_base_maps, map_to_game, normalize_map_name, parse_ma
 from .local_search import map_label_terms, parse_local_query
 
 
-MAP_CATALOG_VERSION = "1"
+MAP_CATALOG_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,9 @@ class MapCatalogHit:
     map_stem: str
     zone_name: str
     path: str
+    source_name: str
+    source_version: str
+    source_key: str
     layer: int
     text: str
     clean_text: str
@@ -47,12 +50,14 @@ class MapIndexStats:
 
 
 class MapCatalog:
-    """EverQuestie-owned index of Good/Brewall/native EQ P-record labels.
+    """EverQuestie-owned, portable index of Good/Brewall/native EQ labels.
 
-    Map labels are kept separate from normalized knowledge entities.  They are local
-    evidence with coordinates and source-file provenance.  Reconciliation only links
-    a label to an existing entity when an exact cleaned name/alias can be resolved
-    conservatively; the catalog never invents an NPC/item/quest type.
+    Catalog construction is an explicit builder/manual operation.  The resulting
+    labels are normalized knowledge that can be shipped in EverQuestie's versioned
+    knowledge database.  Local map files remain optional rendering assets: persisted
+    source keys are relative to the map-pack root and never require a builder machine
+    path at runtime.  Reconciliation remains conservative and never invents entity
+    semantics from a map label alone.
     """
 
     def __init__(self, db: Database):
@@ -65,6 +70,9 @@ class MapCatalog:
             CREATE TABLE IF NOT EXISTS map_sources (
                 id INTEGER PRIMARY KEY,
                 root TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT 'legacy-local',
+                source_version TEXT NOT NULL DEFAULT '',
+                source_key TEXT NOT NULL DEFAULT '',
                 map_stem TEXT NOT NULL,
                 zone_name TEXT NOT NULL DEFAULT '',
                 layer INTEGER NOT NULL,
@@ -132,6 +140,26 @@ class MapCatalog:
             END;
             """
         )
+        source_cols = {
+            row["name"] for row in self.db.conn.execute("PRAGMA table_info(map_sources)").fetchall()
+        }
+        for name, ddl in {
+            "source_name": "TEXT NOT NULL DEFAULT 'legacy-local'",
+            "source_version": "TEXT NOT NULL DEFAULT ''",
+            "source_key": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in source_cols:
+                self.db.conn.execute(f"ALTER TABLE map_sources ADD COLUMN {name} {ddl}")
+        self.db.conn.execute(
+            "UPDATE map_sources SET source_name='legacy-local' WHERE source_name=''"
+        )
+        self.db.conn.execute(
+            "UPDATE map_sources SET source_key=path WHERE source_key=''"
+        )
+        self.db.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_map_sources_identity "
+            "ON map_sources(source_name, source_key)"
+        )
         self.db.conn.execute(
             "INSERT INTO app_meta(key,value) VALUES('map_catalog_version',?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -177,48 +205,66 @@ class MapCatalog:
                 result[normalize_map_name(str(row["value"]))] = zone_name
         return result
 
+    @staticmethod
+    def _portable_source_path(source_name: str, source_key: str) -> str:
+        source_token = normalize_map_name(source_name) or "maps"
+        return f"mapcatalog://{source_token}/{source_key}"
+
     def _upsert_source(
         self,
         *,
-        root: str,
+        source_name: str,
+        source_version: str,
+        source_key: str,
         map_stem: str,
         zone_name: str,
         layer: int,
-        path: Path,
         mtime_ns: int,
         size: int,
     ) -> tuple[int, bool]:
         row = self.db.conn.execute(
-            "SELECT * FROM map_sources WHERE path=?", (str(path),)
+            "SELECT * FROM map_sources WHERE source_name=? AND source_key=?",
+            (source_name, source_key),
         ).fetchone()
         unchanged = bool(
             row
             and int(row["mtime_ns"] or 0) == int(mtime_ns)
             and int(row["size"] or 0) == int(size)
             and str(row["zone_name"] or "") == zone_name
-            and str(row["root"] or "") == root
+            and str(row["source_version"] or "") == source_version
         )
         if unchanged and row is not None:
             return int(row["id"]), True
 
         now = datetime.now().isoformat(timespec="seconds")
+        portable_path = self._portable_source_path(source_name, source_key)
         self.db.conn.execute(
             """
-            INSERT INTO map_sources(root,map_stem,zone_name,layer,path,mtime_ns,size,indexed_at)
-            VALUES(?,?,?,?,?,?,?,?)
-            ON CONFLICT(path) DO UPDATE SET
+            INSERT INTO map_sources(
+                root,source_name,source_version,source_key,map_stem,zone_name,layer,
+                path,mtime_ns,size,indexed_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(source_name,source_key) DO UPDATE SET
                 root=excluded.root,
+                source_version=excluded.source_version,
                 map_stem=excluded.map_stem,
                 zone_name=excluded.zone_name,
                 layer=excluded.layer,
+                path=excluded.path,
                 mtime_ns=excluded.mtime_ns,
                 size=excluded.size,
                 indexed_at=excluded.indexed_at
             """,
-            (root, map_stem, zone_name, int(layer), str(path), int(mtime_ns), int(size), now),
+            (
+                source_name, source_name, source_version, source_key, map_stem, zone_name,
+                int(layer), portable_path, int(mtime_ns), int(size), now,
+            ),
         )
         source_id = int(
-            self.db.conn.execute("SELECT id FROM map_sources WHERE path=?", (str(path),)).fetchone()[0]
+            self.db.conn.execute(
+                "SELECT id FROM map_sources WHERE source_name=? AND source_key=?",
+                (source_name, source_key),
+            ).fetchone()[0]
         )
         return source_id, False
 
@@ -226,18 +272,21 @@ class MapCatalog:
         self,
         root: str | Path,
         *,
+        source_name: str | None = None,
+        source_version: str = "",
         progress: Callable[[str, int, int, str], None] | None = None,
     ) -> MapIndexStats:
-        """Incrementally index map labels without monopolizing SQLite.
+        """Explicitly build or refresh one portable map-catalog source.
 
-        Map files are parsed before a write transaction begins. Changed files are
-        committed one file at a time, and reconciliation writes are chunked so the UI
-        connection can continue saving settings, view state, and log-derived state.
+        The filesystem root is only an input to this build operation.  Persisted map
+        identity uses ``source_name`` + a relative ``source_key`` so a catalog can be
+        shipped to another machine without retaining builder-local absolute paths.
         """
         root_path = Path(root).resolve()
         if not root_path.is_dir():
             raise FileNotFoundError(root_path)
-        root_s = str(root_path)
+        catalog_source_name = " ".join((source_name or root_path.name or "Map Pack").split()).strip()
+        catalog_source_version = str(source_version or "")
         zone_by_stem = self._zone_map()
         base_maps = discover_base_maps(root_path)
         candidates: list[tuple[str, int, Path, str]] = []
@@ -252,23 +301,25 @@ class MapCatalog:
         total_files = len(candidates)
         if progress:
             progress("scan", 0, max(1, total_files), f"Scanning {total_files:,} map files")
-        seen_paths: set[str] = set()
+        seen_keys: set[str] = set()
         files_indexed = 0
         files_unchanged = 0
         stale_removed = 0
 
         for index, (map_stem, layer_no, path, zone_name) in enumerate(candidates, start=1):
-            seen_paths.add(str(path))
+            source_key = path.relative_to(root_path).as_posix()
+            seen_keys.add(source_key)
             stat = path.stat()
             existing = self.db.conn.execute(
-                "SELECT * FROM map_sources WHERE path=?", (str(path),)
+                "SELECT * FROM map_sources WHERE source_name=? AND source_key=?",
+                (catalog_source_name, source_key),
             ).fetchone()
             unchanged = bool(
                 existing
                 and int(existing["mtime_ns"] or 0) == int(stat.st_mtime_ns)
                 and int(existing["size"] or 0) == int(stat.st_size)
                 and str(existing["zone_name"] or "") == zone_name
-                and str(existing["root"] or "") == root_s
+                and str(existing["source_version"] or "") == catalog_source_version
             )
             if unchanged:
                 files_unchanged += 1
@@ -290,11 +341,12 @@ class MapCatalog:
 
             with self.db.batch():
                 source_id, _ = self._upsert_source(
-                    root=root_s,
+                    source_name=catalog_source_name,
+                    source_version=catalog_source_version,
+                    source_key=source_key,
                     map_stem=map_stem,
                     zone_name=zone_name,
                     layer=layer_no,
-                    path=path,
                     mtime_ns=stat.st_mtime_ns,
                     size=stat.st_size,
                 )
@@ -315,14 +367,18 @@ class MapCatalog:
                 progress("index", index, max(1, total_files), f"Indexed {path.name} ({len(labels):,} labels)")
 
         stale = self.db.conn.execute(
-            "SELECT id,path FROM map_sources WHERE root=?", (root_s,)
+            "SELECT id,source_key FROM map_sources WHERE source_name=?", (catalog_source_name,)
         ).fetchall()
         with self.db.batch():
             for row in stale:
-                if str(row["path"]) not in seen_paths:
+                if str(row["source_key"]) not in seen_keys:
                     self.db.conn.execute("DELETE FROM map_sources WHERE id=?", (int(row["id"]),))
                     stale_removed += 1
-            self.db.set_meta("map_catalog_root", root_s)
+            self.db.set_meta("map_catalog_last_source", catalog_source_name)
+            self.db.set_meta(
+                f"map_catalog_source_version::{normalize_name(catalog_source_name)}",
+                catalog_source_version,
+            )
             if stale_removed:
                 self.db.set_meta("map_links_dirty", "1")
 
@@ -330,8 +386,9 @@ class MapCatalog:
             force=bool(files_indexed or stale_removed), progress=progress
         )
         label_count = int(self.db.conn.execute(
-            "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
-            (root_s,),
+            "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id "
+            "WHERE ms.source_name=?",
+            (catalog_source_name,),
         ).fetchone()[0])
         if progress:
             progress("done", 1, 1, f"Ready: {label_count:,} indexed labels")
@@ -529,7 +586,7 @@ class MapCatalog:
 
         rows = self.db.conn.execute(
             """
-            SELECT ml.*, ms.path
+            SELECT ml.*, ms.path, ms.source_name, ms.source_version, ms.source_key
             FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id
             ORDER BY ml.zone_name,ml.map_stem,ml.layer,ml.source_line
             """
@@ -612,7 +669,7 @@ class MapCatalog:
     def hits_for_entity(self, entity_id: int, *, limit: int = 100) -> list[MapCatalogHit]:
         rows = self.db.conn.execute(
             """
-            SELECT ml.*,ms.path FROM map_labels ml
+            SELECT ml.*,ms.path,ms.source_name,ms.source_version,ms.source_key FROM map_labels ml
             JOIN map_sources ms ON ms.id=ml.source_id
             WHERE ml.linked_entity_id=?
             ORDER BY CASE WHEN ml.zone_name<>'' THEN 0 ELSE 1 END,
@@ -630,6 +687,9 @@ class MapCatalog:
             map_stem=str(row["map_stem"]),
             zone_name=str(row["zone_name"] or ""),
             path=str(row["path"]),
+            source_name=str(row["source_name"] or "Map Pack"),
+            source_version=str(row["source_version"] or ""),
+            source_key=str(row["source_key"] or ""),
             layer=int(row["layer"]),
             text=str(row["raw_text"]),
             clean_text=str(row["clean_text"]),
@@ -659,12 +719,12 @@ def map_evidence_lines(db: Database, entity_id: int, *, limit: int = 50) -> list
         return []
     if not rows:
         return []
-    lines = ["", "Local map evidence:"]
+    lines = ["", "Map catalog evidence:"]
     for row in rows:
         gx, gy, gz = map_to_game(float(row["x"]), float(row["y"]), float(row["z"]))
         zone = str(row["zone_name"] or row["map_stem"])
         lines.append(
             f"  • {row['raw_text']} | {zone} | /loc Y {gy:g}, X {gx:g}, Z {gz:g} | "
-            f"layer {row['layer']} | {Path(str(row['path'])).name}:{row['source_line']}"
+            f"layer {row['layer']} | {row['source_name']}:{row['source_key']}:{row['source_line']}"
         )
     return lines

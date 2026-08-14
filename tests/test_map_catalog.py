@@ -38,7 +38,7 @@ class MapCatalogTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_indexes_all_labels_and_links_exact_entity(self):
-        stats = self.catalog.index_root(self.root)
+        stats = self.catalog.index_root(self.root, source_name="Brewall", source_version="2026-08")
         self.assertEqual(stats.base_maps, 1)
         self.assertEqual(stats.labels, 2)
         hits = self.catalog.search('zone:"Stone Hive" Warwing', current_zone="Stone Hive")
@@ -46,7 +46,11 @@ class MapCatalogTests(unittest.TestCase):
         self.assertEqual(hits[0].text, "Warwing Wendlez (Q)")
         self.assertEqual(hits[0].linked_entity_id, self.npc_id)
         self.assertEqual(hits[0].link_status, "linked")
-        self.assertTrue(Path(hits[0].path).name.startswith("stonehive"))
+        self.assertEqual(hits[0].source_name, "Brewall")
+        self.assertEqual(hits[0].source_version, "2026-08")
+        self.assertEqual(hits[0].source_key, "stonehive_1.txt")
+        self.assertTrue(hits[0].path.startswith("mapcatalog://"))
+        self.assertNotIn(str(self.root), hits[0].path)
 
     def test_typo_suggests_map_label_but_spell_filter_does_not(self):
         self.catalog.index_root(self.root)
@@ -75,6 +79,22 @@ class MapCatalogTests(unittest.TestCase):
         hits = self.catalog.search("Warwing")
         self.assertTrue(hits)
         self.assertEqual(self.db.get_meta("map_links_dirty"), "1")
+
+    def test_same_catalog_source_can_move_without_duplicate_rows(self):
+        self.catalog.index_root(self.root, source_name="Brewall")
+        moved = Path(self.tmp.name) / "moved_maps"
+        moved.mkdir()
+        for source in self.root.glob("*.txt"):
+            (moved / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        self.catalog.index_root(moved, source_name="Brewall")
+        sources = self.db.conn.execute(
+            "SELECT source_name,source_key,path,root FROM map_sources ORDER BY source_key"
+        ).fetchall()
+        self.assertEqual(len(sources), 2)
+        self.assertEqual({row["source_name"] for row in sources}, {"Brewall"})
+        self.assertEqual({row["root"] for row in sources}, {"Brewall"})
+        self.assertTrue(all(str(row["path"]).startswith("mapcatalog://") for row in sources))
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM map_labels").fetchone()[0], 2)
 
 
 class MapCatalogConcurrencyTests(unittest.TestCase):

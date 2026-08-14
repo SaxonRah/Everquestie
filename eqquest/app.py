@@ -844,8 +844,8 @@ class EverQuestieApp(tk.Tk):
             "",
             "Source policy:",
             "  EQ client: authoritative for local IDs/mechanics/zone identity",
-            "  Allakhazam: quest/world/community evidence when explicitly imported from the local mirror",
-            "  Good/Brewall/EQ maps: selected map geometry and POIs",
+            "  Map catalog: prebuilt EverQuestie knowledge; local map files are rendering assets",
+            "  Allakhazam DB/Wiki: optional future enrichment when a mirror is available",
             "  Conflicting evidence is retained through source provenance instead of silently fetching a replacement.",
         ]
         return "\n".join(lines)

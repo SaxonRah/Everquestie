@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -16,6 +17,7 @@ def install_runtime_policy() -> None:
     machine.
     """
     from .map_catalog import MapCatalog
+    from .map_resolution import resolve_catalog_map_for_zone
     from . import mapview as mapview_module
 
     if not getattr(MapCatalog.index_root, _MAP_POLICY_MARKER, False):
@@ -77,6 +79,56 @@ def install_runtime_policy() -> None:
                     )
                     return
                 return super().index_map_catalog()
+
+            def load_current_zone(self) -> None:
+                if not self._packaged_runtime():
+                    return super().load_current_zone()
+
+                zone = self.get_zone()
+                root = self.map_root.get().strip()
+                if not zone:
+                    self.map_status.set("Current zone is not known from the log yet.")
+                    return
+                if not root or not Path(root).is_dir():
+                    self.map_status.set("Choose a map pack folder first.")
+                    return
+
+                bound = self.db.get_meta(mapview_module._binding_key(zone), "")
+                hinted = None
+                zone_row, _ = self.db.resolve_entity(zone, "zone")
+                if zone_row is not None:
+                    try:
+                        data = json.loads(zone_row["data_json"] or "{}")
+                    except Exception:
+                        data = {}
+                    hinted = data.get("map_short_name") or data.get("short_name")
+
+                resolved = resolve_catalog_map_for_zone(
+                    self.db,
+                    zone,
+                    root,
+                    bound_stem=bound,
+                    hinted_stem=hinted,
+                )
+                if resolved.path is None:
+                    if resolved.candidates:
+                        choices = ", ".join(path.name for path in resolved.candidates[:6])
+                        self.map_status.set(
+                            f"Multiple canonical maps are present for {zone}: {choices}. "
+                            "Open the intended map once and press Bind zone."
+                        )
+                    else:
+                        self.map_status.set(
+                            f"No unique local map-file match for {zone}. "
+                            "Open the correct .txt once, then press Bind zone."
+                        )
+                    self._refresh_overlay_cache(force=True)
+                    self._refresh_marker_list()
+                    return
+
+                self.load_map(resolved.path)
+                self._base_map_status = f"{self._base_map_status} | {resolved.reason}"
+                self.map_status.set(self._base_map_status)
 
         setattr(RuntimePolicyMapViewerFrame, _MAP_POLICY_MARKER, True)
         mapview_module.MapViewerFrame = RuntimePolicyMapViewerFrame

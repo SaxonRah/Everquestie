@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import colorsys
-import heapq
 import json
+import queue
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -10,7 +10,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from .db import Database
-from .mapindex import SpatialMapIndex, bbox_intersects
+from .mapraster import (
+    RasterRequest,
+    RasterResult,
+    map_background_rgb,
+    render_map_raster,
+    themed_map_rgb,
+)
 from .eqmap import (
     ZoneMap,
     discover_base_maps,
@@ -43,11 +49,6 @@ def _hex_color(r: int, g: int, b: int) -> str:
 
 def _binding_key(zone_name: str) -> str:
     return MAP_BIND_PREFIX + normalize_map_name(zone_name)
-
-
-def _mix_rgb(a: tuple[int, int, int], b: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
-    t = max(0.0, min(1.0, amount))
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))  # type: ignore[return-value]
 
 
 class MapViewerFrame(ttk.Frame):
@@ -124,16 +125,22 @@ class MapViewerFrame(ttk.Frame):
         # Theme color conversion is deterministic and reused for every native RGB.
         self._color_cache: dict[tuple[str, int, int, int, bool], str] = {}
 
-        # Only a buffered viewport worth of native map objects is kept in Tk.
-        # Good/Brewall maps can contain tens of thousands of segments; keeping
-        # all of them alive makes even Canvas.move() expensive on Windows Tk.
-        self._spatial_index: SpatialMapIndex | None = None
-        self._static_render_bounds: tuple[float, float, float, float] | None = None
-        self._static_refresh_job: str | None = None
+        # Native map geometry is rasterized off the Tk thread. The Canvas keeps
+        # one image plus lightweight labels/markers instead of thousands of lines.
         self._base_map_status = ""
+        self._raster_photo: tk.PhotoImage | None = None
+        self._raster_generation = 0
+        self._raster_render_job: str | None = None
+        self._raster_requests: queue.Queue[RasterRequest] = queue.Queue(maxsize=1)
+        self._raster_results: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._raster_thread = threading.Thread(
+            target=self._raster_worker, name="EverQuestieMapRaster", daemon=True
+        )
+        self._raster_thread.start()
 
         self._build()
         self._apply_map_background()
+        self.after(30, self._poll_raster_results)
         self.after(250, self._poll_state)
 
     def _build(self) -> None:
@@ -311,8 +318,7 @@ class MapViewerFrame(ttk.Frame):
         self.canvas.delete("all")
         self._overlay_entity_by_item.clear()
         self.map_file.set(str(self.zone_map.base_path))
-        self._spatial_index = SpatialMapIndex(self.zone_map)
-        self._static_render_bounds = None
+        self._invalidate_raster()
         counts = []
         for layer, data in sorted(self.zone_map.layers.items()):
             counts.append(f"L{layer}:{len(data.lines)} lines/{len(data.points)} labels")
@@ -468,6 +474,7 @@ class MapViewerFrame(ttk.Frame):
         new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
         new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
         self._move_view_to(new_x, new_y)
+        self._request_raster_render(60)
         self._schedule_save_view()
 
     def _on_resize(self, _event) -> None:
@@ -476,7 +483,8 @@ class MapViewerFrame(ttk.Frame):
         elif self.follow_player.get() and self.zone_map is not None and self.get_location():
             self.center_player()
         elif self.zone_map is not None:
-            self._schedule_static_refresh(80)
+            self._invalidate_raster()
+            self._request_raster_render(100)
         else:
             self._draw_empty_message()
 
@@ -497,6 +505,7 @@ class MapViewerFrame(ttk.Frame):
         dy = event.y - self._pan_start[1]
         self.offset_x += dx
         self.offset_y += dy
+        self._invalidate_raster()
         self._pending_pan_dx += dx
         self._pending_pan_dy += dy
         self._pan_start = (event.x, event.y)
@@ -512,7 +521,6 @@ class MapViewerFrame(ttk.Frame):
         self._pending_pan_dy = 0.0
         if dx or dy:
             self.canvas.move("map_content", dx, dy)
-            self._schedule_static_refresh_if_needed(90)
 
     def _pan_end(self, _event) -> None:
         if self._pan_job is not None:
@@ -523,7 +531,7 @@ class MapViewerFrame(ttk.Frame):
             self._pan_job = None
         self._flush_pan()
         self._pan_start = None
-        self._schedule_static_refresh(0)
+        self._request_raster_render(0)
         self._schedule_save_view(180)
 
     def _wheel(self, event) -> None:
@@ -541,10 +549,11 @@ class MapViewerFrame(ttk.Frame):
         self.scale = new_scale
         self.offset_x = sx + (self.offset_x - sx) * actual
         self.offset_y = sy + (self.offset_y - sy) * actual
-        self.canvas.scale("map_content", sx, sy, actual, actual)
-        # Keep wheel interaction cheap: scale the current buffered display list
-        # immediately, then repopulate the viewport after wheel input settles.
-        self._schedule_static_refresh(90)
+        # Canvas image items cannot be smoothly scaled by canvas.scale(). Keep the
+        # last raster visible while wheel input is active, then replace it once the
+        # wheel settles. No thousands-of-object transform occurs here.
+        self._invalidate_raster()
+        self._request_raster_render(85)
         self._schedule_save_view()
 
     def _move_view_to(self, new_offset_x: float, new_offset_y: float) -> None:
@@ -553,8 +562,8 @@ class MapViewerFrame(ttk.Frame):
         self.offset_x = new_offset_x
         self.offset_y = new_offset_y
         if dx or dy:
+            self._invalidate_raster()
             self.canvas.move("map_content", dx, dy)
-            self._schedule_static_refresh_if_needed(60)
 
     def _motion(self, event) -> None:
         if self.zone_map is None:
@@ -662,6 +671,7 @@ class MapViewerFrame(ttk.Frame):
             new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
             new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
             self._move_view_to(new_x, new_y)
+            self._request_raster_render(60)
             self._schedule_save_view()
             return
 
@@ -679,13 +689,8 @@ class MapViewerFrame(ttk.Frame):
         self.redraw()
 
     def _apply_map_background(self) -> None:
-        theme_id = self._map_theme_id()
-        background = {
-            MAP_THEME_ORIGINAL: "#f7f7f7",
-            MAP_THEME_STONE: "#2b3542",
-            MAP_THEME_PARCHMENT: "#d9cfad",
-        }[theme_id]
-        self.canvas.configure(background=background)
+        r, g, b = map_background_rgb(self._map_theme_id())
+        self.canvas.configure(background=_hex_color(r, g, b))
 
     def _themed_map_color(self, r: int, g: int, b: int, *, label: bool = False) -> str:
         theme_id = self._map_theme_id()
@@ -693,62 +698,7 @@ class MapViewerFrame(ttk.Frame):
         cached = self._color_cache.get(key)
         if cached is not None:
             return cached
-
-        if theme_id == MAP_THEME_ORIGINAL:
-            if r > 245 and g > 245 and b > 245:
-                color = "#666666" if label else "#999999"
-            else:
-                color = _hex_color(r, g, b)
-            self._color_cache[key] = color
-            return color
-
-        rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
-        hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)
-
-        if theme_id == MAP_THEME_STONE:
-            dark = (49, 60, 72)
-            light = (220, 221, 207)
-            if sat < 0.12:
-                rgb = _mix_rgb(dark, light, 0.18 + 0.72 * value)
-            else:
-                # Preserve source-map semantic hue families while translating them
-                # into the EverQuestie gray/blue stone palette.
-                if hue < 0.08 or hue >= 0.95:       # red
-                    base = (191, 139, 105)           # muted copper
-                elif hue < 0.18:                    # orange/yellow
-                    base = (201, 181, 119)           # aged gold
-                elif hue < 0.45:                    # green
-                    base = (122, 151, 137)           # sage
-                elif hue < 0.72:                    # cyan/blue
-                    base = (118, 145, 173)           # steel blue
-                else:                               # violet/magenta
-                    base = (150, 137, 166)           # slate violet
-                rgb = _mix_rgb(dark, base, 0.35 + 0.58 * value)
-            if label:
-                rgb = _mix_rgb(rgb, light, 0.12)
-        else:
-            ink = (68, 57, 42)
-            paper = (217, 207, 173)
-            if sat < 0.12:
-                rgb = _mix_rgb(ink, (118, 100, 72), 0.15 + 0.55 * value)
-            else:
-                if hue < 0.08 or hue >= 0.95:
-                    base = (132, 67, 51)             # rust
-                elif hue < 0.18:
-                    base = (143, 104, 53)            # ochre
-                elif hue < 0.45:
-                    base = (93, 105, 66)             # olive
-                elif hue < 0.72:
-                    base = (70, 91, 104)             # faded ink blue
-                else:
-                    base = (104, 75, 92)             # plum ink
-                rgb = _mix_rgb(ink, base, 0.42 + 0.48 * value)
-            if label:
-                rgb = _mix_rgb(rgb, ink, 0.10)
-            # Keep extremely bright original lines visible against paper.
-            if value > 0.94 and sat < 0.08:
-                rgb = _mix_rgb(ink, paper, 0.32)
-
+        rgb = themed_map_rgb(theme_id, r, g, b, label=label)
         color = _hex_color(*rgb)
         self._color_cache[key] = color
         return color
@@ -813,84 +763,147 @@ class MapViewerFrame(ttk.Frame):
         lo, hi = sorted((z0, z1))
         return not (hi < z - span or lo > z + span)
 
-    def _viewport_world_bounds(self, margin_px: float = 0.0) -> tuple[float, float, float, float]:
-        w = max(1, self.canvas.winfo_width())
-        h = max(1, self.canvas.winfo_height())
-        x0, y0 = self._screen_to_world(-margin_px, -margin_px)
-        x1, y1 = self._screen_to_world(w + margin_px, h + margin_px)
-        return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
+    def _invalidate_raster(self) -> None:
+        self._raster_generation += 1
 
-    def _buffered_world_bounds(self) -> tuple[float, float, float, float]:
-        w = max(1, self.canvas.winfo_width())
-        h = max(1, self.canvas.winfo_height())
-        # Enough off-screen geometry for a useful drag runway, but not so much that
-        # Windows Tk ends up managing the entire zone again.
-        margin = max(140.0, min(320.0, min(w, h) * 0.32))
-        return self._viewport_world_bounds(margin)
-
-    @staticmethod
-    def _bounds_contains(outer, inner) -> bool:
-        return outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3]
-
-    def _schedule_static_refresh_if_needed(self, delay_ms: int = 75) -> None:
-        if self.zone_map is None:
-            return
-        current = self._viewport_world_bounds(20.0)
-        if self._static_render_bounds is None or not self._bounds_contains(self._static_render_bounds, current):
-            self._schedule_static_refresh(delay_ms)
-
-    def _schedule_static_refresh(self, delay_ms: int = 75) -> None:
-        if self.zone_map is None:
-            return
-        if self._static_refresh_job is not None:
+    def _raster_worker(self) -> None:
+        while True:
+            req = self._raster_requests.get()
             try:
-                self.after_cancel(self._static_refresh_job)
+                result = render_map_raster(req)
+            except Exception as exc:
+                self._raster_results.put(("error", (req.generation, repr(exc))))
+            else:
+                self._raster_results.put(("ok", result))
+
+    def _request_raster_render(self, delay_ms: int = 0) -> None:
+        if self.zone_map is None:
+            return
+        if self._raster_render_job is not None:
+            try:
+                self.after_cancel(self._raster_render_job)
             except tk.TclError:
                 pass
-        self._static_refresh_job = self.after(max(0, delay_ms), self._refresh_after_view_change)
+        self._raster_render_job = self.after(max(0, delay_ms), self._start_raster_render)
 
-    def _refresh_after_view_change(self) -> None:
-        self._static_refresh_job = None
+    def _start_raster_render(self) -> None:
+        self._raster_render_job = None
         if self.zone_map is None:
             return
-        self._rebuild_static()
-        # Zooming scales marker radii as coordinates. Recreate the small dynamic
-        # layers so markers/text retain constant screen-readable sizes.
+        enabled_z, z, span = self._z_context()
+        req = RasterRequest(
+            generation=self._raster_generation,
+            zone_map=self.zone_map,
+            canvas_width=max(1, self.canvas.winfo_width()),
+            canvas_height=max(1, self.canvas.winfo_height()),
+            buffer_px=220,
+            scale=self.scale,
+            offset_x=self.offset_x,
+            offset_y=self.offset_y,
+            enabled_layers=tuple(self._enabled_layers()),
+            theme_id=self._map_theme_id(),
+            elevation_enabled=enabled_z,
+            elevation_z=z,
+            elevation_span=span,
+        )
+        # Keep only the newest queued request. A render already in progress may finish,
+        # but its generation is discarded if the view changed in the meantime.
+        try:
+            while True:
+                self._raster_requests.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._raster_requests.put_nowait(req)
+        except queue.Full:
+            pass
+        if self._base_map_status:
+            self.map_status.set(f"{self._base_map_status} | rendering full-detail map…")
+
+    def _poll_raster_results(self) -> None:
+        try:
+            while True:
+                kind, payload = self._raster_results.get_nowait()
+                if kind == "ok":
+                    result = payload
+                    if isinstance(result, RasterResult) and result.generation == self._raster_generation:
+                        self._install_raster_result(result)
+                else:
+                    generation, message = payload
+                    if generation == self._raster_generation:
+                        self.map_status.set(f"Map raster failed: {message}")
+        except queue.Empty:
+            pass
+        self.after(30, self._poll_raster_results)
+
+    def _install_raster_result(self, result: RasterResult) -> None:
+        try:
+            photo = tk.PhotoImage(data=result.ppm, format="PPM")
+        except tk.TclError as exc:
+            self.map_status.set(f"Map image load failed: {exc}")
+            return
+        self.canvas.delete("map_raster")
+        self.canvas.delete("map_labels")
+        self._raster_photo = photo
+        item = self.canvas.create_image(
+            result.image_x,
+            result.image_y,
+            image=photo,
+            anchor="nw",
+            tags=("map_content", "map_raster"),
+        )
+        self.canvas.tag_lower(item)
+        self._draw_map_labels(buffer_px=220)
         self._redraw_overlays()
         self._redraw_position()
+        if self._base_map_status:
+            self.map_status.set(
+                f"{self._base_map_status} | full-detail raster | "
+                f"{result.viewport_lines:,} visible / {result.source_lines:,} source lines"
+            )
 
-    def _on_static_options_changed(self) -> None:
-        self._static_render_bounds = None
-        self._schedule_static_refresh(0)
-
-    def _line_budget(self) -> int:
-        area = max(1, self.canvas.winfo_width()) * max(1, self.canvas.winfo_height())
-        return max(1200, min(2400, 650 + area // 520))
-
-    def _label_budget(self) -> int:
-        area = max(1, self.canvas.winfo_width()) * max(1, self.canvas.winfo_height())
-        return max(70, min(260, area // 4200))
-
-    def _update_render_status(self, visible_lines: int, drawn_lines: int, visible_labels: int, drawn_labels: int) -> None:
-        if not self._base_map_status:
+    def _draw_map_labels(self, *, buffer_px: int = 0) -> None:
+        self.canvas.delete("map_labels")
+        if self.zone_map is None or not self.show_labels.get():
             return
-        lod = ''
-        if drawn_lines < visible_lines or drawn_labels < visible_labels:
-            lod = ' | adaptive detail'
-        self.map_status.set(
-            f'{self._base_map_status} | view {drawn_lines:,}/{visible_lines:,} lines, '
-            f'{drawn_labels:,}/{visible_labels:,} labels{lod}'
-        )
+        z_context = self._z_context()
+        left = -buffer_px
+        top = -buffer_px
+        right = self.canvas.winfo_width() + buffer_px
+        bottom = self.canvas.winfo_height() + buffer_px
+        for layer_no in self._enabled_layers():
+            layer = self.zone_map.layers.get(layer_no)
+            if layer is None:
+                continue
+            for point in layer.points:
+                if not self._z_visible_for_context(point.z, None, z_context):
+                    continue
+                x, y = self._world_to_screen(point.x, point.y)
+                if x < left or x > right or y < top or y > bottom:
+                    continue
+                font_size = {1: 8, 2: 10, 3: 12}.get(point.size, 9)
+                self.canvas.create_text(
+                    x,
+                    y,
+                    text=point.display_text,
+                    fill=self._themed_map_color(point.r, point.g, point.b, label=True),
+                    font=("TkDefaultFont", font_size),
+                    anchor="center",
+                    tags=("map_content", "map_labels"),
+                )
 
     def _on_elevation_changed(self) -> None:
         loc = self.get_location()
         self._last_filter_z = float(loc[2]) if loc and self.filter_elevation.get() else None
-        self._rebuild_static()
+        self._invalidate_raster()
+        self._request_raster_render(0)
         self._redraw_overlays()
 
     def _draw_empty_message(self) -> None:
         self.canvas.delete("map_message")
         if self.zone_map is None:
+            self.canvas.delete("map_raster")
+            self.canvas.delete("map_labels")
             fill = "#d7d8cf" if self._map_theme_id() == MAP_THEME_STONE else "#665d4d"
             self.canvas.create_text(
                 self.canvas.winfo_width() / 2,
@@ -901,122 +914,15 @@ class MapViewerFrame(ttk.Frame):
             )
 
     def _rebuild_static(self) -> None:
-        self.canvas.delete("map_geometry")
-        self.canvas.delete("map_labels")
-        self.canvas.delete("map_message")
-        if self.zone_map is None:
-            self._draw_empty_message()
-            return
-        if self._spatial_index is None:
-            self._spatial_index = SpatialMapIndex(self.zone_map)
-
-        bounds = self._buffered_world_bounds()
-        self._static_render_bounds = bounds
-        z_context = self._z_context()
-        enabled_layers = self._enabled_layers()
-
-        line_candidates = []
-        point_candidates = []
-        visible_lines = 0
-        visible_labels = 0
-        dedupe: set[tuple] = set()
-
-        for layer_no in enabled_layers:
-            layer = self.zone_map.layers.get(layer_no)
-            if layer is None:
-                continue
-            line_ids, point_ids = self._spatial_index.query_layer(layer_no, bounds)
-
-            for line_no in line_ids:
-                line = layer.lines[line_no]
-                line_bounds = (
-                    min(line.x0, line.x1), min(line.y0, line.y1),
-                    max(line.x0, line.x1), max(line.y0, line.y1),
-                )
-                if not bbox_intersects(line_bounds, bounds):
-                    continue
-                if not self._z_visible_for_context(line.z0, line.z1, z_context):
-                    continue
-                x0, y0 = self._world_to_screen(line.x0, line.y0)
-                x1, y1 = self._world_to_screen(line.x1, line.y1)
-                dx, dy = x1 - x0, y1 - y0
-                length2 = dx * dx + dy * dy
-                if length2 < 0.42:
-                    continue
-                visible_lines += 1
-
-                q = 1.5
-                a = (round(x0 / q), round(y0 / q))
-                b = (round(x1 / q), round(y1 / q))
-                if b < a:
-                    a, b = b, a
-                key = (a, b, line.r // 16, line.g // 16, line.b // 16, layer_no)
-                if key in dedupe:
-                    continue
-                dedupe.add(key)
-                line_candidates.append((length2, layer_no, line_no, x0, y0, x1, y1, line))
-
-            if self.show_labels.get():
-                for point_no in point_ids:
-                    point = layer.points[point_no]
-                    if not (bounds[0] <= point.x <= bounds[2] and bounds[1] <= point.y <= bounds[3]):
-                        continue
-                    if not self._z_visible_for_context(point.z, None, z_context):
-                        continue
-                    x, y = self._world_to_screen(point.x, point.y)
-                    visible_labels += 1
-                    cx = self.canvas.winfo_width() * 0.5
-                    cy = self.canvas.winfo_height() * 0.5
-                    dist2 = (x - cx) ** 2 + (y - cy) ** 2
-                    point_candidates.append((-point.size, dist2, layer_no, point_no, x, y, point))
-
-        line_budget = self._line_budget()
-        if len(line_candidates) > line_budget:
-            line_candidates = heapq.nlargest(line_budget, line_candidates, key=lambda row: row[0])
-
-        for _length2, layer_no, _line_no, x0, y0, x1, y1, line in line_candidates:
-            self.canvas.create_line(
-                x0, y0, x1, y1,
-                fill=self._themed_map_color(line.r, line.g, line.b),
-                width=1,
-                tags=("map_content", "map_static", "map_geometry", f"map_geometry_layer_{layer_no}"),
-            )
-
-        drawn_labels = 0
-        if self.show_labels.get() and point_candidates:
-            point_candidates.sort()
-            occupied: set[tuple[int, int]] = set()
-            budget = self._label_budget()
-            for _neg_size, _dist2, layer_no, _point_no, x, y, point in point_candidates:
-                slot = (int(x // 92), int(y // 22))
-                if slot in occupied:
-                    continue
-                occupied.add(slot)
-                font_size = {1: 8, 2: 10, 3: 12}.get(point.size, 9)
-                self.canvas.create_text(
-                    x, y,
-                    text=point.display_text,
-                    fill=self._themed_map_color(point.r, point.g, point.b, label=True),
-                    font=("TkDefaultFont", font_size),
-                    anchor="center",
-                    tags=("map_content", "map_static", "map_labels", f"map_label_layer_{layer_no}"),
-                )
-                drawn_labels += 1
-                if drawn_labels >= budget:
-                    break
-
-        self._update_render_status(visible_lines, len(line_candidates), visible_labels, drawn_labels)
+        self._invalidate_raster()
+        self._request_raster_render(0)
 
     def _apply_static_visibility(self) -> None:
-        for layer_no in range(4):
-            enabled = bool(self.layer_vars[layer_no].get())
-            self.canvas.itemconfigure(
-                f"map_geometry_layer_{layer_no}", state="normal" if enabled else "hidden"
-            )
-            labels_enabled = enabled and bool(self.show_labels.get())
-            self.canvas.itemconfigure(
-                f"map_label_layer_{layer_no}", state="normal" if labels_enabled else "hidden"
-            )
+        self._on_static_options_changed()
+
+    def _on_static_options_changed(self) -> None:
+        self._invalidate_raster()
+        self._request_raster_render(0)
 
     def _redraw_overlays(self) -> None:
         self.canvas.delete("eqquest_overlay")
@@ -1118,14 +1024,13 @@ class MapViewerFrame(ttk.Frame):
                 )
 
     def redraw(self) -> None:
-        """Full rebuild for map/content option changes, never used for pan/zoom."""
-        self.canvas.delete("all")
-        self._overlay_entity_by_item.clear()
+        """Request a full-detail raster; dynamic overlays remain lightweight."""
         self._apply_map_background()
         if self.zone_map is None:
             self._draw_empty_message()
             return
-        self._rebuild_static()
+        self._invalidate_raster()
+        self._request_raster_render(0)
         self._redraw_overlays()
         self._redraw_position()
 
@@ -1154,6 +1059,7 @@ class MapViewerFrame(ttk.Frame):
                 new_x = self.canvas.winfo_width() * 0.5 - mx * self.scale
                 new_y = self.canvas.winfo_height() * 0.5 - my * self.scale
                 self._move_view_to(new_x, new_y)
+                self._request_raster_render(250)
 
             # Normal /loc updates touch only the small trail/player objects. The
             # native map is rebuilt for movement only when elevation filtering is

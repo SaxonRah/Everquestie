@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import os
+from pathlib import Path
+import re
+import sqlite3
+from typing import Any
+
+from .db import Database
+from .db_audit import identity_audit_text
+from .map_catalog import MapCatalog
+
+
+# Schema compatibility and content release identity are deliberately separate.
+# Bump this only when a packaged knowledge DB requires a different reader contract.
+KNOWLEDGE_SCHEMA_VERSION = "1"
+
+USER_STATE_TABLES = (
+    "quest_progress",
+    "tracked_quests",
+    "observed_events",
+)
+
+# app_meta currently mixes historical runtime settings with build metadata. A release
+# snapshot keeps only values that describe the knowledge artifact itself. Future source
+# adapters should put durable provenance/version data in source_pages whenever possible.
+KNOWLEDGE_META_KEYS = {
+    "database_role",
+    "knowledge_schema_version",
+    "knowledge_snapshot_version",
+    "knowledge_snapshot_built_at",
+    "fts_dirty",
+    "fts_last_rebuild",
+    "map_catalog_version",
+    "map_catalog_last_source",
+    "map_links_dirty",
+    "eq_mcp_last_compile",
+    "eq_mcp_version",
+    "eq_mcp_commit",
+    "eq_mcp_system_counts",
+}
+KNOWLEDGE_META_PREFIXES = (
+    "map_catalog_source_version::",
+    "source_version::",
+)
+
+
+@dataclass(slots=True)
+class KnowledgeSnapshotReport:
+    path: Path
+    snapshot_version: str
+    schema_version: str
+    built_at: str
+    stripped_user_rows: dict[str, int]
+    stripped_source_paths: int
+    stripped_meta_rows: int
+    stripped_builder_payloads: int
+    map_reconciliation: dict[str, int]
+    fts_rows: int
+    diagnostics: dict[str, Any]
+    identity_audit: str
+
+
+def _table_exists(db: Database, table: str) -> bool:
+    row = db.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _looks_absolute_filesystem_path(value: str) -> bool:
+    value = value.strip()
+    if not value:
+        return False
+    return value.startswith(("/", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", value))
+
+
+def _keep_meta_key(key: str) -> bool:
+    return key in KNOWLEDGE_META_KEYS or any(key.startswith(prefix) for prefix in KNOWLEDGE_META_PREFIXES)
+
+
+def strip_user_state(db: Database) -> dict[str, int]:
+    """Delete rows that belong to a player/session rather than global knowledge."""
+    removed: dict[str, int] = {}
+    with db.batch():
+        for table in USER_STATE_TABLES:
+            if not _table_exists(db, table):
+                removed[table] = 0
+                continue
+            count = int(db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            db.conn.execute(f"DELETE FROM {table}")
+            removed[table] = count
+    return removed
+
+
+def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
+    """Remove machine-local paths/settings and raw builder-only payloads.
+
+    Knowledge/provenance identities remain intact. In particular, source_name,
+    source_kind, source_key, source_version and source hashes are retained.
+    """
+    stripped_paths = 0
+    stripped_meta = 0
+    stripped_payloads = 0
+    with db.batch():
+        if _table_exists(db, "source_pages"):
+            stripped_paths = int(
+                db.conn.execute(
+                    "SELECT COUNT(*) FROM source_pages WHERE trim(COALESCE(local_path,''))<>''"
+                ).fetchone()[0]
+            )
+            db.conn.execute("UPDATE source_pages SET local_path='' WHERE local_path<>''")
+
+            # MCP snapshot JSON is builder evidence, not runtime knowledge, and can
+            # contain the builder's EverQuest installation path. The normalized
+            # entities/support rows and source hash/version are the distributable data.
+            stripped_payloads = int(
+                db.conn.execute(
+                    "SELECT COUNT(*) FROM source_pages "
+                    "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+                ).fetchone()[0]
+            )
+            db.conn.execute(
+                "UPDATE source_pages SET plain_text='' "
+                "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+            )
+
+        if _table_exists(db, "map_sources"):
+            # root is a legacy compatibility column. Fresh portable catalog rows use
+            # source_name/source_key for identity; normalize root so it cannot retain
+            # an old builder-machine directory.
+            cols = {
+                str(row["name"])
+                for row in db.conn.execute("PRAGMA table_info(map_sources)").fetchall()
+            }
+            if "source_name" in cols and "root" in cols:
+                db.conn.execute("UPDATE map_sources SET root=source_name")
+
+        if _table_exists(db, "app_meta"):
+            keys = [str(row["key"]) for row in db.conn.execute("SELECT key FROM app_meta").fetchall()]
+            drop = [key for key in keys if not _keep_meta_key(key)]
+            for key in drop:
+                db.conn.execute("DELETE FROM app_meta WHERE key=?", (key,))
+            stripped_meta = len(drop)
+    return stripped_paths, stripped_meta, stripped_payloads
+
+
+def snapshot_portability_errors(db: Database) -> list[str]:
+    """Return release-blocking evidence of player state or builder-local paths."""
+    errors: list[str] = []
+    for table in USER_STATE_TABLES:
+        if _table_exists(db, table):
+            count = int(db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            if count:
+                errors.append(f"{table} still contains {count} user-state row(s)")
+
+    if _table_exists(db, "source_pages"):
+        rows = db.conn.execute(
+            "SELECT id,source_name,source_key,local_path FROM source_pages"
+        ).fetchall()
+        for row in rows:
+            local_path = str(row["local_path"] or "")
+            if local_path:
+                errors.append(f"source_pages id {row['id']} retains local_path={local_path!r}")
+            source_key = str(row["source_key"] or "")
+            if _looks_absolute_filesystem_path(source_key):
+                errors.append(
+                    f"source_pages id {row['id']} ({row['source_name']}) has absolute source_key={source_key!r}"
+                )
+
+    if _table_exists(db, "map_sources"):
+        cols = {
+            str(row["name"])
+            for row in db.conn.execute("PRAGMA table_info(map_sources)").fetchall()
+        }
+        wanted = [name for name in ("id", "source_name", "source_key", "path", "root") if name in cols]
+        if wanted:
+            rows = db.conn.execute(f"SELECT {','.join(wanted)} FROM map_sources").fetchall()
+            for row in rows:
+                row_id = row["id"] if "id" in cols else "?"
+                source_key = str(row["source_key"] or "") if "source_key" in cols else ""
+                path = str(row["path"] or "") if "path" in cols else ""
+                root = str(row["root"] or "") if "root" in cols else ""
+                source_name = str(row["source_name"] or "") if "source_name" in cols else ""
+                if _looks_absolute_filesystem_path(source_key):
+                    errors.append(f"map_sources id {row_id} has absolute source_key={source_key!r}")
+                if path and not path.startswith("mapcatalog://"):
+                    errors.append(f"map_sources id {row_id} has non-portable path={path!r}")
+                if root and source_name and root != source_name:
+                    errors.append(f"map_sources id {row_id} retains builder root={root!r}")
+
+    return errors
+
+
+def finalize_knowledge_snapshot(
+    db: Database,
+    *,
+    snapshot_version: str,
+    built_at: str | None = None,
+) -> KnowledgeSnapshotReport:
+    """Finalize an already-populated DB into a distributable knowledge artifact."""
+    version = str(snapshot_version).strip()
+    if not version:
+        raise ValueError("snapshot_version is required")
+    built = built_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    # Reconcile the portable global map catalog after all entity providers have run.
+    map_reconciliation = MapCatalog(db).reconcile_all(force=True)
+    stripped_user = strip_user_state(db)
+    stripped_paths, stripped_meta, stripped_payloads = strip_builder_local_state(db)
+
+    db.set_meta("database_role", "knowledge_snapshot")
+    db.set_meta("knowledge_schema_version", KNOWLEDGE_SCHEMA_VERSION)
+    db.set_meta("knowledge_snapshot_version", version)
+    db.set_meta("knowledge_snapshot_built_at", built)
+
+    fts_rows = db.rebuild_search_index()
+    identity = identity_audit_text(db)
+
+    errors = snapshot_portability_errors(db)
+    diagnostics = db.database_diagnostics()
+    if diagnostics.get("integrity") != "ok":
+        errors.append(f"PRAGMA integrity_check returned {diagnostics.get('integrity')!r}")
+    if diagnostics.get("fts_available") and diagnostics.get("fts_dirty"):
+        errors.append("FTS index is still marked dirty after rebuild")
+    if errors:
+        raise ValueError("Knowledge snapshot is not portable:\n- " + "\n- ".join(errors))
+
+    # A packaged knowledge DB should not depend on WAL sidecars. These operations are
+    # builder-only; runtime will eventually open the shipped DB through a read-only
+    # connection instead of Database's current writable migration path.
+    db.conn.commit()
+    try:
+        db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        pass
+    db.conn.execute("PRAGMA journal_mode=DELETE")
+    db.conn.execute("PRAGMA optimize")
+    db.conn.execute("VACUUM")
+    db.conn.execute("PRAGMA optimize")
+    db.conn.commit()
+
+    diagnostics = db.database_diagnostics()
+    if diagnostics.get("integrity") != "ok":
+        raise ValueError(
+            f"Final knowledge snapshot failed integrity_check: {diagnostics.get('integrity')!r}"
+        )
+
+    return KnowledgeSnapshotReport(
+        path=db.path,
+        snapshot_version=version,
+        schema_version=KNOWLEDGE_SCHEMA_VERSION,
+        built_at=built,
+        stripped_user_rows=stripped_user,
+        stripped_source_paths=stripped_paths,
+        stripped_meta_rows=stripped_meta,
+        stripped_builder_payloads=stripped_payloads,
+        map_reconciliation=map_reconciliation,
+        fts_rows=fts_rows,
+        diagnostics=diagnostics,
+        identity_audit=identity,
+    )
+
+
+def create_knowledge_snapshot(
+    source_db: str | Path,
+    output_db: str | Path,
+    *,
+    snapshot_version: str,
+    overwrite: bool = False,
+) -> KnowledgeSnapshotReport:
+    """Copy a working DB, finalize the copy, and atomically publish the snapshot."""
+    source = Path(source_db).expanduser().resolve()
+    output = Path(output_db).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    if source == output:
+        raise ValueError("Knowledge snapshots must be written to a separate output file")
+    if output.exists() and not overwrite:
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    temp = output.with_name(output.name + ".building")
+    temp.unlink(missing_ok=True)
+    try:
+        source_conn = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)
+        destination_conn = sqlite3.connect(temp)
+        try:
+            source_conn.backup(destination_conn)
+        finally:
+            destination_conn.close()
+            source_conn.close()
+
+        db = Database(temp)
+        try:
+            report = finalize_knowledge_snapshot(db, snapshot_version=snapshot_version)
+        finally:
+            db.close()
+
+        if output.exists():
+            output.unlink()
+        os.replace(temp, output)
+        report.path = output
+        return report
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise

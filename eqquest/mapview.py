@@ -182,7 +182,6 @@ class MapViewerFrame(ttk.Frame):
         self.after(30, self._poll_raster_results)
         self.after(250, self._poll_state)
         self.after(300, self._poll_catalog_index_results)
-        self.after(700, self.ensure_map_catalog)
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -375,8 +374,7 @@ class MapViewerFrame(ttk.Frame):
         self.map_root.set(root)
         self.db.set_meta(MAP_ROOT_META, root)
         count = len(discover_base_maps(root))
-        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")
-        self.after(50, self.ensure_map_catalog)
+        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files | catalog refresh is manual")
 
     def ensure_map_catalog(self) -> None:
         root = self.map_root.get().strip()
@@ -396,7 +394,7 @@ class MapViewerFrame(ttk.Frame):
         self.catalog_progress.configure(maximum=1.0)
         self.catalog_progress_var.set(0.0)
         self.catalog_progress_text.set("Starting map index…")
-        self.lookup_status.set("Updating local map catalog in background…")
+        self.lookup_status.set("Manually refreshing the EverQuestie map catalog…")
         db_path = self.db.path
 
         def worker() -> None:
@@ -407,7 +405,9 @@ class MapViewerFrame(ttk.Frame):
                 def progress(stage: str, current: int, total: int, detail: str) -> None:
                     self._catalog_index_results.put(("progress", (stage, current, total, detail)))
 
-                stats = MapCatalog(thread_db).index_root(root, progress=progress)
+                stats = MapCatalog(thread_db).index_root(
+                    root, source_name=Path(root).name, progress=progress
+                )
                 self._catalog_index_results.put(("ok", stats))
             except Exception as exc:
                 self._catalog_index_results.put(("error", str(exc)))
@@ -918,7 +918,9 @@ class MapViewerFrame(ttk.Frame):
                 f"Map stem: {hit.map_stem}",
                 f"Layer: {hit.layer}",
                 f"EQ /loc: Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f}",
-                f"Map file: {Path(hit.path).name}",
+                f"Map catalog source: {hit.source_name}"
+                + (f" {hit.source_version}" if hit.source_version else ""),
+                f"Map file key: {hit.source_key or Path(hit.path).name}",
                 f"Map source line: {hit.source_line}",
                 f"Catalog link: {hit.link_status}" + (f" — {hit.link_reason}" if hit.link_reason else ""),
             ]
@@ -929,7 +931,7 @@ class MapViewerFrame(ttk.Frame):
             else:
                 lines += [
                     "",
-                    "Local map evidence only — no normalized EverQuestie knowledge entity is linked yet.",
+                    "Map catalog evidence only — no normalized EverQuestie knowledge entity is linked yet.",
                     "The map label remains unclassified; EverQuestie will not guess NPC/item/quest semantics.",
                 ]
             return "\n".join(lines)
@@ -1123,10 +1125,32 @@ class MapViewerFrame(ttk.Frame):
         self._move_view_to(new_x, new_y)
         self._schedule_save_view()
 
+    def _catalog_hit_local_path(self, hit: MapCatalogHit) -> Path | None:
+        root = self.map_root.get().strip()
+        if root and hit.source_key:
+            candidate = Path(root) / Path(hit.source_key)
+            if candidate.is_file():
+                return candidate
+        legacy = Path(hit.path)
+        if legacy.is_file():
+            return legacy
+        if root:
+            filename = f"{hit.map_stem}.txt" if hit.layer == 0 else f"{hit.map_stem}_{hit.layer}.txt"
+            candidate = Path(root) / filename
+            if candidate.is_file():
+                return candidate
+        return None
+
     def _open_lookup_on_map(self, _event=None) -> None:
         hit = self._lookup_selected_map_hit
         if isinstance(hit, MapCatalogHit):
-            self.load_map(hit.path)
+            local_path = self._catalog_hit_local_path(hit)
+            if local_path is None:
+                self.lookup_status.set(
+                    f"Catalog hit found for {hit.text}, but that map file is not present in the selected local map pack."
+                )
+                return
+            self.load_map(local_path)
             self.after(80, lambda: self._center_map_point(hit.x, hit.y))
             self.lookup_status.set(f"Opened {hit.zone_name or hit.map_stem} at {hit.text}")
             return
@@ -1144,7 +1168,13 @@ class MapViewerFrame(ttk.Frame):
                     }:
                         chosen = candidate
                         break
-                self.load_map(chosen.path)
+                local_path = self._catalog_hit_local_path(chosen)
+                if local_path is None:
+                    self.lookup_status.set(
+                        f"Linked catalog evidence found for {chosen.text}, but that map file is not present in the selected local map pack."
+                    )
+                    return
+                self.load_map(local_path)
                 self.after(80, lambda: self._center_map_point(chosen.x, chosen.y))
                 self.lookup_status.set(f"Opened linked map evidence for {chosen.text}")
                 return

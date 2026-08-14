@@ -377,10 +377,11 @@ class AllakhazamImporter:
         )
 
     def rebuild_imported_pages(self) -> list[ImportResult]:
-        """Backfill graph data for pages imported by older EverQuestie versions.
+        """Explicitly backfill graph data for legacy imported Allakhazam pages.
 
-        This reads the raw HTML already archived in SQLite; users do not need to
-        re-save or re-import pages after upgrading the app.
+        This is a builder/developer migration helper. Normal EverQuestie startup must
+        not call it because packaged knowledge snapshots are release artifacts rather
+        than source-specific mutable caches.
         """
         results: list[ImportResult] = []
         for page in self.db.source_pages():

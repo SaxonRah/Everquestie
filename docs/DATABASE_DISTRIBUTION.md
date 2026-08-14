@@ -2,70 +2,73 @@
 
 ## Release principle
 
-A normal EverQuestie user must not need `everquest1-mcp`, Node.js, a source checkout, or a local database compilation step in order to use the shipped knowledge base.
+A normal EverQuestie user must not need `everquest1-mcp`, Node.js, a source checkout, a website mirror, or a local database compilation step to use the shipped knowledge base.
 
-`everquest1-mcp` and other source adapters are **builder/developer inputs**. EverQuestie owns its normalized schema and release artifacts.
+Source adapters are **builder/developer inputs**. EverQuestie owns the normalized schema and release artifacts.
 
 ## Target release layout
 
-EverQuestie should move toward two SQLite roles:
+EverQuestie is moving toward two SQLite roles:
 
-1. **Shipped content snapshot** — versioned, read-mostly EverQuestie knowledge produced by the release/build pipeline.
-2. **User state database** — writable local state such as observed log events, tracked quest progress, map-pack indexing/linkage, manual bindings, and other machine/user-specific data.
+1. **Shipped knowledge snapshot** — versioned, read-only/read-mostly EverQuestie knowledge produced by the release pipeline.
+2. **User state database** — writable local state such as observed log events, tracked quest progress, settings, map-root selection, manual bindings, view state, and user overrides.
 
-Keeping those roles separate lets a new EverQuestie release replace or upgrade the shipped knowledge snapshot without deleting a player's history or tracked-quest state.
+Replacing a shipped knowledge snapshot must never delete or recreate player state.
 
-The current v0.13 development database still combines these roles in one SQLite file. Do not silently overwrite that file with a release snapshot until the content/user-state split or a safe merge/upgrader exists.
+The current v0.13 development database still combines these roles in one SQLite file. Do not silently overwrite that file with a release snapshot until the content/user-state split or a safe upgrader exists.
 
-## Builder inputs
+## Knowledge inputs and future providers
 
-The release builder may use source adapters such as:
+Development must proceed without waiting for the Allakhazam DB or Wiki mirrors. Current builders can populate knowledge from the installed EverQuest client, map packs, MCP-derived local snapshots, and any other approved deterministic source available to the project.
 
-- installed EverQuest client files;
-- `everquest1-mcp` local parsers/compiler support;
-- permitted local Allakhazam imports;
-- other explicitly permitted/local deterministic sources.
+Allakhazam DB and Wiki are **optional future enrichment providers**. When those mirrors become available they plug into the same generic provenance and identity model (`source_pages`, `entity_sources`, and namespaced `entity_external_ids`) rather than requiring a new runtime database design.
 
-These are evidence inputs only. The published artifact is an EverQuestie-owned SQLite schema, not an MCP database.
+The project owner has confirmed authority to incorporate and distribute information gathered from the approved project resources. Provenance is retained for reconciliation, auditing, refreshes, and conflict analysis; it is not a runtime distribution gate.
 
-Only material for which redistribution is permitted should be included in a public shipped snapshot. Permission to locally mirror or parse a source must not automatically be treated as permission to redistribute it.
+## Map catalog placement
+
+The normalized global map catalog belongs in the shipped knowledge snapshot.
+
+Catalog construction is performed once by the builder or by an explicit manual developer action. Normal application startup must not crawl or rebuild Good/Brewall/EverQuest map packs.
+
+`map_sources` and `map_labels` persist portable map-pack identity (`source_name`, optional `source_version`, and a relative `source_key`). They must not require a builder-machine absolute path after the snapshot is built.
+
+A user's selected map directory is different: it is a local rendering asset and belongs in writable user state/settings. At runtime EverQuestie can resolve a catalog `source_key` against that local map root when the matching map file is present.
+
+This separation lets the shipped DB answer global map/POI searches even when a player has not locally indexed anything.
 
 ## Runtime behavior
 
 Normal gameplay remains local and deterministic. Runtime EverQuestie should:
 
-- read the shipped content snapshot locally;
+- read the shipped knowledge snapshot locally;
 - write player/session state only to the user's local database;
-- index the user's selected Good/Brewall/EQ map pack into the user database;
-- reconcile map evidence against shipped/local normalized knowledge;
-- never require MCP to be running;
+- use the prebuilt global map catalog for map evidence/search;
+- use a selected local Good/Brewall/EQ map directory only for rendering and optional user overrides;
+- never require MCP, Allakhazam DB, or Allakhazam Wiki to be present;
+- never perform a hidden source rebuild on startup;
 - never make background website requests.
 
 Explicit online Search remains a separate user-triggered feature.
 
-## Map catalog placement
-
-`map_sources` / `map_labels` are derived from the user's selected local map pack and therefore belong in writable user state, not the immutable shipped content snapshot.
-
-Entity links from map labels may be recomputed when the shipped knowledge version changes.
-
 ## Release build pipeline
 
-Before a public packaged release, add a reproducible builder that:
+Before a packaged release, the reproducible builder should:
 
-1. creates a fresh EverQuestie knowledge database;
-2. imports approved source inventories;
-3. runs identity/relationship reconciliation;
-4. rebuilds FTS;
-5. runs database integrity and identity audits;
-6. strips user/session state;
-7. records source versions, build timestamp, schema version, and knowledge snapshot version;
-8. VACUUMs/optimizes the SQLite file;
-9. runs the complete regression suite against that snapshot;
-10. packages the snapshot with the Windows application.
+1. create a fresh EverQuestie knowledge database;
+2. import all currently available approved source inventories (with Allakhazam DB/Wiki optional);
+3. build/refresh the global map catalog explicitly;
+4. run identity and relationship reconciliation;
+5. rebuild FTS;
+6. run database integrity and identity audits;
+7. strip user/session state and builder-local paths;
+8. record source versions, build timestamp, schema version, and knowledge snapshot version;
+9. `VACUUM`/optimize the SQLite file;
+10. run the complete regression suite against that snapshot;
+11. package the snapshot with the Windows application.
 
-The installer/first-run path should then create the writable user-state database automatically. Users should not see MCP setup as part of the normal installation path.
+The installer/first-run path creates the writable user-state database automatically. Users should not see MCP setup, mirror setup, map catalog compilation, or other builder infrastructure as prerequisites.
 
 ## Development tooling
 
-The current MCP/client compilation controls may remain available as developer/advanced-source tooling while EverQuestie is being built, but they should not be presented as a prerequisite for a normal release install.
+MCP/client compilers, map-catalog builders, Allakhazam importers, Wiki importers, and future source adapters may remain available as developer/advanced tooling. They enrich the same EverQuestie-owned knowledge model; none is individually required for the application to function.

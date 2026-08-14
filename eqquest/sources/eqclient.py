@@ -282,6 +282,7 @@ class EQClientImporter:
                 source_page_id=source_id,
                 source_url=source_url,
                 external_id=str(zone_id),
+                external_namespace="eqclient:zone",
                 merge_by_name=True,
                 level_min=min_level if min_level and min_level > 0 else None,
                 level_max=max_level if max_level and max_level > 0 else None,

@@ -109,13 +109,8 @@ class EverQuestieApp(tk.Tk):
         self.eq_client_importer = EQClientImporter(self.db)
         self.mcp_local_compiler = MCPLocalSnapshotCompiler(self.db)
         self.wiki_importer = AllakhazamWikiImporter(self.db)
-        # Upgrade previously imported raw Allakhazam pages into the new graph
-        # automatically; no re-save/re-import is required after updating EverQuestie.
-        try:
-            self.importer.rebuild_imported_pages()
-        except Exception:
-            # A malformed archived page must not prevent the companion from starting.
-            pass
+        # Source compilers/importers are explicit builder/developer actions. Startup
+        # must never rewrite packaged knowledge based on one provider's archived data.
 
         self.tailer: LogTailer | None = None
         self.event_queue: queue.Queue[str] = queue.Queue()
@@ -844,8 +839,8 @@ class EverQuestieApp(tk.Tk):
             "",
             "Source policy:",
             "  EQ client: authoritative for local IDs/mechanics/zone identity",
-            "  Allakhazam: quest/world/community evidence when explicitly imported from the local mirror",
-            "  Good/Brewall/EQ maps: selected map geometry and POIs",
+            "  Map catalog: prebuilt EverQuestie knowledge; local map files are rendering assets",
+            "  Allakhazam DB/Wiki: optional future enrichment when a mirror is available",
             "  Conflicting evidence is retained through source provenance instead of silently fetching a replacement.",
         ]
         return "\n".join(lines)

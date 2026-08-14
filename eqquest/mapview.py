@@ -12,7 +12,8 @@ from typing import Callable
 
 from .db import Database
 from .knowledge import entity_detail_text, relation_label
-from .local_search import map_label_terms, resolve_local_hits
+from .local_search import map_label_terms, parse_local_query, resolve_local_hits, search_local_hits
+from .map_search import MapLabelHit, find_map_label_hits
 from .mapraster import (
     RasterRequest,
     RasterResult,
@@ -24,6 +25,7 @@ from .eqmap import (
     ZoneMap,
     discover_base_maps,
     game_to_map,
+    map_to_game,
     load_zone_map,
     normalize_map_name,
     resolve_map_for_zone,
@@ -780,6 +782,15 @@ class MapViewerFrame(ttk.Frame):
         return map_label_terms(term)
 
     def _lookup_candidates(self, term: str, preferred_entity_id: int | None = None):
+        query = parse_local_query(term)
+        structured = bool(query.kinds or query.zone or query.source or query.exact)
+        if structured:
+            return search_local_hits(
+                self.db,
+                term,
+                current_zone=self.get_zone(),
+                limit=40,
+            )
         return resolve_local_hits(
             self.db,
             term,
@@ -787,6 +798,48 @@ class MapViewerFrame(ttk.Frame):
             preferred_entity_id=preferred_entity_id,
             limit=40,
         )
+
+    def map_label_matches(self, term: str, *, limit: int = 40) -> list[MapLabelHit]:
+        return find_map_label_hits(
+            self.zone_map,
+            term,
+            current_zone=self.get_zone() or self.manual_zone.get().strip() or None,
+            enabled_layers=self._enabled_layers(),
+            limit=limit,
+        )
+
+    def _map_label_detail_text(self, hit: MapLabelHit) -> str:
+        gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+        zone = self.get_zone() or self.manual_zone.get().strip() or (self.zone_map.stem if self.zone_map else "unknown")
+        layer_path = None
+        if self.zone_map is not None and hit.layer in self.zone_map.layers:
+            layer_path = self.zone_map.layers[hit.layer].path.name
+        lines = [
+            f"[map label] {hit.text}",
+            f"Zone: {zone}",
+            f"Layer: {hit.layer}",
+            f"EQ /loc: Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f}",
+        ]
+        if layer_path:
+            lines.append(f"Map file: {layer_path}")
+        if hit.source_line:
+            lines.append(f"Map source line: {hit.source_line}")
+        lines += [
+            "",
+            "Local map evidence only — no normalized EverQuestie knowledge entity matches this label yet.",
+            "The map file does not encode whether this name is an NPC, quest, merchant, item, or another POI, so EverQuestie will not invent a type.",
+            "When a matching local entity is later available, this same label lookup will expose its quests, items, spells, merchant relationships, and other graph links automatically.",
+        ]
+        return "\n".join(lines)
+
+    def map_label_search_summary(self, term: str, *, limit: int = 20) -> list[str]:
+        lines: list[str] = []
+        for hit in self.map_label_matches(term, limit=limit):
+            gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+            lines.append(
+                f"[map label] {hit.text} | layer {hit.layer} | /loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}"
+            )
+        return lines
 
     def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:
         term = " ".join((term or "").replace("_", " ").split()).strip()
@@ -798,8 +851,21 @@ class MapViewerFrame(ttk.Frame):
         self._lookup_entity_by_item.clear()
         self._lookup_selected_entity = None
         if not hits:
-            self.lookup_status.set("No local DB match")
-            self._set_lookup_detail(f"No local EverQuestie knowledge matches: {term}")
+            map_hits = self.map_label_matches(term, limit=20)
+            if map_hits:
+                for index, hit in enumerate(map_hits):
+                    self.lookup_tree.insert(
+                        "", "end", iid=f"maplabel:{index}", text=hit.text,
+                        values=("map label", hit.reason),
+                    )
+                self.lookup_status.set(
+                    f"No normalized DB entity; {len(map_hits)} current-map label candidate" +
+                    ("s" if len(map_hits) != 1 else "")
+                )
+                self._set_lookup_detail(self._map_label_detail_text(map_hits[0]))
+                return
+            self.lookup_status.set("No local DB or current-map label match")
+            self._set_lookup_detail(f"No local EverQuestie knowledge or current-map label matches: {term}")
             return
         for hit in hits:
             row = hit.row

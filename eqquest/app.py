@@ -672,7 +672,18 @@ class EverQuestieApp(tk.Tk):
             limit=250,
         )
         if not hits:
-            self._set_online_result(f"LOCAL DB | no match: {query}")
+            map_lines = self.map_view.map_label_search_summary(query) if hasattr(self, "map_view") else []
+            if map_lines:
+                self._set_online_result(
+                    f"LOCAL DB | no normalized entity match: {query}\n\n"
+                    "CURRENT LOCAL MAP | unclassified label evidence\n" +
+                    "\n".join(map_lines)
+                )
+                self.online_status_var.set(
+                    "No normalized DB entity matched; current local map label evidence is shown. No network request was made."
+                )
+                return
+            self._set_online_result(f"LOCAL DB / CURRENT MAP | no match: {query}")
             self.online_status_var.set("Local-only search complete. No network request was made.")
             return
         lines = [f"LOCAL DB | {query} | {len(hits)} ranked match(es)", f"Filters: {query_summary(query)}", ""]
@@ -1600,7 +1611,23 @@ class EverQuestieApp(tk.Tk):
 
         self.entity_tree.delete(*self.entity_tree.get_children(""))
         if not counts:
-            self.entity_tree.insert("", "end", iid="info:none", text="No local knowledge matches.")
+            map_lines = self.map_view.map_label_search_summary(term) if term and hasattr(self, "map_view") else []
+            if map_lines:
+                self.entity_tree.insert(
+                    "", "end", iid="info:maplabels",
+                    text=f"Map labels ({len(map_lines)}) — no normalized DB entity yet",
+                )
+                self.entity_text.configure(state="normal")
+                self.entity_text.delete("1.0", "end")
+                self.entity_text.insert(
+                    "end",
+                    "No normalized EverQuestie knowledge entity matched. Current local map evidence:\n\n" +
+                    "\n".join(map_lines) +
+                    "\n\nMap labels remain unclassified until another local source supplies an entity identity/type."
+                )
+                self.entity_text.configure(state="disabled")
+                return
+            self.entity_tree.insert("", "end", iid="info:none", text="No local knowledge or current-map label matches.")
             self.entity_text.configure(state="normal")
             self.entity_text.delete("1.0", "end")
             self.entity_text.configure(state="disabled")

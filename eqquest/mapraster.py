@@ -26,12 +26,16 @@ def map_background_rgb(theme_id: str) -> RGB:
     }.get(theme_id, (43, 53, 66))
 
 
-def themed_map_rgb(theme_id: str, r: int, g: int, b: int, *, label: bool = False) -> RGB:
-    """Translate native EQ map colors into the selected map-only palette.
+def _clamp8(value: float) -> int:
+    return max(0, min(255, int(round(value))))
 
-    This intentionally matches the color transform used by the vector renderer that
-    preceded the raster path. Keeping it pure makes it safe to use in the background
-    raster worker while the Tk thread remains responsive.
+
+def themed_map_rgb(theme_id: str, r: int, g: int, b: int, *, label: bool = False) -> RGB:
+    """Keep native EQ map colors distinct while giving them a light theme bias.
+
+    Stone and parchment are background-driven themes. Saturated source colors
+    retain their native hue relationships; only a gentle cool/warm temperature
+    shift is applied. Near-neutral colors receive readability corrections.
     """
     if theme_id == MAP_THEME_ORIGINAL:
         if r > 245 and g > 245 and b > 245:
@@ -39,51 +43,41 @@ def themed_map_rgb(theme_id: str, r: int, g: int, b: int, *, label: bool = False
         return r, g, b
 
     rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
-    hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)
+    _hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)
 
     if theme_id == MAP_THEME_STONE:
-        dark = (49, 60, 72)
-        light = (220, 221, 207)
-        if sat < 0.12:
-            rgb = _mix_rgb(dark, light, 0.18 + 0.72 * value)
-        else:
-            if hue < 0.08 or hue >= 0.95:
-                base = (191, 139, 105)
-            elif hue < 0.18:
-                base = (201, 181, 119)
-            elif hue < 0.45:
-                base = (122, 151, 137)
-            elif hue < 0.72:
-                base = (118, 145, 173)
-            else:
-                base = (150, 137, 166)
-            rgb = _mix_rgb(dark, base, 0.35 + 0.58 * value)
+        if sat < 0.08 and value < 0.35:
+            lift = 135.0 + value * 110.0
+            return (_clamp8(lift * 0.86), _clamp8(lift * 0.94), _clamp8(lift))
+        if sat < 0.08 and value > 0.94:
+            return (210, 218, 228) if label else (195, 208, 222)
         if label:
-            rgb = _mix_rgb(rgb, light, 0.12)
-        return rgb
+            return (
+                _clamp8(r * 0.97),
+                _clamp8(g * 1.00 + 1),
+                _clamp8(b * 1.04 + 3),
+            )
+        return (
+            _clamp8(r * 0.92),
+            _clamp8(g * 0.99 + 2),
+            _clamp8(b * 1.08 + 6),
+        )
 
-    ink = (68, 57, 42)
-    paper = (217, 207, 173)
-    if sat < 0.12:
-        rgb = _mix_rgb(ink, (118, 100, 72), 0.15 + 0.55 * value)
-    else:
-        if hue < 0.08 or hue >= 0.95:
-            base = (132, 67, 51)
-        elif hue < 0.18:
-            base = (143, 104, 53)
-        elif hue < 0.45:
-            base = (93, 105, 66)
-        elif hue < 0.72:
-            base = (70, 91, 104)
-        else:
-            base = (104, 75, 92)
-        rgb = _mix_rgb(ink, base, 0.42 + 0.48 * value)
+    if sat < 0.08 and value > 0.90:
+        return (108, 96, 72) if label else (122, 109, 82)
+    if sat < 0.08 and value < 0.12:
+        return (62, 52, 38)
     if label:
-        rgb = _mix_rgb(rgb, ink, 0.10)
-    if value > 0.94 and sat < 0.08:
-        rgb = _mix_rgb(ink, paper, 0.32)
-    return rgb
-
+        return (
+            _clamp8(r * 1.03 + 3),
+            _clamp8(g * 1.00 + 1),
+            _clamp8(b * 0.96),
+        )
+    return (
+        _clamp8(r * 1.06 + 5),
+        _clamp8(g * 1.01 + 2),
+        _clamp8(b * 0.92),
+    )
 
 @dataclass(slots=True, frozen=True)
 class RasterRequest:

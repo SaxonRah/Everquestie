@@ -46,9 +46,24 @@ class MapRasterTests(unittest.TestCase):
     def test_theme_palette_is_stable(self) -> None:
         self.assertEqual(map_background_rgb(MAP_THEME_STONE), (43, 53, 66))
         self.assertEqual(map_background_rgb(MAP_THEME_PARCHMENT), (217, 207, 173))
-        self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (181, 133, 103))
-        self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (126, 66, 50))
+        self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (235, 2, 6))
+        self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (255, 2, 0))
 
+    def test_themed_colors_preserve_source_separation(self) -> None:
+        primaries = ((255, 0, 0), (0, 255, 0), (0, 0, 255))
+        for theme in (MAP_THEME_STONE, MAP_THEME_PARCHMENT):
+            themed = [themed_map_rgb(theme, *rgb) for rgb in primaries]
+            distances = []
+            for index, left in enumerate(themed):
+                for right in themed[index + 1:]:
+                    distances.append(sum(abs(a - b) for a, b in zip(left, right)))
+            self.assertGreater(min(distances), 400)
+
+    def test_theme_temperature_bias_is_directional(self) -> None:
+        stone_gray = themed_map_rgb(MAP_THEME_STONE, 120, 120, 120)
+        parchment_gray = themed_map_rgb(MAP_THEME_PARCHMENT, 120, 120, 120)
+        self.assertGreater(stone_gray[2], stone_gray[0])
+        self.assertGreater(parchment_gray[0], parchment_gray[2])
 
     def test_exact_zoom_rasters_exist_at_requested_sizes(self) -> None:
         layer = MapLayer(0, Path('diagonal.txt'))

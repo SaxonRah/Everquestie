@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from .db import normalize_name
 from .eqmap import ZoneMap, normalize_map_name
@@ -33,6 +34,22 @@ def _query_zone_matches(zone_map: ZoneMap, current_zone: str | None, requested_z
     return bool(wanted and (wanted == current or wanted == stem))
 
 
+def _fuzzy_similarity(left: str, right: str) -> float:
+    left = normalize_name(left)
+    right = normalize_name(right)
+    if not left or not right or left[:1] != right[:1]:
+        return 0.0
+    best = SequenceMatcher(None, left, right).ratio()
+    left_words = [word for word in left.split() if len(word) >= 5]
+    right_words = [word for word in right.split() if len(word) >= 5]
+    for a in left_words:
+        for b in right_words:
+            if a[:1] != b[:1] or abs(len(a) - len(b)) > 2:
+                continue
+            best = max(best, SequenceMatcher(None, a, b).ratio())
+    return best
+
+
 def find_map_label_hits(
     zone_map: ZoneMap | None,
     raw_query: str,
@@ -46,7 +63,9 @@ def find_map_label_hits(
     Map labels are evidence, not normalized knowledge entities. Structured filters are
     accepted so a query copied from Knowledge/Search can still surface a map candidate.
     ``type:`` is intentionally not asserted against the label because map files do not
-    encode entity type.
+    encode entity type. If there is no direct label match, a conservative fuzzy pass can
+    suggest a likely NPC/name typo while keeping it explicitly marked as unclassified
+    map evidence rather than a normalized DB match.
     """
     if zone_map is None:
         return []
@@ -60,7 +79,6 @@ def find_map_label_hits(
 
     text = query.text.strip()
     if not text:
-        # For an ordinary unstructured lookup parse_local_query preserves the text.
         return []
     needles = [normalize_name(value) for value in map_label_terms(text) if value]
     needles = [value for value in needles if value]
@@ -68,7 +86,10 @@ def find_map_label_hits(
         return []
 
     wanted_layers = set(enabled_layers) if enabled_layers is not None else set(zone_map.layers)
-    hits: list[MapLabelHit] = []
+    direct_hits: list[MapLabelHit] = []
+    fuzzy_hits: list[MapLabelHit] = []
+    allow_fuzzy = not query.kinds or "npc" in query.kinds
+
     for layer_no in sorted(wanted_layers):
         layer = zone_map.layers.get(layer_no)
         if layer is None:
@@ -96,22 +117,47 @@ def find_map_label_hits(
                 if best is None or candidate < best:
                     best = candidate
                     reason = candidate_reason
-            if best is None:
-                continue
-            if query.kinds:
-                reason += " · type unclassified"
-            hits.append(
-                MapLabelHit(
-                    layer=layer_no,
-                    text=point.display_text,
-                    x=float(point.x),
-                    y=float(point.y),
-                    z=float(point.z),
-                    source_line=int(point.source_line),
-                    score=best,
-                    reason=reason,
+            if best is not None:
+                if query.kinds:
+                    reason += " · type unclassified"
+                direct_hits.append(
+                    MapLabelHit(
+                        layer=layer_no,
+                        text=point.display_text,
+                        x=float(point.x),
+                        y=float(point.y),
+                        z=float(point.z),
+                        source_line=int(point.source_line),
+                        score=best,
+                        reason=reason,
+                    )
                 )
-            )
+                continue
 
-    hits.sort(key=lambda hit: hit.score)
-    return hits[: max(1, int(limit))]
+            if allow_fuzzy:
+                similarity = max(
+                    (_fuzzy_similarity(needle, variant) for needle in needles for variant in variants),
+                    default=0.0,
+                )
+                if similarity >= 0.74:
+                    fuzzy_reason = f"map label fuzzy suggestion {similarity:.0%}"
+                    if query.kinds:
+                        fuzzy_reason += " · type unclassified"
+                    fuzzy_hits.append(
+                        MapLabelHit(
+                            layer=layer_no,
+                            text=point.display_text,
+                            x=float(point.x),
+                            y=float(point.y),
+                            z=float(point.z),
+                            source_line=int(point.source_line),
+                            score=(3, -similarity, len(point.display_text), layer_no, point.source_line),
+                            reason=fuzzy_reason,
+                        )
+                    )
+
+    direct_hits.sort(key=lambda hit: hit.score)
+    if direct_hits:
+        return direct_hits[: max(1, int(limit))]
+    fuzzy_hits.sort(key=lambda hit: hit.score)
+    return fuzzy_hits[: max(1, int(limit))]

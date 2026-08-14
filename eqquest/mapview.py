@@ -79,6 +79,7 @@ class MapViewerFrame(ttk.Frame):
         get_location: Callable[[], tuple[float, float, float] | None],
         set_zone: Callable[[str], None] | None = None,
         on_entity: Callable[[int], None] | None = None,
+        on_knowledge_search: Callable[[str], None] | None = None,
     ):
         super().__init__(master, padding=8)
         self.db = db
@@ -86,6 +87,7 @@ class MapViewerFrame(ttk.Frame):
         self.get_location = get_location
         self.set_zone_callback = set_zone
         self.on_entity = on_entity
+        self.on_knowledge_search = on_knowledge_search
 
         self.map_root = tk.StringVar(value=self.db.get_meta(MAP_ROOT_META, ""))
         self.manual_zone = tk.StringVar()
@@ -165,7 +167,9 @@ class MapViewerFrame(ttk.Frame):
         self.lookup_query = tk.StringVar()
         self.lookup_status = tk.StringVar(value="Click a map name or search the local DB.")
         self._lookup_entity_by_item: dict[str, int] = {}
+        self._lookup_map_hit_by_item: dict[str, MapLabelHit] = {}
         self._lookup_selected_entity: int | None = None
+        self._lookup_selected_map_hit: MapLabelHit | None = None
 
         self._build()
         self._apply_map_background()
@@ -849,20 +853,29 @@ class MapViewerFrame(ttk.Frame):
         hits = self._lookup_candidates(term, preferred_entity_id)
         self.lookup_tree.delete(*self.lookup_tree.get_children())
         self._lookup_entity_by_item.clear()
+        self._lookup_map_hit_by_item.clear()
         self._lookup_selected_entity = None
+        self._lookup_selected_map_hit = None
         if not hits:
             map_hits = self.map_label_matches(term, limit=20)
             if map_hits:
                 for index, hit in enumerate(map_hits):
+                    iid = f"maplabel:{index}"
                     self.lookup_tree.insert(
-                        "", "end", iid=f"maplabel:{index}", text=hit.text,
+                        "", "end", iid=iid, text=hit.text,
                         values=("map label", hit.reason),
                     )
+                    self._lookup_map_hit_by_item[iid] = hit
+                first = self.lookup_tree.get_children()[0]
+                self.lookup_tree.selection_set(first)
+                self.lookup_tree.focus(first)
+                self.lookup_tree.see(first)
+                self._lookup_selected_map_hit = self._lookup_map_hit_by_item[first]
                 self.lookup_status.set(
                     f"No normalized DB entity; {len(map_hits)} current-map label candidate" +
                     ("s" if len(map_hits) != 1 else "")
                 )
-                self._set_lookup_detail(self._map_label_detail_text(map_hits[0]))
+                self._set_lookup_detail(self._map_label_detail_text(self._lookup_selected_map_hit))
                 return
             self.lookup_status.set("No local DB or current-map label match")
             self._set_lookup_detail(f"No local EverQuestie knowledge or current-map label matches: {term}")
@@ -896,6 +909,7 @@ class MapViewerFrame(ttk.Frame):
         if row is None:
             return
         self._lookup_selected_entity = entity_id
+        self._lookup_selected_map_hit = None
         relationships = list(self.db.relationships_for_entity(entity_id))
         self._set_lookup_detail(entity_detail_text(self.db, entity_id, include_source_text=False))
 
@@ -927,6 +941,12 @@ class MapViewerFrame(ttk.Frame):
         if not sel:
             return
         item = sel[0]
+        map_hit = self._lookup_map_hit_by_item.get(item)
+        if map_hit is not None:
+            self._lookup_selected_entity = None
+            self._lookup_selected_map_hit = map_hit
+            self._set_lookup_detail(self._map_label_detail_text(map_hit))
+            return
         entity_id = self._lookup_entity_by_item.get(item)
         if entity_id is None:
             return
@@ -935,6 +955,14 @@ class MapViewerFrame(ttk.Frame):
     def _open_lookup_in_knowledge(self, _event=None) -> None:
         if self._lookup_selected_entity is not None and self.on_entity:
             self.on_entity(self._lookup_selected_entity)
+            return
+        term = ""
+        if self._lookup_selected_map_hit is not None:
+            term = self._lookup_selected_map_hit.text
+        else:
+            term = self.lookup_query.get().strip()
+        if term and self.on_knowledge_search:
+            self.on_knowledge_search(term)
 
     # ------------------------------------------------------------------
     # Map-only visual themes

@@ -287,6 +287,7 @@ class EverQuestieApp(tk.Tk):
             get_location=lambda: self.state_model.last_location,
             set_zone=lambda zone: self._set_current_zone(zone, source="manual", announce=True),
             on_entity=self._map_entity_selected,
+            on_knowledge_search=self._map_label_to_knowledge,
         )
         self.map_view.grid(row=0, column=0, sticky="nsew")
 
@@ -304,6 +305,13 @@ class EverQuestieApp(tk.Tk):
         self.entity_tree.focus(iid)
         self.entity_tree.see(iid)
         self._show_entity()
+        self.notebook.select(self.knowledge_tab)
+
+    def _map_label_to_knowledge(self, term: str) -> None:
+        self.search_var.set(term)
+        self.kind_var.set("all")
+        self._search_knowledge()
+        self.notebook.select(self.knowledge_tab)
 
     def _build_knowledge(self):
         controls = ttk.Frame(self.knowledge_tab)

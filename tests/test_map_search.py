@@ -39,6 +39,32 @@ class MapSearchTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_typo_can_suggest_current_map_label(self):
+        tmp, zone_map = self._map()
+        try:
+            hits = find_map_label_hits(
+                zone_map,
+                'type:npc zone:"Stone Hive" Waning',
+                current_zone="Stone Hive",
+            )
+            self.assertTrue(hits)
+            self.assertEqual(hits[0].text, "Warwing Wendlez (Q)")
+            self.assertIn("fuzzy suggestion", hits[0].reason)
+        finally:
+            tmp.cleanup()
+
+    def test_spell_filter_does_not_fuzzy_guess_unclassified_npc_label(self):
+        tmp, zone_map = self._map()
+        try:
+            hits = find_map_label_hits(
+                zone_map,
+                'type:spell "Waning"',
+                current_zone="Stone Hive",
+            )
+            self.assertEqual(hits, [])
+        finally:
+            tmp.cleanup()
+
     def test_wrong_zone_does_not_match(self):
         tmp, zone_map = self._map()
         try:

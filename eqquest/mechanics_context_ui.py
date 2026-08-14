@@ -6,6 +6,7 @@ from tkinter import ttk
 from .mechanics import MechanicsFrame
 from .mechanics_catalog import EQ_CLASS_VOCABULARY
 from .mechanics_context import ClassMechanicsContext, build_class_mechanics_context
+from .spell_stacking_context import spell_stacking_text
 
 
 def mechanics_context_summary(context: ClassMechanicsContext) -> str:
@@ -156,3 +157,13 @@ class MechanicsContextFrame(MechanicsFrame):
         self._set_text(self.class_summary, mechanics_context_summary(context))
         for row in mechanics_skill_rows(context):
             self.skills_tree.insert("", "end", values=row)
+
+    def _spell_selected(self) -> None:
+        """Render selected spell through the canonical stacking read projection."""
+        selected = self.spell_tree.selection()
+        if not selected:
+            return
+        entity_id = self._spell_entity_by_item.get(selected[0])
+        if entity_id is None:
+            return
+        self._set_text(self.stacking_text, spell_stacking_text(self.db, entity_id))

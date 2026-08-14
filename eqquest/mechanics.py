@@ -36,6 +36,71 @@ def _source_label(row) -> str:
     return str(row["source_name"] or row["local_path"] or row["url"] or "")
 
 
+SPELL_ID_NAMESPACES = ("eqclient:spell", "everquest:spell", "spell")
+
+
+def _has_eqclient_provenance(db: Database, entity_id: int) -> bool:
+    """Return whether an entity has evidence tying its identity to installed-client data."""
+    row = db.entity(entity_id)
+    if row is not None and str(row["source_url"] or "").casefold().startswith("eqclient://"):
+        return True
+    for source in db.sources_for_entity(entity_id):
+        if str(source["url"] or "").casefold().startswith("eqclient://"):
+            return True
+        if str(source["source_name"] or "").casefold() == "everquest client":
+            return True
+    return False
+
+
+def spell_id_for_entity(db: Database, entity_id: int) -> int | None:
+    """Resolve the installed-client spell ID without trusting another source's numeric ID."""
+    allowed = set(SPELL_ID_NAMESPACES)
+    for ext in db.external_ids_for_entity(entity_id):
+        if str(ext["namespace"] or "").casefold() not in allowed:
+            continue
+        try:
+            return int(str(ext["external_id"]))
+        except (TypeError, ValueError):
+            continue
+
+    # Compatibility for databases produced before namespaced EQ-client IDs existed.
+    # The legacy field is accepted only when the entity itself has EQ-client provenance.
+    row = db.entity(entity_id)
+    if row is not None and _has_eqclient_provenance(db, entity_id):
+        try:
+            return int(str(row["external_id"] or ""))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def spell_entity_for_client_id(db: Database, spell_id: int):
+    """Resolve a spell entity by EQ-client identity, with a provenance-gated legacy fallback."""
+    external_id = str(int(spell_id))
+    for namespace in SPELL_ID_NAMESPACES:
+        row = db.entity_by_namespaced_external_id(namespace, external_id)
+        if row is not None and str(row["kind"]) == "spell":
+            return row
+
+    # Old client imports may only have populated entities.external_id. Never use that
+    # field as a generic cross-source ID: Allakhazam and other providers have their own
+    # numeric namespaces and can legitimately collide with an EQ spell ID.
+    rows = db.conn.execute(
+        "SELECT id FROM entities WHERE kind='spell' AND external_id=? ORDER BY id",
+        (external_id,),
+    ).fetchall()
+    for candidate in rows:
+        entity_id = int(candidate["id"])
+        if _has_eqclient_provenance(db, entity_id):
+            return db.entity(entity_id)
+    return None
+
+
+def spell_name_for_client_id(db: Database, spell_id: int) -> str:
+    row = spell_entity_for_client_id(db, spell_id)
+    return str(row["name"]) if row is not None else f"spell ID {int(spell_id)}"
+
+
 class MechanicsFrame(ttk.Frame):
     """Read-only browser for deterministic EverQuest client support tables."""
 
@@ -291,19 +356,7 @@ class MechanicsFrame(ttk.Frame):
             self.skills_tree.insert("", "end", values=(row["skill_id"], row["cap"], source))
 
     def _spell_id_for_entity(self, entity_id: int) -> int | None:
-        row = self.db.entity(entity_id)
-        if row is None:
-            return None
-        for ext in self.db.external_ids_for_entity(entity_id):
-            if str(ext["namespace"]).casefold() in {"eqclient:spell", "everquest:spell", "spell"}:
-                try:
-                    return int(ext["external_id"])
-                except Exception:
-                    pass
-        try:
-            return int(str(row["external_id"] or ""))
-        except Exception:
-            return None
+        return spell_id_for_entity(self.db, entity_id)
 
     def search_spells(self) -> None:
         term = self.spell_query.get().strip()
@@ -373,11 +426,7 @@ class MechanicsFrame(ttk.Frame):
             lines += ["", f"Other spells in stacking group {group}:"]
             for peer in peers[:500]:
                 peer_id = int(peer["spell_id"])
-                name_row = self.db.conn.execute(
-                    "SELECT name FROM entities WHERE kind='spell' AND external_id=? ORDER BY id LIMIT 1",
-                    (str(peer_id),),
-                ).fetchone()
-                name = str(name_row["name"]) if name_row else f"spell ID {peer_id}"
+                name = spell_name_for_client_id(self.db, peer_id)
                 marker = " ← selected" if peer_id == spell_id else ""
                 lines.append(
                     f"  • {name} | ID {peer_id} | rank {peer['rank']} | type {peer['stacking_type']}{marker}"

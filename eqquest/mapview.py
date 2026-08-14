@@ -1086,6 +1086,7 @@ class MapViewerFrame(ttk.Frame):
             offset_y=base_offset_y,
             enabled_layers=tuple(self._enabled_layers()),
             theme_id=self._map_theme_id(),
+            line_width=factor,
             elevation_enabled=enabled_z,
             elevation_z=z,
             elevation_span=span,

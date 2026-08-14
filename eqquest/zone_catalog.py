@@ -214,11 +214,15 @@ class ZoneMapCatalog:
         ).fetchall()
 
         # Do not feed the table being derived back into its own identity input. The
-        # map_sources.zone_name field is also deliberately excluded from resolution:
-        # it may be a display-name backfill from an earlier catalog pass. Only current
-        # canonical name/alias/short-name evidence applied to the filename stem can
-        # create or retain a linked binding.
-        identities = ZoneIdentityIndex(self.db, include_map_bindings=False)
+        # map_sources.zone_name field and zone_map_catalog-owned map_short_name are also
+        # deliberately excluded: both may be backfills from an earlier catalog pass.
+        # Only independent current canonical name/alias/provider-client short-name
+        # evidence applied to the filename stem can create or retain a linked binding.
+        identities = ZoneIdentityIndex(
+            self.db,
+            include_map_bindings=False,
+            include_derived_map_short_names=False,
+        )
         now = datetime.now().isoformat(timespec="seconds")
         linked = ambiguous = unresolved = changed = 0
         seen: set[tuple[str, str]] = set()

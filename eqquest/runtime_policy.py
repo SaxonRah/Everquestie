@@ -1,11 +1,180 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
 _MAP_POLICY_MARKER = "_everquestie_shipped_catalog_policy"
 _APP_POLICY_MARKER = "_everquestie_packaged_app_policy"
+
+
+def _same_canonical_zone(db, left: str | None, right: str | None) -> bool:
+    """Compare runtime zone tokens without weakening canonical ambiguity rules."""
+    left_text = " ".join(str(left or "").split()).strip()
+    right_text = " ".join(str(right or "").split()).strip()
+    if not left_text or not right_text:
+        return False
+    from .zone_identity import resolve_zone
+
+    left_resolution = resolve_zone(db, left_text)
+    right_resolution = resolve_zone(db, right_text)
+    if left_resolution.identity is not None and right_resolution.identity is not None:
+        return left_resolution.entity_id == right_resolution.entity_id
+    # Exact raw equality is safe as a fallback for an incomplete old snapshot; never
+    # use substring/fuzzy matching here because this guards map coordinate ownership.
+    return left_text.casefold() == right_text.casefold()
+
+
+def _draw_runtime_navigation_target(viewer) -> None:
+    """Draw one transient game-space navigation target on the currently loaded map."""
+    viewer.canvas.delete("eqquest_navigation_target")
+    target = getattr(viewer, "_navigation_target", None)
+    if target is None or viewer.zone_map is None:
+        return
+    zone, game_x, game_y, game_z, label = target
+    if not _same_canonical_zone(viewer.db, viewer.get_zone(), zone):
+        return
+
+    from .eqmap import game_to_map
+
+    mx, my, _ = game_to_map(float(game_x), float(game_y), float(game_z or 0.0))
+    sx, sy = viewer._world_to_screen(mx, my)
+    radius = 10
+    color = "#ffd24a"
+    viewer.canvas.create_oval(
+        sx - radius,
+        sy - radius,
+        sx + radius,
+        sy + radius,
+        outline=color,
+        width=3,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_line(
+        sx - radius - 4,
+        sy,
+        sx + radius + 4,
+        sy,
+        fill=color,
+        width=2,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_line(
+        sx,
+        sy - radius - 4,
+        sx,
+        sy + radius + 4,
+        fill=color,
+        width=2,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_text(
+        sx + radius + 7,
+        sy - radius - 2,
+        text=str(label or "Navigation target"),
+        anchor="sw",
+        fill=color,
+        font=("TkDefaultFont", 9, "bold"),
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+
+
+def _focus_runtime_navigation_target(
+    viewer,
+    zone: str,
+    x: float,
+    y: float,
+    z: float | None,
+    label: str,
+) -> bool:
+    """Center a loaded local map on one normalized EQ game-space coordinate."""
+    viewer._navigation_target = (
+        str(zone),
+        float(x),
+        float(y),
+        (float(z) if z is not None else None),
+        str(label or "Navigation target"),
+    )
+    if not _same_canonical_zone(viewer.db, viewer.get_zone(), zone):
+        viewer.coord_status.set("Navigation target belongs to a different current zone.")
+        return False
+    if viewer.zone_map is None:
+        viewer.coord_status.set("Navigation target is known, but no local map is loaded for this zone.")
+        return False
+
+    from .eqmap import game_to_map
+
+    mx, my, _ = game_to_map(float(x), float(y), float(z or 0.0))
+    viewer._center_map_point(mx, my)
+    _draw_runtime_navigation_target(viewer)
+    z_text = f" Z={float(z):g}" if z is not None else ""
+    viewer.coord_status.set(
+        f"Target: {label} | /loc Y={float(y):g} X={float(x):g}{z_text}"
+    )
+    return True
+
+
+def _choose_runtime_local_map_variant(viewer) -> bool:
+    """Resolve one ambiguous local canonical map variant into explicit user state."""
+    from .local_map_variant import bind_local_map_variant, current_local_map_variants
+    from .local_map_variant_ui import ask_local_map_variant
+    from .mapview import _binding_key
+
+    zone = " ".join(str(viewer.get_zone() or "").split()).strip()
+    if not zone:
+        viewer.map_status.set("Current zone is not known from the log yet.")
+        return False
+    root = viewer.map_root.get().strip()
+    readiness, candidates = current_local_map_variants(viewer.db, zone, root)
+    if readiness.status == "root_unavailable":
+        viewer.map_status.set("Choose a map pack folder first.")
+        return False
+    if readiness.status == "zone_ambiguous":
+        viewer.map_status.set(
+            f"Canonical zone identity is ambiguous for {zone}; EverQuestie will not offer local map variants."
+        )
+        return False
+    if len(candidates) < 2:
+        if readiness.ready and readiness.path is not None:
+            viewer.map_status.set(
+                f"No variant choice is needed for {readiness.canonical_zone_name or zone}: "
+                f"{readiness.path.name}."
+            )
+        else:
+            viewer.map_status.set(
+                f"No multiple canonical local map variants are currently available for {readiness.canonical_zone_name or zone}."
+            )
+        return False
+
+    selected = ask_local_map_variant(
+        viewer,
+        readiness.canonical_zone_name or zone,
+        candidates,
+    )
+    if selected is None:
+        viewer.map_status.set("Local map variant choice canceled.")
+        return False
+
+    result = bind_local_map_variant(
+        viewer.db,
+        zone,
+        root,
+        selected,
+        binding_key=_binding_key(zone),
+    )
+    if not result.ok or result.selected_path is None:
+        viewer.map_status.set(
+            "Local map variant was not applied because the current canonical candidate set changed. "
+            f"{result.reason}."
+        )
+        return False
+
+    viewer.load_map(result.selected_path)
+    viewer._base_map_status = f"{viewer._base_map_status} | user map binding"
+    viewer.map_status.set(
+        f"{viewer._base_map_status} | bound {result.readiness.canonical_zone_name or zone} -> "
+        f"{result.selected_path.name}"
+    )
+    return True
 
 
 def install_runtime_policy() -> None:
@@ -16,8 +185,8 @@ def install_runtime_policy() -> None:
     state; it must never expose a path that recompiles the knowledge DB on the player's
     machine.
     """
+    from .local_map_readiness import resolve_local_map_readiness
     from .map_catalog import MapCatalog
-    from .map_resolution import resolve_catalog_map_for_zone
     from . import mapview as mapview_module
 
     if not getattr(MapCatalog.index_root, _MAP_POLICY_MARKER, False):
@@ -48,6 +217,10 @@ def install_runtime_policy() -> None:
     if not getattr(original_viewer, _MAP_POLICY_MARKER, False):
         class RuntimePolicyMapViewerFrame(original_viewer):
             """Map viewer that consumes, but never compiles, packaged catalog knowledge."""
+
+            def __init__(self, *args, **kwargs):
+                self._navigation_target = None
+                super().__init__(*args, **kwargs)
 
             def _packaged_runtime(self) -> bool:
                 return not getattr(self.db, "knowledge_writable", True)
@@ -80,42 +253,62 @@ def install_runtime_policy() -> None:
                     return
                 return super().index_map_catalog()
 
+            def _redraw_position(self) -> None:
+                super()._redraw_position()
+                _draw_runtime_navigation_target(self)
+
+            def focus_navigation_target(
+                self,
+                zone: str,
+                x: float,
+                y: float,
+                z: float | None,
+                label: str,
+            ) -> bool:
+                return _focus_runtime_navigation_target(self, zone, x, y, z, label)
+
+            def clear_navigation_target(self) -> None:
+                self._navigation_target = None
+                self.canvas.delete("eqquest_navigation_target")
+
+            def local_map_readiness(self, zone: str):
+                """Expose local render readiness without leaking map internals to Travel."""
+                root = self.map_root.get().strip()
+                bound = self.db.get_meta(mapview_module._binding_key(zone), "")
+                return resolve_local_map_readiness(
+                    self.db,
+                    zone,
+                    root,
+                    bound_stem=bound,
+                )
+
+            def choose_local_map_variant(self) -> bool:
+                return _choose_runtime_local_map_variant(self)
+
             def load_current_zone(self) -> None:
                 if not self._packaged_runtime():
                     return super().load_current_zone()
 
                 zone = self.get_zone()
-                root = self.map_root.get().strip()
                 if not zone:
                     self.map_status.set("Current zone is not known from the log yet.")
                     return
-                if not root or not Path(root).is_dir():
-                    self.map_status.set("Choose a map pack folder first.")
-                    return
 
-                bound = self.db.get_meta(mapview_module._binding_key(zone), "")
-                hinted = None
-                zone_row, _ = self.db.resolve_entity(zone, "zone")
-                if zone_row is not None:
-                    try:
-                        data = json.loads(zone_row["data_json"] or "{}")
-                    except Exception:
-                        data = {}
-                    hinted = data.get("map_short_name") or data.get("short_name")
-
-                resolved = resolve_catalog_map_for_zone(
-                    self.db,
-                    zone,
-                    root,
-                    bound_stem=bound,
-                    hinted_stem=hinted,
-                )
-                if resolved.path is None:
-                    if resolved.candidates:
-                        choices = ", ".join(path.name for path in resolved.candidates[:6])
+                readiness = self.local_map_readiness(zone)
+                if not readiness.ready or readiness.path is None:
+                    if readiness.status == "root_unavailable":
+                        self.map_status.set("Choose a map pack folder first.")
+                    elif readiness.status == "zone_ambiguous":
                         self.map_status.set(
-                            f"Multiple canonical maps are present for {zone}: {choices}. "
-                            "Open the intended map once and press Bind zone."
+                            f"Canonical zone identity is ambiguous for {zone}; EverQuestie will not guess a local map."
+                        )
+                    elif readiness.status == "map_ambiguous":
+                        if self.choose_local_map_variant():
+                            return
+                        choices = ", ".join(path.name for path in readiness.candidates[:6])
+                        self.map_status.set(
+                            f"Multiple canonical maps remain present for {zone}: {choices}. "
+                            "No local variant was bound."
                         )
                     else:
                         self.map_status.set(
@@ -126,8 +319,8 @@ def install_runtime_policy() -> None:
                     self._refresh_marker_list()
                     return
 
-                self.load_map(resolved.path)
-                self._base_map_status = f"{self._base_map_status} | {resolved.reason}"
+                self.load_map(readiness.path)
+                self._base_map_status = f"{self._base_map_status} | {readiness.reason}"
                 self.map_status.set(self._base_map_status)
 
         setattr(RuntimePolicyMapViewerFrame, _MAP_POLICY_MARKER, True)
@@ -136,12 +329,17 @@ def install_runtime_policy() -> None:
     # Import app only after the map-view patch so app.py binds the guarded viewer.
     from . import app as app_module
     from .locations import where_text as unified_where_text
-    from .travel import TravelFrame
+    from .mechanics_context_ui import MechanicsContextFrame
+    from .route_guidance_ui import RouteGuidanceFrame as TravelFrame
 
     # The application historically imported knowledge.where_text directly. Route the
     # live WHERE command through the unified evidence projection so confirmed map POIs
     # and provider/importer locations are both visible without mutating either source.
     app_module.where_text = unified_where_text
+    # The packaged Mechanics tab consumes the same canonical class/level projection as
+    # other runtime callers. Builder/source-checkout UI retains its legacy raw-table
+    # browser, while normal users never need to understand client numeric IDs/tables.
+    app_module.MechanicsFrame = MechanicsContextFrame
 
     original_app = app_module.EverQuestieApp
     if getattr(original_app, _APP_POLICY_MARKER, False):
@@ -153,6 +351,28 @@ def install_runtime_policy() -> None:
         def _packaged_runtime(self) -> bool:
             return not getattr(self.db, "knowledge_writable", True)
 
+        def _focus_navigation_map_target(
+            self,
+            zone: str,
+            x: float,
+            y: float,
+            z: float | None,
+            label: str,
+        ) -> None:
+            # Targets emitted by Travel are constrained to the live current zone. Check
+            # again at the ownership boundary in case the player zoned between clicks.
+            if not _same_canonical_zone(self.db, self.state_model.current_zone, zone):
+                self.status.set("Navigation target expired because the current zone changed.")
+                return
+            self.notebook.select(self.map_tab)
+            self.map_view.load_current_zone()
+            if self.map_view.focus_navigation_target(zone, x, y, z, label):
+                self.status.set(f"Map focused on {label}.")
+            else:
+                self.status.set(
+                    "Navigation coordinate is known, but the matching local map could not be focused."
+                )
+
         def _build_ui(self) -> None:
             super()._build_ui()
 
@@ -160,6 +380,9 @@ def install_runtime_policy() -> None:
                 self.notebook,
                 db=self.db,
                 get_zone=lambda: self.state_model.current_zone,
+                get_location=lambda: self.state_model.last_location,
+                on_map_target=self._focus_navigation_map_target,
+                get_map_readiness=self.map_view.local_map_readiness,
             )
             # Live, Map, Travel, Knowledge, Mechanics keeps navigation-oriented
             # information close to the player's current location.

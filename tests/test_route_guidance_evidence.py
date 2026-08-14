@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+
+from eqquest.db import Database
+from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.route_guidance import build_route_guidance
+from eqquest.route_guidance_ui import RouteGuidanceFrame
+from eqquest.runtime import RuntimeDatabase
+from eqquest.zone_coverage import ZoneCoverageCatalog
+from eqquest.zone_travel import ZoneTravelCatalog
+
+
+class _Status:
+    def __init__(self):
+        self.value = ""
+
+    def set(self, value):
+        self.value = str(value)
+
+
+class RouteGuidanceEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.db = Database(self.root / "working.sqlite3")
+        self.a = self.db.upsert_entity(
+            kind="zone",
+            name="Zone A",
+            external_id="2001",
+            external_namespace="eqclient:zone",
+            merge_by_name=True,
+        )
+        self.b = self.db.upsert_entity(
+            kind="zone",
+            name="Zone B",
+            external_id="2002",
+            external_namespace="eqclient:zone",
+            merge_by_name=True,
+        )
+
+    def tearDown(self):
+        self.db.close()
+        self.tempdir.cleanup()
+
+    def _add(
+        self,
+        source_id: int,
+        target_id: int,
+        *,
+        source_name: str,
+        source_key: str,
+        bidirectional: bool = False,
+        coordinate: tuple[float, float, float] | None = None,
+    ) -> None:
+        ZoneTravelCatalog(self.db).add_provider_connection(
+            source_id,
+            target_id,
+            connection_kind="portal",
+            bidirectional=bidirectional,
+            source_name=source_name,
+            source_kind="provider",
+            source_key=source_key,
+            evidence=f"evidence from {source_name}",
+        )
+        if coordinate is not None:
+            x, y, z = coordinate
+            self.db.conn.execute(
+                "UPDATE zone_travel_edges SET x=?,y=?,z=? WHERE source_key=?",
+                (x, y, z, source_key),
+            )
+            self.db.conn.commit()
+
+    def test_direct_coordinate_row_beats_coordinate_less_direct_row(self):
+        # Alphabetical evidence ordering alone would choose A Missing first.
+        self._add(
+            self.a,
+            self.b,
+            source_name="A Missing",
+            source_key="direct-missing",
+        )
+        self._add(
+            self.a,
+            self.b,
+            source_name="Z Located",
+            source_key="direct-located",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        hop = guidance.hops[0]
+        self.assertEqual(hop.evidence_source, "Z Located")
+        self.assertEqual(hop.source_coordinate, (12.0, 34.0, 5.0))
+        self.assertFalse(hop.uses_reverse_evidence)
+
+        coverage = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(coverage.route_directions_linked, 1)
+        self.assertEqual(coverage.route_directions_mappable, 1)
+
+    def test_map_next_hop_uses_actionable_direct_evidence(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="A Missing",
+            source_key="direct-missing",
+        )
+        self._add(
+            self.a,
+            self.b,
+            source_name="Z Located",
+            source_key="direct-located",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        emitted: list[tuple] = []
+        fake = SimpleNamespace(
+            db=self.db,
+            _route_guidance=guidance,
+            _live_current_zone=lambda: "Zone A",
+            status_var=_Status(),
+            on_map_target=lambda *args: emitted.append(args),
+        )
+
+        RouteGuidanceFrame.map_next_hop(fake)
+        self.assertEqual(
+            emitted,
+            [("Zone A", 12.0, 34.0, 5.0, "portal to Zone B")],
+        )
+        self.assertIn("Z Located", fake.status_var.value)
+
+    def test_direct_without_coordinate_beats_reverse_coordinate(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="Z Direct Missing",
+            source_key="direct-missing",
+        )
+        self._add(
+            self.b,
+            self.a,
+            source_name="A Reverse Located",
+            source_key="reverse-located",
+            bidirectional=True,
+            coordinate=(50.0, 60.0, 7.0),
+        )
+
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        hop = guidance.hops[0]
+        self.assertEqual(hop.evidence_source, "Z Direct Missing")
+        self.assertFalse(hop.uses_reverse_evidence)
+        self.assertEqual(hop.coordinate_owner_entity_id, self.a)
+        self.assertIsNone(hop.source_coordinate)
+
+        coverage = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(coverage.route_directions_linked, 2)
+        # The B→A direction is mappable. A→B remains unmappable despite the reverse
+        # evidence row carrying a B-owned coordinate.
+        self.assertEqual(coverage.route_directions_mappable, 1)
+        rows = {row.name: row for row in ZoneCoverageCatalog(self.db).rows()}
+        self.assertEqual(rows["Zone A"].route_outgoing_mappable, 0)
+        self.assertEqual(rows["Zone B"].route_outgoing_mappable, 1)
+
+    def test_finalized_runtime_preserves_actionable_evidence_choice_read_only(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="A Missing",
+            source_key="direct-missing",
+        )
+        self._add(
+            self.a,
+            self.b,
+            source_name="Z Located",
+            source_key="direct-located",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+        snapshot = self.root / "everquestie-knowledge.sqlite3"
+        create_knowledge_snapshot(
+            self.root / "working.sqlite3",
+            snapshot,
+            snapshot_version="route-actionable-evidence-test",
+        )
+        self.db.close()
+        runtime = RuntimeDatabase(
+            snapshot,
+            self.root / "everquestie-user.sqlite3",
+            migrate_legacy=False,
+        )
+        try:
+            guidance = build_route_guidance(runtime, "Zone A", "Zone B")
+            hop = guidance.hops[0]
+            self.assertEqual(hop.evidence_source, "Z Located")
+            self.assertEqual(hop.source_coordinate, (12.0, 34.0, 5.0))
+            with self.assertRaises(Exception):
+                runtime.conn.execute("UPDATE zone_travel_edges SET x=999")
+        finally:
+            runtime.close()
+            self.db = Database(self.root / "teardown.sqlite3")
+
+
+if __name__ == "__main__":
+    unittest.main()

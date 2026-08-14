@@ -1,0 +1,1 @@
+This migration applies only to historical `legacy-local` map-source rows created before portable catalog identities were introduced. It does not weaken the release audit for named sources, and it never mutates the working builder database.

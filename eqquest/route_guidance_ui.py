@@ -9,6 +9,7 @@ from .route_guidance import (
     route_guidance_text,
 )
 from .travel import TravelFrame
+from .zone_actionability import build_zone_actionability, zone_actionability_text
 
 
 class RouteGuidanceFrame(TravelFrame):
@@ -31,6 +32,30 @@ class RouteGuidanceFrame(TravelFrame):
             route_actions,
             text="Uses confirmed route evidence; player /loc is not required.",
         ).pack(side="left", padx=(8, 0))
+
+    def show_zone_context(self) -> None:
+        """Render canonical zone knowledge plus source-safe route map actionability."""
+        self._clear_nearby_points()
+        zone = self._selected_or_current_zone()
+        if not zone:
+            self.status_var.set("Choose a zone or wait for the current zone from the log.")
+            return
+
+        view, status = build_zone_actionability(self.db, zone, location_limit=50)
+        self._set_result(zone_actionability_text(self.db, zone, location_limit=50))
+        if view is not None:
+            context = view.context
+            self.status_var.set(
+                f"Canonical zone context loaded: {context.identity.name} | "
+                f"{len(context.maps)} map binding(s) | "
+                f"{view.usable_route_directions} usable route direction(s) | "
+                f"{view.mappable_route_directions} mappable exit(s) | "
+                f"{context.entity_count} located entity/entities."
+            )
+        elif status == "ambiguous":
+            self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess.")
+        else:
+            self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
 
     def find_route(self) -> None:
         self._clear_nearby_points()

@@ -11,6 +11,8 @@ from typing import Any
 from .db import Database
 from .db_audit import identity_audit_text
 from .map_catalog import MapCatalog
+from .zone_catalog import ZoneMapCatalog
+from .zone_travel import ZoneTravelCatalog
 
 
 # Schema compatibility and content release identity are deliberately separate.
@@ -207,8 +209,25 @@ def finalize_knowledge_snapshot(
         raise ValueError("snapshot_version is required")
     built = built_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    # Reconcile the portable global map catalog after all entity providers have run.
+    # Reconcile after every provider has run. This makes provider order irrelevant:
+    # aliases/identities supplied late in a build can resolve map stems, labels and
+    # travel candidates that were imported earlier. Future Allakhazam/wiki providers
+    # therefore enrich the same canonical catalogs instead of becoming runtime deps.
+    zone_map = ZoneMapCatalog(db).reconcile()
     map_reconciliation = MapCatalog(db).reconcile_all(force=True)
+    zone_travel = ZoneTravelCatalog(db).reconcile_from_maps()
+    map_reconciliation.update(
+        {
+            "zone_maps": int(zone_map.maps),
+            "zone_maps_linked": int(zone_map.linked),
+            "zone_maps_ambiguous": int(zone_map.ambiguous),
+            "zone_maps_unresolved": int(zone_map.unresolved),
+            "zone_travel_candidates": int(zone_travel.candidates),
+            "zone_travel_linked": int(zone_travel.linked),
+            "zone_travel_ambiguous": int(zone_travel.ambiguous),
+            "zone_travel_unresolved": int(zone_travel.unresolved),
+        }
+    )
     stripped_user = strip_user_state(db)
     stripped_paths, stripped_meta, stripped_payloads = strip_builder_local_state(db)
 
@@ -229,9 +248,8 @@ def finalize_knowledge_snapshot(
     if errors:
         raise ValueError("Knowledge snapshot is not portable:\n- " + "\n- ".join(errors))
 
-    # A packaged knowledge DB should not depend on WAL sidecars. These operations are
-    # builder-only; runtime will eventually open the shipped DB through a read-only
-    # connection instead of Database's current writable migration path.
+    # A packaged knowledge DB must not depend on WAL sidecars. These operations are
+    # builder-only; runtime opens the shipped artifact read-only/immutable.
     db.conn.commit()
     try:
         db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

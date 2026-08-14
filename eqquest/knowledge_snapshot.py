@@ -11,6 +11,7 @@ from typing import Any
 from .db import Database
 from .db_audit import identity_audit_text
 from .map_catalog import MapCatalog
+from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
@@ -222,12 +223,17 @@ def finalize_knowledge_snapshot(
     # semantic layer makes them queryable by stable names and future provider IDs.
     mechanics_coverage = MechanicsCatalog(db).reconcile()
 
-    # Ensure the base map schema exists even for client-only/mapless knowledge builds,
-    # then reconcile after every provider has run. This makes provider order irrelevant:
+    # Ensure the base map schema exists even for client-only/mapless knowledge builds.
+    # Historic builder DBs may still contain absolute Windows paths from the original
+    # runtime map index. Normalize those rows in the snapshot copy before any derived
+    # zone/map/travel reconciliation so release knowledge never retains a builder path.
+    map_catalog = MapCatalog(db)
+    normalize_legacy_map_sources(db)
+
+    # Reconcile after every provider has run. This makes provider order irrelevant:
     # aliases/identities supplied late in a build can resolve map stems, labels and
     # travel candidates that were imported earlier. Future Allakhazam/wiki providers
     # therefore enrich the same canonical catalogs instead of becoming runtime deps.
-    map_catalog = MapCatalog(db)
     zone_map = ZoneMapCatalog(db).reconcile()
     map_reconciliation = map_catalog.reconcile_all(force=True)
     zone_travel = ZoneTravelCatalog(db).reconcile_from_maps()

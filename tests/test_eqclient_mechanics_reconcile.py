@@ -20,8 +20,9 @@ class EQClientMechanicsReconcileTests(unittest.TestCase):
         resources = self.eq / "Resources"
         resources.mkdir(parents=True)
 
+        # skillcaps.txt columns are class_id, skill_id, level, cap.
         # One explicit Warrior / 1H Blunt progression row.
-        (resources / "skillcaps.txt").write_text("0^1^1^5\n", encoding="utf-8")
+        (resources / "skillcaps.txt").write_text("1^0^1^5\n", encoding="utf-8")
         # basedata.txt: level, class, HP, mana, endurance, unused x2, regen x3.
         (resources / "basedata.txt").write_text(
             "1^1^100^0^50^0^0^1^0^1\n",

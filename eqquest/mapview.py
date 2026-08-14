@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import queue
 import re
-from fractions import Fraction
 import threading
 import time
 import tkinter as tk
@@ -139,8 +138,9 @@ class MapViewerFrame(ttk.Frame):
         self._raster_photo: tk.PhotoImage | None = None          # high-res wall source
         self._display_photo: tk.PhotoImage | None = None         # current zoom cache entry
         self._display_image_item: int | None = None
-        self._wall_scaled_cache: dict[tuple[int, int, int], tk.PhotoImage] = {}
-        self._wall_mip_photos: dict[int, tk.PhotoImage] = {}
+        # Exact vector-derived wall images keyed by discrete map zoom level.
+        # Wheel zoom only swaps one cached PhotoImage; it never rescales it.
+        self._wall_exact_photos: dict[float, tk.PhotoImage] = {}
         self._wall_world_origin = (0.0, 0.0)
         self._wall_base_scale = 1.0
         self._wall_fit_scale = 1.0
@@ -393,8 +393,7 @@ class MapViewerFrame(ttk.Frame):
         self._raster_photo = None
         self._display_photo = None
         self._display_image_item = None
-        self._wall_scaled_cache.clear()
-        self._wall_mip_photos.clear()
+        self._wall_exact_photos.clear()
         self._wall_dirty = True
         self.map_file.set(str(self.zone_map.base_path))
         self._invalidate_raster()
@@ -1123,7 +1122,7 @@ class MapViewerFrame(ttk.Frame):
             enabled_layers=tuple(self._enabled_layers()),
             theme_id=self._map_theme_id(),
             line_width=factor,
-            mip_levels=3,
+            exact_levels=tuple((level, level / factor) for level in MAP_ZOOM_LEVELS),
             elevation_enabled=enabled_z,
             elevation_z=z,
             elevation_span=span,
@@ -1168,11 +1167,13 @@ class MapViewerFrame(ttk.Frame):
         base_scale, base_offset_x, base_offset_y, factor, fit_scale = meta
         self._raster_photo = photo
         self._display_photo = None
-        self._wall_scaled_cache.clear()
-        self._wall_mip_photos = {1: photo}
-        for divisor, mip_ppm in result.mipmaps:
+        self._wall_exact_photos = {float(factor): photo}
+        for zoom_level, zoom_ppm in result.exact_rasters:
+            level = float(zoom_level)
+            if abs(level - float(factor)) < 1e-12:
+                continue
             try:
-                self._wall_mip_photos[int(divisor)] = tk.PhotoImage(data=mip_ppm, format="PPM")
+                self._wall_exact_photos[level] = tk.PhotoImage(data=zoom_ppm, format="PPM")
             except tk.TclError:
                 continue
         self._wall_base_scale = base_scale
@@ -1192,55 +1193,16 @@ class MapViewerFrame(ttk.Frame):
         if self._base_map_status:
             self.map_status.set(
                 f"{self._base_map_status} | cached full-detail wall | "
-                f"{result.source_lines:,} source lines | {factor}x source image"
+                f"{result.source_lines:,} source lines | {len(self._wall_exact_photos)} exact zoom images"
             )
 
     def _scaled_wall_photo(self) -> tk.PhotoImage | None:
-        """Choose a pre-rasterized mip and never shrink thin walls in Tk."""
-        if self._raster_photo is None:
-            return None
-        desired_ratio = self.scale / max(self._wall_base_scale, 1e-9)
-        if desired_ratio <= 0:
-            return None
-
-        available = sorted(self._wall_mip_photos)
-        if not available:
+        """Return the exact vector-derived image for the current discrete zoom."""
+        if not self._wall_exact_photos:
             return self._raster_photo
-        divisor = available[-1]
-        for candidate in available:
-            if (1.0 / candidate) <= desired_ratio + 1e-12:
-                divisor = candidate
-                break
-        source = self._wall_mip_photos.get(divisor, self._raster_photo)
-        mip_ratio = 1.0 / divisor
-        upscale = max(1.0, desired_ratio / mip_ratio)
-        fraction = Fraction(upscale).limit_denominator(16)
-        numerator = max(1, fraction.numerator)
-        denominator = max(1, fraction.denominator)
-        if numerator < denominator:
-            numerator = denominator = 1
-        if numerator == denominator:
-            return source
-
-        key = (divisor, numerator, denominator)
-        cached = self._wall_scaled_cache.get(key)
-        if cached is not None:
-            return cached
-        target = tk.PhotoImage()
-        try:
-            target.tk.call(
-                str(target), "copy", str(source),
-                "-zoom", numerator, numerator,
-                "-subsample", denominator, denominator,
-            )
-        except tk.TclError:
-            return source
-        self._wall_scaled_cache[key] = target
-        if len(self._wall_scaled_cache) > 12:
-            oldest = next(iter(self._wall_scaled_cache))
-            if oldest != key:
-                self._wall_scaled_cache.pop(oldest, None)
-        return target
+        current_level = self.scale / max(self._wall_fit_scale, 1e-9)
+        level = min(self._wall_exact_photos, key=lambda value: abs(value - current_level))
+        return self._wall_exact_photos[level]
 
     def _refresh_wall_display(self) -> None:
         photo = self._scaled_wall_photo()

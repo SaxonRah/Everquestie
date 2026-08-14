@@ -104,8 +104,9 @@ class RasterRequest:
     # its stroke width with the supersample factor; otherwise Tk's later subsample
     # operation can simply skip 1-pixel lines and turn them into dots/dashes.
     line_width: int = 1
-    # Lower-resolution wall rasters built once from the same vectors.
-    mip_levels: int = 0
+    # Exact display levels built once from the original vectors.
+    # Entries are (display_level, ratio_to_this_request).
+    exact_levels: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -119,8 +120,8 @@ class RasterResult:
     viewport_lines: int
     buffered_lines: int
     source_lines: int
-    # (divisor, PPM bytes): 2=half size, 4=quarter size, etc.
-    mipmaps: tuple[tuple[int, bytes], ...] = ()
+    # (display zoom level, PPM bytes), independently rasterized from vectors.
+    exact_rasters: tuple[tuple[float, bytes], ...] = ()
 
 
 def _z_visible(z0: float, z1: float, req: RasterRequest) -> bool:
@@ -316,28 +317,34 @@ def render_map_raster(req: RasterRequest) -> RasterResult:
 
     header = f"P6\n{width} {height}\n255\n".encode("ascii")
     ppm = header + bytes(pixels)
-    mipmaps: list[tuple[int, bytes]] = []
-    for level in range(1, max(0, int(req.mip_levels)) + 1):
-        divisor = 2 ** level
-        mip_req = RasterRequest(
+    exact_rasters: list[tuple[float, bytes]] = []
+    for zoom_level, ratio in req.exact_levels:
+        zoom_level = float(zoom_level)
+        ratio = float(ratio)
+        if ratio <= 0.0:
+            continue
+        if abs(ratio - 1.0) < 1e-12:
+            exact_rasters.append((zoom_level, ppm))
+            continue
+        exact_req = RasterRequest(
             generation=req.generation,
             zone_map=req.zone_map,
-            canvas_width=max(1, req.canvas_width // divisor),
-            canvas_height=max(1, req.canvas_height // divisor),
-            buffer_px=max(0, req.buffer_px // divisor),
-            scale=req.scale / divisor,
-            offset_x=req.offset_x / divisor,
-            offset_y=req.offset_y / divisor,
+            canvas_width=max(1, int(round(req.canvas_width * ratio))),
+            canvas_height=max(1, int(round(req.canvas_height * ratio))),
+            buffer_px=max(0, int(round(req.buffer_px * ratio))),
+            scale=req.scale * ratio,
+            offset_x=req.offset_x * ratio,
+            offset_y=req.offset_y * ratio,
             enabled_layers=req.enabled_layers,
             theme_id=req.theme_id,
             elevation_enabled=req.elevation_enabled,
             elevation_z=req.elevation_z,
             elevation_span=req.elevation_span,
-            line_width=max(1, int(round(req.line_width / divisor))),
-            mip_levels=0,
+            line_width=max(1, int(round(req.line_width * ratio))),
+            exact_levels=(),
         )
-        mip_result = render_map_raster(mip_req)
-        mipmaps.append((divisor, mip_result.ppm))
+        exact_result = render_map_raster(exact_req)
+        exact_rasters.append((zoom_level, exact_result.ppm))
 
     return RasterResult(
         generation=req.generation,
@@ -349,5 +356,5 @@ def render_map_raster(req: RasterRequest) -> RasterResult:
         viewport_lines=viewport_lines,
         buffered_lines=buffered_lines,
         source_lines=source_lines,
-        mipmaps=tuple(mipmaps),
+        exact_rasters=tuple(exact_rasters),
     )

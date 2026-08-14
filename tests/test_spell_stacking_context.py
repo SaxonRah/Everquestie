@@ -27,6 +27,18 @@ class SpellStackingContextTests(unittest.TestCase):
             source_key="Resources/SpellStackingGroups.txt",
             source_version="live-client",
         )
+        self.provider_source = self.db.upsert_source_page(
+            url="https://example.invalid/provider/spell/100",
+            title="Provider spell 100",
+            entity_type="spell",
+            sha256="provider-spell-100",
+            plain_text="fixture",
+            raw_html="",
+            source_name="Fixture Provider",
+            source_kind="fixture",
+            source_key="spell:100",
+            source_version="1",
+        )
         self.fire = self.db.upsert_entity(
             kind="spell",
             name="Fire Shield",
@@ -48,12 +60,15 @@ class SpellStackingContextTests(unittest.TestCase):
             external_namespace="eqclient:spell",
             merge_by_name=True,
         )
+        # Model a genuinely separate provider namespace that happens to use the same
+        # numeric external ID. This is the collision spell_id_for_entity must reject.
         self.provider_only = self.db.upsert_entity(
             kind="spell",
             name="Provider Only Spell",
-            external_id="100",
-            merge_by_name=True,
+            source_page_id=self.provider_source,
             source_url="https://example.invalid/provider/spell/100",
+            external_id="100",
+            external_namespace="fixture:spell",
         )
         self.db.replace_spell_stacking(
             self.source,

@@ -37,6 +37,7 @@ def _source_label(row) -> str:
 
 
 SPELL_ID_NAMESPACES = ("eqclient:spell", "everquest:spell", "spell")
+SKILL_ID_NAMESPACES = ("eqclient:skill", "everquest:skill", "skill")
 
 
 def _has_eqclient_provenance(db: Database, entity_id: int) -> bool:
@@ -52,9 +53,14 @@ def _has_eqclient_provenance(db: Database, entity_id: int) -> bool:
     return False
 
 
-def spell_id_for_entity(db: Database, entity_id: int) -> int | None:
-    """Resolve the installed-client spell ID without trusting another source's numeric ID."""
-    allowed = set(SPELL_ID_NAMESPACES)
+def _client_id_for_entity(
+    db: Database,
+    entity_id: int,
+    *,
+    kind: str,
+    namespaces: tuple[str, ...],
+) -> int | None:
+    allowed = {namespace.casefold() for namespace in namespaces}
     for ext in db.external_ids_for_entity(entity_id):
         if str(ext["namespace"] or "").casefold() not in allowed:
             continue
@@ -63,10 +69,12 @@ def spell_id_for_entity(db: Database, entity_id: int) -> int | None:
         except (TypeError, ValueError):
             continue
 
-    # Compatibility for databases produced before namespaced EQ-client IDs existed.
-    # The legacy field is accepted only when the entity itself has EQ-client provenance.
     row = db.entity(entity_id)
-    if row is not None and _has_eqclient_provenance(db, entity_id):
+    if (
+        row is not None
+        and str(row["kind"] or "") == kind
+        and _has_eqclient_provenance(db, entity_id)
+    ):
         try:
             return int(str(row["external_id"] or ""))
         except (TypeError, ValueError):
@@ -74,20 +82,25 @@ def spell_id_for_entity(db: Database, entity_id: int) -> int | None:
     return None
 
 
-def spell_entity_for_client_id(db: Database, spell_id: int):
-    """Resolve a spell entity by EQ-client identity, with a provenance-gated legacy fallback."""
-    external_id = str(int(spell_id))
-    for namespace in SPELL_ID_NAMESPACES:
+def _entity_for_client_id(
+    db: Database,
+    client_id: int,
+    *,
+    kind: str,
+    namespaces: tuple[str, ...],
+):
+    external_id = str(int(client_id))
+    for namespace in namespaces:
         row = db.entity_by_namespaced_external_id(namespace, external_id)
-        if row is not None and str(row["kind"]) == "spell":
+        if row is not None and str(row["kind"]) == kind:
             return row
 
     # Old client imports may only have populated entities.external_id. Never use that
-    # field as a generic cross-source ID: Allakhazam and other providers have their own
-    # numeric namespaces and can legitimately collide with an EQ spell ID.
+    # field as a generic cross-source ID: independent providers can legitimately use
+    # the same integer for a different identity.
     rows = db.conn.execute(
-        "SELECT id FROM entities WHERE kind='spell' AND external_id=? ORDER BY id",
-        (external_id,),
+        "SELECT id FROM entities WHERE kind=? AND external_id=? ORDER BY id",
+        (kind, external_id),
     ).fetchall()
     for candidate in rows:
         entity_id = int(candidate["id"])
@@ -96,9 +109,54 @@ def spell_entity_for_client_id(db: Database, spell_id: int):
     return None
 
 
+def spell_id_for_entity(db: Database, entity_id: int) -> int | None:
+    """Resolve the installed-client spell ID without trusting another source's numeric ID."""
+    return _client_id_for_entity(
+        db,
+        entity_id,
+        kind="spell",
+        namespaces=SPELL_ID_NAMESPACES,
+    )
+
+
+def spell_entity_for_client_id(db: Database, spell_id: int):
+    """Resolve a spell entity by EQ-client identity, with a provenance-gated legacy fallback."""
+    return _entity_for_client_id(
+        db,
+        spell_id,
+        kind="spell",
+        namespaces=SPELL_ID_NAMESPACES,
+    )
+
+
 def spell_name_for_client_id(db: Database, spell_id: int) -> str:
     row = spell_entity_for_client_id(db, spell_id)
     return str(row["name"]) if row is not None else f"spell ID {int(spell_id)}"
+
+
+def skill_id_for_entity(db: Database, entity_id: int) -> int | None:
+    """Resolve the installed-client skill ID without trusting another provider's ID."""
+    return _client_id_for_entity(
+        db,
+        entity_id,
+        kind="skill",
+        namespaces=SKILL_ID_NAMESPACES,
+    )
+
+
+def skill_entity_for_client_id(db: Database, skill_id: int):
+    """Resolve a skill entity by EQ-client identity, with provenance-gated legacy support."""
+    return _entity_for_client_id(
+        db,
+        skill_id,
+        kind="skill",
+        namespaces=SKILL_ID_NAMESPACES,
+    )
+
+
+def skill_name_for_client_id(db: Database, skill_id: int) -> str:
+    row = skill_entity_for_client_id(db, skill_id)
+    return str(row["name"]) if row is not None else f"Skill ID {int(skill_id)}"
 
 
 class MechanicsFrame(ttk.Frame):
@@ -186,7 +244,7 @@ class MechanicsFrame(ttk.Frame):
             selectmode="browse",
         )
         for col, label, width in (
-            ("skill", "Skill ID", 90),
+            ("skill", "Skill", 240),
             ("cap", "Cap", 90),
             ("source", "Source", 420),
         ):
@@ -353,7 +411,12 @@ class MechanicsFrame(ttk.Frame):
                 ).fetchall()
         for row in rows:
             source = str(row["source_name"] or row["local_path"] or row["url"] or "")
-            self.skills_tree.insert("", "end", values=(row["skill_id"], row["cap"], source))
+            skill_id = int(row["skill_id"])
+            self.skills_tree.insert(
+                "",
+                "end",
+                values=(skill_name_for_client_id(self.db, skill_id), row["cap"], source),
+            )
 
     def _spell_id_for_entity(self, entity_id: int) -> int | None:
         return spell_id_for_entity(self.db, entity_id)

@@ -10,6 +10,7 @@ from .knowledge_snapshot import KnowledgeSnapshotReport, create_knowledge_snapsh
 from .map_catalog import MapCatalog
 from .sources import EQClientImporter, MCPLocalSnapshotCompiler
 from .zone_catalog import ZoneMapCatalog
+from .zone_travel import ZoneTravelCatalog
 
 
 ProviderConfig = Mapping[str, Any]
@@ -171,6 +172,7 @@ def _run_map_pack(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
     )
     zone_stats = ZoneMapCatalog(context.db).reconcile(source_name=source_name)
     label_links = catalog.reconcile_all(force=bool(zone_stats.changed), progress=progress)
+    travel_stats = ZoneTravelCatalog(context.db).reconcile_from_maps(source_name=source_name)
     return ProviderBuildResult(
         provider="map-pack",
         label=source_name,
@@ -186,6 +188,10 @@ def _run_map_pack(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
             "zone_maps_linked": int(zone_stats.linked),
             "zone_maps_ambiguous": int(zone_stats.ambiguous),
             "zone_maps_unresolved": int(zone_stats.unresolved),
+            "zone_travel_candidates": int(travel_stats.candidates),
+            "zone_travel_linked": int(travel_stats.linked),
+            "zone_travel_ambiguous": int(travel_stats.ambiguous),
+            "zone_travel_unresolved": int(travel_stats.unresolved),
         },
         details={"source_version": source_version},
     )

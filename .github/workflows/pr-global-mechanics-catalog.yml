@@ -1,0 +1,25 @@
+name: PR global mechanics catalog validation
+
+on:
+  push:
+    branches:
+      - agent/global-mechanics-catalog
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/global-mechanics-catalog
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python source
+        run: python -m compileall -q eqquest tools tests EverQuestie.py
+      - name: Run mechanics catalog tests
+        run: python -m unittest tests.test_mechanics_catalog -v
+      - name: Run mechanics and snapshot regressions
+        run: python -m unittest tests.test_mechanics tests.test_knowledge_snapshot tests.test_runtime_database_split -v
+      - name: Run full regression suite
+        run: python -m unittest discover -s tests -v

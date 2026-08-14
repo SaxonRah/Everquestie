@@ -88,8 +88,18 @@ class ZoneMapCatalog:
         self.db.conn.commit()
 
     def _table_exists(self) -> bool:
+        # Builder databases expose a real main-schema table. RuntimeDatabase exposes
+        # packaged knowledge tables as TEMP views over its read-only attached DB.
+        # Probe both namespaces so the same read API works in either lifecycle.
         return self.db.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='zone_map_bindings'"
+            """
+            SELECT 1 FROM sqlite_temp_master
+            WHERE type IN ('table','view') AND name='zone_map_bindings'
+            UNION ALL
+            SELECT 1 FROM sqlite_master
+            WHERE type IN ('table','view') AND name='zone_map_bindings'
+            LIMIT 1
+            """
         ).fetchone() is not None
 
     @staticmethod

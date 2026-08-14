@@ -13,6 +13,7 @@ from .db_audit import identity_audit_text
 from .map_catalog import MapCatalog
 from .mechanics_catalog import MechanicsCatalog
 from .zone_catalog import ZoneMapCatalog
+from .zone_coverage import ZoneCoverageCatalog
 from .zone_travel import ZoneTravelCatalog
 
 
@@ -41,6 +42,8 @@ KNOWLEDGE_META_KEYS = {
     "map_links_dirty",
     "mechanics_catalog_version",
     "mechanics_catalog_coverage",
+    "zone_coverage_version",
+    "zone_catalog_coverage",
     "eq_mcp_last_compile",
     "eq_mcp_version",
     "eq_mcp_commit",
@@ -63,6 +66,7 @@ class KnowledgeSnapshotReport:
     stripped_meta_rows: int
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
+    zone_coverage: dict[str, Any]
     map_reconciliation: dict[str, int]
     fts_rows: int
     diagnostics: dict[str, Any]
@@ -239,6 +243,10 @@ def finalize_knowledge_snapshot(
             "zone_travel_unresolved": int(zone_travel.unresolved),
         }
     )
+    # Coverage is compiled only after zone/map/travel reconciliation, so the report
+    # describes the exact release graph users will receive rather than builder order.
+    zone_coverage = ZoneCoverageCatalog(db).compile_summary()
+
     stripped_user = strip_user_state(db)
     stripped_paths, stripped_meta, stripped_payloads = strip_builder_local_state(db)
 
@@ -288,6 +296,7 @@ def finalize_knowledge_snapshot(
         stripped_meta_rows=stripped_meta,
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
+        zone_coverage=zone_coverage.as_dict(),
         map_reconciliation=map_reconciliation,
         fts_rows=fts_rows,
         diagnostics=diagnostics,

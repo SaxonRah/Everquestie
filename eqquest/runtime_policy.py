@@ -135,7 +135,13 @@ def install_runtime_policy() -> None:
 
     # Import app only after the map-view patch so app.py binds the guarded viewer.
     from . import app as app_module
+    from .locations import where_text as unified_where_text
     from .travel import TravelFrame
+
+    # The application historically imported knowledge.where_text directly. Route the
+    # live WHERE command through the unified evidence projection so confirmed map POIs
+    # and provider/importer locations are both visible without mutating either source.
+    app_module.where_text = unified_where_text
 
     original_app = app_module.EverQuestieApp
     if getattr(original_app, _APP_POLICY_MARKER, False):

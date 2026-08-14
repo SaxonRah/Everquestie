@@ -1,0 +1,43 @@
+name: Portable manual map catalog migration
+
+on:
+  push:
+    branches:
+      - agent/portable-manual-map-catalog
+    paths:
+      - 'tools/apply_portable_map_catalog.py'
+      - '.github/workflows/portable-manual-map-catalog.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/portable-manual-map-catalog
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply architecture migration
+        run: python tools/apply_portable_map_catalog.py
+      - name: Compile Python source
+        run: python -m compileall -q eqquest tools tests EverQuestie.py
+      - name: Import runtime modules
+        run: python -c "import eqquest.app; import eqquest.map_catalog; import eqquest.mapview; print('runtime imports OK')"
+      - name: Run regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Commit migrated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add eqquest/map_catalog.py eqquest/mapview.py eqquest/app.py tests tools/build_map_catalog.py tools/README.md docs/DATABASE_DISTRIBUTION.md
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Make map catalog portable and builder-driven"
+            git push origin HEAD:agent/portable-manual-map-catalog
+          fi

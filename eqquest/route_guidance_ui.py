@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tkinter import ttk
 
+from .local_map_readiness import local_map_readiness_text
 from .route_guidance import (
     RouteGuidanceResult,
     build_route_guidance,
@@ -17,6 +18,7 @@ class RouteGuidanceFrame(TravelFrame):
 
     def __init__(self, *args, **kwargs):
         self._route_guidance: RouteGuidanceResult | None = None
+        self.get_map_readiness = kwargs.pop("get_map_readiness", None)
         super().__init__(*args, **kwargs)
 
     def _build(self) -> None:
@@ -33,6 +35,16 @@ class RouteGuidanceFrame(TravelFrame):
             text="Uses confirmed route evidence; player /loc is not required.",
         ).pack(side="left", padx=(8, 0))
 
+    def _local_readiness(self, zone: str):
+        if self.get_map_readiness is None:
+            return None
+        try:
+            return self.get_map_readiness(zone)
+        except Exception:
+            # Local filesystem readiness is supplemental. Never turn a transient local
+            # resource check into a failure of canonical knowledge/navigation views.
+            return None
+
     def show_zone_context(self) -> None:
         """Render canonical zone knowledge plus source-safe route map actionability."""
         self._clear_nearby_points()
@@ -42,15 +54,26 @@ class RouteGuidanceFrame(TravelFrame):
             return
 
         view, status = build_zone_actionability(self.db, zone, location_limit=50)
-        self._set_result(zone_actionability_text(self.db, zone, location_limit=50))
+        text = zone_actionability_text(self.db, zone, location_limit=50)
+        readiness = self._local_readiness(zone)
+        if readiness is not None:
+            text += "\n\nLocal map readiness:\n  " + local_map_readiness_text(readiness)
+        self._set_result(text)
         if view is not None:
             context = view.context
+            local_status = ""
+            if readiness is not None:
+                local_status = (
+                    " | local map ready"
+                    if readiness.ready
+                    else f" | local map {readiness.status.replace('_', ' ')}"
+                )
             self.status_var.set(
                 f"Canonical zone context loaded: {context.identity.name} | "
                 f"{len(context.maps)} map binding(s) | "
                 f"{view.usable_route_directions} usable route direction(s) | "
                 f"{view.mappable_route_directions} mappable exit(s) | "
-                f"{context.entity_count} located entity/entities."
+                f"{context.entity_count} located entity/entities{local_status}."
             )
         elif status == "ambiguous":
             self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess.")
@@ -119,13 +142,26 @@ class RouteGuidanceFrame(TravelFrame):
                 )
             return
 
+        readiness = self._local_readiness(hop.source_name)
+        if readiness is not None and not readiness.ready:
+            self.status_var.set(
+                f"Next hop coordinate is confirmed for {hop.source_name}, but "
+                f"{local_map_readiness_text(readiness)}"
+            )
+            return
+
         if self.on_map_target is None:
             self.status_var.set("Map targeting is not connected in this application surface.")
             return
 
         x, y, z = coordinate
         self.on_map_target(hop.source_name, x, y, z, hop.map_label)
+        local_suffix = (
+            f" | local map: {readiness.path.name}"
+            if readiness is not None and readiness.ready and readiness.path is not None
+            else ""
+        )
         self.status_var.set(
-            f"Map next hop: {hop.map_label} | source: {hop.evidence_source}. "
+            f"Map next hop: {hop.map_label} | source: {hop.evidence_source}{local_suffix}. "
             "The Map tab owns local map selection, coordinate conversion and rendering."
         )

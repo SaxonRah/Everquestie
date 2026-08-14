@@ -569,10 +569,9 @@ class MapCatalog:
         limit: int = 100,
     ) -> list[MapCatalogHit]:
         query = parse_local_query(raw_query)
-        if query.source:
-            src = normalize_name(query.source)
-            if not any(token in src for token in ("map", "good", "brewall", "everquest")):
-                return []
+        source_filter = normalize_name(query.source or "")
+        if source_filter in {"map", "maps", "map catalog"}:
+            source_filter = ""
 
         requested_zone = query.zone
         if requested_zone and requested_zone.casefold() == "current":
@@ -600,6 +599,8 @@ class MapCatalog:
         allow_fuzzy = bool(text and not query.exact and (not query.kinds or "npc" in query.kinds))
 
         for row in rows:
+            if source_filter and source_filter not in normalize_name(str(row["source_name"] or "")):
+                continue
             zone_norm = normalize_map_name(str(row["zone_name"] or ""))
             stem_norm = normalize_map_name(str(row["map_stem"] or ""))
             if wanted_zone and wanted_zone not in {zone_norm, stem_norm}:

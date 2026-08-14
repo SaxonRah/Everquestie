@@ -1168,7 +1168,13 @@ class MapViewerFrame(ttk.Frame):
                     }:
                         chosen = candidate
                         break
-                self.load_map(chosen.path)
+                local_path = self._catalog_hit_local_path(chosen)
+                if local_path is None:
+                    self.lookup_status.set(
+                        f"Linked catalog evidence found for {chosen.text}, but that map file is not present in the selected local map pack."
+                    )
+                    return
+                self.load_map(local_path)
                 self.after(80, lambda: self._center_map_point(chosen.x, chosen.y))
                 self.lookup_status.set(f"Opened linked map evidence for {chosen.text}")
                 return

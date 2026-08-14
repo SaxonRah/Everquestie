@@ -65,6 +65,12 @@ class MapCatalogTests(unittest.TestCase):
             [],
         )
 
+    def test_source_filter_uses_catalog_source_name(self):
+        self.catalog.index_root(self.root, source_name="Brewall")
+        self.assertTrue(self.catalog.search('source:Brewall Warwing'))
+        self.assertEqual(self.catalog.search('source:Good Warwing'), [])
+        self.assertTrue(self.catalog.search('source:map Warwing'))
+
     def test_type_only_query_does_not_invent_map_entity_types(self):
         self.catalog.index_root(self.root)
         self.assertEqual(
@@ -79,6 +85,22 @@ class MapCatalogTests(unittest.TestCase):
         hits = self.catalog.search("Warwing")
         self.assertTrue(hits)
         self.assertEqual(self.db.get_meta("map_links_dirty"), "1")
+
+    def test_same_catalog_source_can_move_without_duplicate_rows(self):
+        self.catalog.index_root(self.root, source_name="Brewall")
+        moved = Path(self.tmp.name) / "moved_maps"
+        moved.mkdir()
+        for source in self.root.glob("*.txt"):
+            (moved / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        self.catalog.index_root(moved, source_name="Brewall")
+        sources = self.db.conn.execute(
+            "SELECT source_name,source_key,path,root FROM map_sources ORDER BY source_key"
+        ).fetchall()
+        self.assertEqual(len(sources), 2)
+        self.assertEqual({row["source_name"] for row in sources}, {"Brewall"})
+        self.assertEqual({row["root"] for row in sources}, {"Brewall"})
+        self.assertTrue(all(str(row["path"]).startswith("mapcatalog://") for row in sources))
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM map_labels").fetchone()[0], 2)
 
     def test_map_evidence_renderer_uses_portable_provenance(self):
         from eqquest.map_catalog import map_evidence_lines

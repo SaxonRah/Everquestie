@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from .db import Database
+from .detail_renderers import render_structured_local_detail
 
 
 RELATION_LABELS = {
@@ -153,6 +154,16 @@ def _render_local_detail(db: Database, entity_id: int, kind: str) -> list[str]:
         return _render_spell_detail(data)
 
     text = str(row["detail_text"] or "").strip()
+    if isinstance(data, dict):
+        structured = render_structured_local_detail(kind, data)
+        if structured:
+            if text:
+                title = "Installed EverQuest client source detail"
+                if fmt == "markdown":
+                    title += " (via everquest1-mcp)"
+                structured.extend(["", title + ":", text])
+            return structured
+
     if not text:
         return []
     title = "Installed EverQuest client detail"

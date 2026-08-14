@@ -11,6 +11,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from .db import Database
+from .knowledge import entity_detail_text, relation_label
+from .local_search import map_label_terms, resolve_local_hits
 from .mapraster import (
     RasterRequest,
     RasterResult,
@@ -775,81 +777,40 @@ class MapViewerFrame(ttk.Frame):
 
     @staticmethod
     def _map_lookup_terms(term: str) -> list[str]:
-        """Return useful canonical guesses for decorated community-map labels."""
-        raw = " ".join((term or "").replace("_", " ").split()).strip()
-        if not raw:
-            return []
-        variants: list[str] = []
-
-        def add(value: str) -> None:
-            value = " ".join(value.split()).strip(" -*?:;,.[]{}")
-            if value and value.casefold() not in {v.casefold() for v in variants}:
-                variants.append(value)
-
-        add(raw)
-        # Zone-line labels are commonly "To <zone>", "Exit to <zone>", etc.
-        add(re.sub(r"^(?:zone\s+to|exit\s+to|entrance\s+to|to)\s+", "", raw, flags=re.I))
-        # Good/Brewall annotations often append role/quest notes such as (Q),
-        # (honeytender), (merchant), or author commentary. Try the clean name too.
-        no_paren = re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()
-        add(no_paren)
-        add(re.sub(r"^(?:zone\s+to|exit\s+to|entrance\s+to|to)\s+", "", no_paren, flags=re.I))
-        # Asterisks/question marks are also frequently map annotations.
-        add(re.sub(r"[?*]+$", "", no_paren).strip())
-        return variants
+        return map_label_terms(term)
 
     def _lookup_candidates(self, term: str, preferred_entity_id: int | None = None):
-        terms = self._map_lookup_terms(term)
-        if not terms:
-            return []
-        rows = []
-        seen: set[int] = set()
-        if preferred_entity_id is not None:
-            row = self.db.entity(preferred_entity_id)
-            if row is not None:
-                rows.append(row)
-                seen.add(int(row["id"]))
-
-        # Prefer exact/alias matches from any cleaned variant before fuzzy FTS.
-        for candidate in terms:
-            exact, _status = self.db.resolve_entity(candidate)
-            if exact is not None and int(exact["id"]) not in seen:
-                rows.append(exact)
-                seen.add(int(exact["id"]))
-        for candidate in terms:
-            for row in self.db.search_entities_fts(candidate, limit=40):
-                eid = int(row["id"])
-                if eid not in seen:
-                    rows.append(row)
-                    seen.add(eid)
-                if len(rows) >= 40:
-                    break
-            if len(rows) >= 40:
-                break
-        return rows[:40]
+        return resolve_local_hits(
+            self.db,
+            term,
+            current_zone=self.get_zone(),
+            preferred_entity_id=preferred_entity_id,
+            limit=40,
+        )
 
     def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:
         term = " ".join((term or "").replace("_", " ").split()).strip()
         if not term:
             return
         self.lookup_query.set(term)
-        rows = self._lookup_candidates(term, preferred_entity_id)
+        hits = self._lookup_candidates(term, preferred_entity_id)
         self.lookup_tree.delete(*self.lookup_tree.get_children())
         self._lookup_entity_by_item.clear()
         self._lookup_selected_entity = None
-        if not rows:
+        if not hits:
             self.lookup_status.set("No local DB match")
             self._set_lookup_detail(f"No local EverQuestie knowledge matches: {term}")
             return
-        for row in rows:
-            item = self.lookup_tree.insert("", "end", text=row["name"], values=(row["kind"], "match"))
+        for hit in hits:
+            row = hit.row
+            item = self.lookup_tree.insert("", "end", text=row["name"], values=(row["kind"], hit.reason))
             self._lookup_entity_by_item[item] = int(row["id"])
         first = self.lookup_tree.get_children()[0]
         self.lookup_tree.selection_set(first)
         self.lookup_tree.focus(first)
         self.lookup_tree.see(first)
         self._show_entity_info(self._lookup_entity_by_item[first], tree_item=first)
-        self.lookup_status.set(f"{len(rows)} local match" + ("es" if len(rows) != 1 else ""))
+        self.lookup_status.set(f"{len(hits)} ranked local match" + ("es" if len(hits) != 1 else ""))
 
     def _show_entity_in_lookup(self, entity_id: int) -> None:
         row = self.db.entity(entity_id)
@@ -869,47 +830,8 @@ class MapViewerFrame(ttk.Frame):
         if row is None:
             return
         self._lookup_selected_entity = entity_id
-        aliases = [str(r["alias"]) for r in self.db.aliases_for_entity(entity_id)]
         relationships = list(self.db.relationships_for_entity(entity_id))
-        detail = self.db.entity_detail(entity_id)
-        sources = list(self.db.sources_for_entity(entity_id))
-
-        lines = [f'[{row["kind"]}] {row["name"]}']
-        if row["zone"]:
-            lines.append(f'Zone: {row["zone"]}')
-        if row["level_min"] is not None or row["level_max"] is not None:
-            lo = row["level_min"] if row["level_min"] is not None else "?"
-            hi = row["level_max"] if row["level_max"] is not None else lo
-            lines.append(f'Level: {lo}' if lo == hi else f'Levels: {lo}-{hi}')
-        if aliases:
-            lines.append('Aliases: ' + ', '.join(aliases[:12]))
-        if row["notes"]:
-            lines.append('')
-            lines.append(str(row["notes"]))
-
-        if detail is not None and detail["detail_text"]:
-            text = str(detail["detail_text"]).strip()
-            if text:
-                lines.append('')
-                lines.append('Details:')
-                lines.append(text[:2600] + ('…' if len(text) > 2600 else ''))
-
-        if relationships:
-            grouped: dict[tuple[str, str], int] = {}
-            for rel in relationships:
-                if rel["direction"] == "out":
-                    other_kind = str(rel["target_kind"])
-                else:
-                    other_kind = str(rel["source_kind"])
-                key = (str(rel["relation"]), other_kind)
-                grouped[key] = grouped.get(key, 0) + 1
-            lines.append('')
-            lines.append('Related: ' + ', '.join(
-                f'{relation} {count} {kind}' for (relation, kind), count in sorted(grouped.items())
-            ))
-        if sources:
-            lines.append(f'Sources: {len(sources)}')
-        self._set_lookup_detail('\n'.join(lines))
+        self._set_lookup_detail(entity_detail_text(self.db, entity_id, include_source_text=False))
 
         if tree_item is not None and not self.lookup_tree.get_children(tree_item):
             for rel in relationships[:250]:
@@ -917,12 +839,12 @@ class MapViewerFrame(ttk.Frame):
                     other_id = int(rel["target_entity_id"])
                     other_kind = str(rel["target_kind"])
                     other_name = str(rel["target_name"])
-                    relation = str(rel["relation"]) + " →"
+                    relation = relation_label(str(rel["relation"])) + " →"
                 else:
                     other_id = int(rel["source_entity_id"])
                     other_kind = str(rel["source_kind"])
                     other_name = str(rel["source_name"])
-                    relation = "← " + str(rel["relation"])
+                    relation = "← " + relation_label(str(rel["relation"]))
                 child = self.lookup_tree.insert(tree_item, "end", text=other_name, values=(other_kind, relation))
                 self._lookup_entity_by_item[child] = other_id
             if relationships:

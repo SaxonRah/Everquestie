@@ -16,6 +16,8 @@ from .db import Database
 from .parser import EQLogParser
 from .quest_engine import QuestEngine
 from .knowledge import entity_detail_text, find_text, where_text
+from .local_search import count_local_entities_by_kind, query_summary, search_local_entities, search_local_hits
+from .db_audit import identity_audit_text
 from .mapview import MapViewerFrame
 from .mcp_client import (
     ONLINE_TOOLS,
@@ -332,7 +334,7 @@ class EverQuestieApp(tk.Tk):
             self.knowledge_tab,
             text=(
                 "Knowledge is grouped by topic. Expand a [+] topic to browse it; "
-                "large topics are loaded lazily so spell/AA inventories stay responsive."
+                "large topics are loaded lazily. Search supports type:, zone:, source:, exact: and quoted names."
             ),
             justify="left",
         ).pack(fill="x", pady=(6, 0))
@@ -401,9 +403,11 @@ class EverQuestieApp(tk.Tk):
             self.entity_tree.delete(child)
 
         term = getattr(self, "_knowledge_search_term", "")
-        rows = self.db.search_entities(
+        rows = search_local_entities(
+            self.db,
             term,
-            kind,
+            default_kind=kind,
+            current_zone=self.state_model.current_zone,
             limit=KNOWLEDGE_CHILD_LIMIT,
         )
         for row in rows:
@@ -494,6 +498,9 @@ class EverQuestieApp(tk.Tk):
             side="left", padx=(6, 0)
         )
         ttk.Button(controls, text="Backup database…", command=self._backup_database).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(controls, text="Identity audit", command=self._run_identity_audit).pack(
             side="left", padx=(6, 0)
         )
 
@@ -658,19 +665,25 @@ class EverQuestieApp(tk.Tk):
         query = self.online_query_var.get().strip()
         if not query:
             return
-        rows = self.db.search_entities_fts(query)
-        if not rows:
+        hits = search_local_hits(
+            self.db,
+            query,
+            current_zone=self.state_model.current_zone,
+            limit=250,
+        )
+        if not hits:
             self._set_online_result(f"LOCAL DB | no match: {query}")
             self.online_status_var.set("Local-only search complete. No network request was made.")
             return
-        lines = [f"LOCAL DB | {query} | {len(rows)} match(es)", ""]
-        for row in rows[:80]:
+        lines = [f"LOCAL DB | {query} | {len(hits)} ranked match(es)", f"Filters: {query_summary(query)}", ""]
+        for hit in hits[:100]:
+            row = hit.row
             zone = f" | {row['zone']}" if row["zone"] else ""
-            lines.append(f"[{row['kind']}] {row['name']}{zone}")
-        if len(rows) > 80:
-            lines.append(f"\n...and {len(rows)-80} more")
+            lines.append(f"[{row['kind']}] {row['name']}{zone} | {hit.reason}")
+        if len(hits) > 100:
+            lines.append(f"\n...and {len(hits)-100} more")
         self._set_online_result("\n".join(lines))
-        self.online_status_var.set("Local-only search complete. No network request was made.")
+        self.online_status_var.set("Local-only ranked search complete. No network request was made.")
 
     def _search_allakhazam_from_search_tab(self) -> None:
         query = self.online_query_var.get().strip()
@@ -764,6 +777,9 @@ class EverQuestieApp(tk.Tk):
         self.database_text.delete("1.0", "end")
         self.database_text.insert("end", text)
         self.database_text.configure(state="disabled")
+
+    def _run_identity_audit(self) -> None:
+        self._set_database_text(identity_audit_text(self.db))
 
     def _database_diagnostic_text(self) -> str:
         d = self.db.database_diagnostics()
@@ -1569,7 +1585,12 @@ class EverQuestieApp(tk.Tk):
     def _search_knowledge(self):
         term = self.search_var.get().strip()
         kind = None if self.kind_var.get() == "all" else self.kind_var.get()
-        counts = self.db.entity_kind_counts(term, kind)
+        counts = count_local_entities_by_kind(
+            self.db,
+            term,
+            default_kind=kind,
+            current_zone=self.state_model.current_zone,
+        )
 
         self._knowledge_search_term = term
         self._knowledge_entity_by_item.clear()

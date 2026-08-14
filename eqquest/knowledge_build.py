@@ -9,6 +9,7 @@ from .db import Database
 from .knowledge_snapshot import KnowledgeSnapshotReport, create_knowledge_snapshot
 from .map_catalog import MapCatalog
 from .sources import EQClientImporter, MCPLocalSnapshotCompiler
+from .zone_catalog import ZoneMapCatalog
 
 
 ProviderConfig = Mapping[str, Any]
@@ -161,12 +162,15 @@ def _run_map_pack(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
     def progress(stage: str, current: int, total: int, detail: str) -> None:
         context.emit(f"[map-pack:{source_name}] {stage} {current}/{total} {detail}")
 
-    stats = MapCatalog(context.db).index_root(
+    catalog = MapCatalog(context.db)
+    stats = catalog.index_root(
         root,
         source_name=source_name,
         source_version=source_version,
         progress=progress,
     )
+    zone_stats = ZoneMapCatalog(context.db).reconcile(source_name=source_name)
+    label_links = catalog.reconcile_all(force=bool(zone_stats.changed), progress=progress)
     return ProviderBuildResult(
         provider="map-pack",
         label=source_name,
@@ -175,9 +179,13 @@ def _run_map_pack(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
             "files_indexed": int(stats.files_indexed),
             "files_unchanged": int(stats.files_unchanged),
             "labels": int(stats.labels),
-            "linked": int(stats.linked),
-            "ambiguous": int(stats.ambiguous),
-            "unresolved": int(stats.unresolved),
+            "linked": int(label_links["linked"]),
+            "ambiguous": int(label_links["ambiguous"]),
+            "unresolved": int(label_links["unresolved"]),
+            "zone_maps": int(zone_stats.maps),
+            "zone_maps_linked": int(zone_stats.linked),
+            "zone_maps_ambiguous": int(zone_stats.ambiguous),
+            "zone_maps_unresolved": int(zone_stats.unresolved),
         },
         details={"source_version": source_version},
     )

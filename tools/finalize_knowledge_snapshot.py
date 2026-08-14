@@ -47,6 +47,14 @@ def main() -> int:
     print(f"stripped runtime/meta rows: {report.stripped_meta_rows:,}")
     print(f"stripped builder payloads: {report.stripped_builder_payloads:,}")
     print(
+        "mechanics reconciliation: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.mechanics_reconciliation.items()
+            if name not in {"class_ids_seen", "skill_ids_seen"}
+        )
+    )
+    print(
         "map reconciliation: "
         + ", ".join(f"{name}={count}" for name, count in report.map_reconciliation.items())
     )

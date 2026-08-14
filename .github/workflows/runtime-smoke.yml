@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'eqquest/**'
+      - 'tests/test_mapraster.py'
       - 'EverQuestie.py'
       - '.github/workflows/runtime-smoke.yml'
 
@@ -19,4 +20,6 @@ jobs:
       - name: Compile Python source
         run: python -m compileall -q eqquest EverQuestie.py
       - name: Import application
-        run: python -c "import eqquest.app; print('eqquest.app import OK')"
+        run: python -c "import eqquest.app; import eqquest.mapview; import eqquest.mapraster; print('runtime imports OK')"
+      - name: Test full-detail map rasterizer
+        run: python -m unittest tests.test_mapraster -v

@@ -118,16 +118,16 @@ else {
 }
 
 Write-Host "[3/4] Building Windows application and attaching knowledge snapshot..."
-$BuilderArgs = @(
-    "-KnowledgeDb", $Snapshot,
-    "-DistPath", $ReleaseDir,
-    "-PythonExe", $PythonCommand,
-    "-CleanOutput"
-)
-if ($OneFile) {
-    $BuilderArgs += "-OneFile"
+$BuilderParams = @{
+    KnowledgeDb = $Snapshot
+    DistPath = $ReleaseDir
+    PythonExe = $PythonCommand
+    CleanOutput = $true
 }
-& $WindowsBuilder @BuilderArgs
+if ($OneFile) {
+    $BuilderParams["OneFile"] = $true
+}
+& $WindowsBuilder @BuilderParams
 if ($LASTEXITCODE -ne 0) {
     throw "Windows application build failed with exit code $LASTEXITCODE."
 }

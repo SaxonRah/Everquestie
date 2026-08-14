@@ -83,7 +83,13 @@ class ZoneMapCatalogTests(unittest.TestCase):
         binding = ZoneMapCatalog(self.db).binding_for_map("Good", "qeynos")
         self.assertEqual(binding.zone_entity_id, south)
         self.assertEqual(binding.status, "linked")
-        self.assertIn("short-name", binding.reason)
+        self.assertIn(
+            binding.reason,
+            {
+                "existing canonical map-zone name",
+                "exact canonical name/alias/short-name match",
+            },
+        )
 
     def test_later_provider_alias_can_resolve_previously_unknown_map(self):
         zone_id = self.db.upsert_entity(

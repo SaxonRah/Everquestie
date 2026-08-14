@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
@@ -10,6 +11,14 @@ from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 from eqquest.runtime import RuntimeDatabase
 from eqquest.runtime_policy import install_runtime_policy
+
+
+class _StatusRecorder:
+    def __init__(self):
+        self.value = ""
+
+    def set(self, value: str) -> None:
+        self.value = value
 
 
 class RuntimeMapPolicyTests(unittest.TestCase):
@@ -75,6 +84,24 @@ class RuntimeMapPolicyTests(unittest.TestCase):
             self.assertGreaterEqual(stats.labels, 1)
         finally:
             second_builder.close()
+
+    def test_packaged_app_policy_blocks_fts_rebuild_method_before_builder_db_open(self):
+        install_runtime_policy()
+        from eqquest import app as app_module
+
+        status = _StatusRecorder()
+        fake_app = SimpleNamespace(
+            db=SimpleNamespace(knowledge_writable=False),
+            status=status,
+            _packaged_runtime=lambda: True,
+        )
+        # Call the patched method unbound so no Tk display is required in CI.
+        app_module.EverQuestieApp._rebuild_search_index(fake_app)
+        self.assertIn("shipped knowledge snapshot", status.value)
+        self.assertIn("read-only", status.value)
+        self.assertTrue(
+            getattr(app_module.EverQuestieApp, "_everquestie_packaged_app_policy", False)
+        )
 
 
 if __name__ == "__main__":

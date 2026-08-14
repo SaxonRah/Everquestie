@@ -8,6 +8,112 @@ _MAP_POLICY_MARKER = "_everquestie_shipped_catalog_policy"
 _APP_POLICY_MARKER = "_everquestie_packaged_app_policy"
 
 
+def _same_canonical_zone(db, left: str | None, right: str | None) -> bool:
+    """Compare runtime zone tokens without weakening canonical ambiguity rules."""
+    left_text = " ".join(str(left or "").split()).strip()
+    right_text = " ".join(str(right or "").split()).strip()
+    if not left_text or not right_text:
+        return False
+    from .zone_identity import resolve_zone
+
+    left_resolution = resolve_zone(db, left_text)
+    right_resolution = resolve_zone(db, right_text)
+    if left_resolution.identity is not None and right_resolution.identity is not None:
+        return left_resolution.entity_id == right_resolution.entity_id
+    # Exact raw equality is safe as a fallback for an incomplete old snapshot; never
+    # use substring/fuzzy matching here because this guards map coordinate ownership.
+    return left_text.casefold() == right_text.casefold()
+
+
+def _draw_runtime_navigation_target(viewer) -> None:
+    """Draw one transient game-space navigation target on the currently loaded map."""
+    viewer.canvas.delete("eqquest_navigation_target")
+    target = getattr(viewer, "_navigation_target", None)
+    if target is None or viewer.zone_map is None:
+        return
+    zone, game_x, game_y, game_z, label = target
+    if not _same_canonical_zone(viewer.db, viewer.get_zone(), zone):
+        return
+
+    from .eqmap import game_to_map
+
+    mx, my, _ = game_to_map(float(game_x), float(game_y), float(game_z or 0.0))
+    sx, sy = viewer._world_to_screen(mx, my)
+    radius = 10
+    color = "#ffd24a"
+    viewer.canvas.create_oval(
+        sx - radius,
+        sy - radius,
+        sx + radius,
+        sy + radius,
+        outline=color,
+        width=3,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_line(
+        sx - radius - 4,
+        sy,
+        sx + radius + 4,
+        sy,
+        fill=color,
+        width=2,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_line(
+        sx,
+        sy - radius - 4,
+        sx,
+        sy + radius + 4,
+        fill=color,
+        width=2,
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+    viewer.canvas.create_text(
+        sx + radius + 7,
+        sy - radius - 2,
+        text=str(label or "Navigation target"),
+        anchor="sw",
+        fill=color,
+        font=("TkDefaultFont", 9, "bold"),
+        tags=("map_content", "eqquest_navigation_target"),
+    )
+
+
+def _focus_runtime_navigation_target(
+    viewer,
+    zone: str,
+    x: float,
+    y: float,
+    z: float | None,
+    label: str,
+) -> bool:
+    """Center a loaded local map on one normalized EQ game-space coordinate."""
+    viewer._navigation_target = (
+        str(zone),
+        float(x),
+        float(y),
+        (float(z) if z is not None else None),
+        str(label or "Navigation target"),
+    )
+    if not _same_canonical_zone(viewer.db, viewer.get_zone(), zone):
+        viewer.coord_status.set("Navigation target belongs to a different current zone.")
+        return False
+    if viewer.zone_map is None:
+        viewer.coord_status.set("Navigation target is known, but no local map is loaded for this zone.")
+        return False
+
+    from .eqmap import game_to_map
+
+    mx, my, _ = game_to_map(float(x), float(y), float(z or 0.0))
+    viewer._center_map_point(mx, my)
+    _draw_runtime_navigation_target(viewer)
+    z_text = f" Z={float(z):g}" if z is not None else ""
+    viewer.coord_status.set(
+        f"Target: {label} | /loc Y={float(y):g} X={float(x):g}{z_text}"
+    )
+    return True
+
+
 def install_runtime_policy() -> None:
     """Install packaged-runtime guards before the application UI is launched.
 
@@ -49,6 +155,10 @@ def install_runtime_policy() -> None:
         class RuntimePolicyMapViewerFrame(original_viewer):
             """Map viewer that consumes, but never compiles, packaged catalog knowledge."""
 
+            def __init__(self, *args, **kwargs):
+                self._navigation_target = None
+                super().__init__(*args, **kwargs)
+
             def _packaged_runtime(self) -> bool:
                 return not getattr(self.db, "knowledge_writable", True)
 
@@ -79,6 +189,24 @@ def install_runtime_policy() -> None:
                     )
                     return
                 return super().index_map_catalog()
+
+            def _redraw_position(self) -> None:
+                super()._redraw_position()
+                _draw_runtime_navigation_target(self)
+
+            def focus_navigation_target(
+                self,
+                zone: str,
+                x: float,
+                y: float,
+                z: float | None,
+                label: str,
+            ) -> bool:
+                return _focus_runtime_navigation_target(self, zone, x, y, z, label)
+
+            def clear_navigation_target(self) -> None:
+                self._navigation_target = None
+                self.canvas.delete("eqquest_navigation_target")
 
             def load_current_zone(self) -> None:
                 if not self._packaged_runtime():
@@ -153,6 +281,28 @@ def install_runtime_policy() -> None:
         def _packaged_runtime(self) -> bool:
             return not getattr(self.db, "knowledge_writable", True)
 
+        def _focus_navigation_map_target(
+            self,
+            zone: str,
+            x: float,
+            y: float,
+            z: float | None,
+            label: str,
+        ) -> None:
+            # Targets emitted by Travel are constrained to the live current zone. Check
+            # again at the ownership boundary in case the player zoned between clicks.
+            if not _same_canonical_zone(self.db, self.state_model.current_zone, zone):
+                self.status.set("Navigation target expired because the current zone changed.")
+                return
+            self.notebook.select(self.map_tab)
+            self.map_view.load_current_zone()
+            if self.map_view.focus_navigation_target(zone, x, y, z, label):
+                self.status.set(f"Map focused on {label}.")
+            else:
+                self.status.set(
+                    "Navigation coordinate is known, but the matching local map could not be focused."
+                )
+
         def _build_ui(self) -> None:
             super()._build_ui()
 
@@ -161,6 +311,7 @@ def install_runtime_policy() -> None:
                 db=self.db,
                 get_zone=lambda: self.state_model.current_zone,
                 get_location=lambda: self.state_model.last_location,
+                on_map_target=self._focus_navigation_map_target,
             )
             # Live, Map, Travel, Knowledge, Mechanics keeps navigation-oriented
             # information close to the player's current location.

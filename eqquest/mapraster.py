@@ -104,6 +104,8 @@ class RasterRequest:
     # its stroke width with the supersample factor; otherwise Tk's later subsample
     # operation can simply skip 1-pixel lines and turn them into dots/dashes.
     line_width: int = 1
+    # Lower-resolution wall rasters built once from the same vectors.
+    mip_levels: int = 0
 
 
 @dataclass(slots=True)
@@ -117,6 +119,8 @@ class RasterResult:
     viewport_lines: int
     buffered_lines: int
     source_lines: int
+    # (divisor, PPM bytes): 2=half size, 4=quarter size, etc.
+    mipmaps: tuple[tuple[int, bytes], ...] = ()
 
 
 def _z_visible(z0: float, z1: float, req: RasterRequest) -> bool:
@@ -311,9 +315,33 @@ def render_map_raster(req: RasterRequest) -> RasterResult:
                 buffered_lines += 1
 
     header = f"P6\n{width} {height}\n255\n".encode("ascii")
+    ppm = header + bytes(pixels)
+    mipmaps: list[tuple[int, bytes]] = []
+    for level in range(1, max(0, int(req.mip_levels)) + 1):
+        divisor = 2 ** level
+        mip_req = RasterRequest(
+            generation=req.generation,
+            zone_map=req.zone_map,
+            canvas_width=max(1, req.canvas_width // divisor),
+            canvas_height=max(1, req.canvas_height // divisor),
+            buffer_px=max(0, req.buffer_px // divisor),
+            scale=req.scale / divisor,
+            offset_x=req.offset_x / divisor,
+            offset_y=req.offset_y / divisor,
+            enabled_layers=req.enabled_layers,
+            theme_id=req.theme_id,
+            elevation_enabled=req.elevation_enabled,
+            elevation_z=req.elevation_z,
+            elevation_span=req.elevation_span,
+            line_width=max(1, int(round(req.line_width / divisor))),
+            mip_levels=0,
+        )
+        mip_result = render_map_raster(mip_req)
+        mipmaps.append((divisor, mip_result.ppm))
+
     return RasterResult(
         generation=req.generation,
-        ppm=header + bytes(pixels),
+        ppm=ppm,
         image_x=-buffer_px,
         image_y=-buffer_px,
         image_width=width,
@@ -321,4 +349,5 @@ def render_map_raster(req: RasterRequest) -> RasterResult:
         viewport_lines=viewport_lines,
         buffered_lines=buffered_lines,
         source_lines=source_lines,
+        mipmaps=tuple(mipmaps),
     )

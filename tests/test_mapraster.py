@@ -50,5 +50,35 @@ class MapRasterTests(unittest.TestCase):
         self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (126, 66, 50))
 
 
+    def test_vector_mips_keep_diagonal_continuous(self) -> None:
+            layer = MapLayer(0, Path('diagonal.txt'))
+            layer.lines.append(MapLine(0, 0, 0, 31, 31, 0, 255, 0, 0))
+            zone = ZoneMap('diagonal', Path('.'), {0: layer})
+            req = RasterRequest(
+                generation=9,
+                zone_map=zone,
+                canvas_width=32,
+                canvas_height=32,
+                buffer_px=0,
+                scale=1.0,
+                offset_x=0.0,
+                offset_y=0.0,
+                enabled_layers=(0,),
+                theme_id=MAP_THEME_STONE,
+                mip_levels=2,
+            )
+            result = render_map_raster(req)
+            self.assertEqual([d for d, _ppm in result.mipmaps], [2, 4])
+            background = bytes(map_background_rgb(MAP_THEME_STONE))
+            for divisor, ppm in result.mipmaps:
+                _magic, dims, _maximum, pixels = ppm.split(b'\n', 3)
+                width, height = map(int, dims.split())
+                for y in range(height):
+                    row = pixels[y * width * 3:(y + 1) * width * 3]
+                    self.assertTrue(
+                        any(row[x:x + 3] != background for x in range(0, len(row), 3)),
+                        f'missing diagonal at divisor {divisor}, row {y}',
+                    )
+
 if __name__ == '__main__':
     unittest.main()

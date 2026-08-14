@@ -139,7 +139,8 @@ class MapViewerFrame(ttk.Frame):
         self._raster_photo: tk.PhotoImage | None = None          # high-res wall source
         self._display_photo: tk.PhotoImage | None = None         # current zoom cache entry
         self._display_image_item: int | None = None
-        self._wall_scaled_cache: dict[tuple[int, int], tk.PhotoImage] = {}
+        self._wall_scaled_cache: dict[tuple[int, int, int], tk.PhotoImage] = {}
+        self._wall_mip_photos: dict[int, tk.PhotoImage] = {}
         self._wall_world_origin = (0.0, 0.0)
         self._wall_base_scale = 1.0
         self._wall_fit_scale = 1.0
@@ -393,6 +394,7 @@ class MapViewerFrame(ttk.Frame):
         self._display_photo = None
         self._display_image_item = None
         self._wall_scaled_cache.clear()
+        self._wall_mip_photos.clear()
         self._wall_dirty = True
         self.map_file.set(str(self.zone_map.base_path))
         self._invalidate_raster()
@@ -1121,6 +1123,7 @@ class MapViewerFrame(ttk.Frame):
             enabled_layers=tuple(self._enabled_layers()),
             theme_id=self._map_theme_id(),
             line_width=factor,
+            mip_levels=3,
             elevation_enabled=enabled_z,
             elevation_z=z,
             elevation_span=span,
@@ -1166,6 +1169,12 @@ class MapViewerFrame(ttk.Frame):
         self._raster_photo = photo
         self._display_photo = None
         self._wall_scaled_cache.clear()
+        self._wall_mip_photos = {1: photo}
+        for divisor, mip_ppm in result.mipmaps:
+            try:
+                self._wall_mip_photos[int(divisor)] = tk.PhotoImage(data=mip_ppm, format="PPM")
+            except tk.TclError:
+                continue
         self._wall_base_scale = base_scale
         self._wall_fit_scale = fit_scale
         self._wall_render_factor = factor
@@ -1187,28 +1196,46 @@ class MapViewerFrame(ttk.Frame):
             )
 
     def _scaled_wall_photo(self) -> tk.PhotoImage | None:
+        """Choose a pre-rasterized mip and never shrink thin walls in Tk."""
         if self._raster_photo is None:
             return None
-        ratio = self.scale / max(self._wall_base_scale, 1e-9)
-        fraction = Fraction(ratio).limit_denominator(16)
+        desired_ratio = self.scale / max(self._wall_base_scale, 1e-9)
+        if desired_ratio <= 0:
+            return None
+
+        available = sorted(self._wall_mip_photos)
+        if not available:
+            return self._raster_photo
+        divisor = available[-1]
+        for candidate in available:
+            if (1.0 / candidate) <= desired_ratio + 1e-12:
+                divisor = candidate
+                break
+        source = self._wall_mip_photos.get(divisor, self._raster_photo)
+        mip_ratio = 1.0 / divisor
+        upscale = max(1.0, desired_ratio / mip_ratio)
+        fraction = Fraction(upscale).limit_denominator(16)
         numerator = max(1, fraction.numerator)
         denominator = max(1, fraction.denominator)
-        key = (numerator, denominator)
+        if numerator < denominator:
+            numerator = denominator = 1
+        if numerator == denominator:
+            return source
+
+        key = (divisor, numerator, denominator)
         cached = self._wall_scaled_cache.get(key)
         if cached is not None:
             return cached
         target = tk.PhotoImage()
         try:
             target.tk.call(
-                str(target), "copy", str(self._raster_photo),
+                str(target), "copy", str(source),
                 "-zoom", numerator, numerator,
                 "-subsample", denominator, denominator,
             )
         except tk.TclError:
-            return self._raster_photo
+            return source
         self._wall_scaled_cache[key] = target
-        # Bound the cache; common zoom levels stay hot without retaining every
-        # historical window/fit ratio forever.
         if len(self._wall_scaled_cache) > 12:
             oldest = next(iter(self._wall_scaled_cache))
             if oldest != key:

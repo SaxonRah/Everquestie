@@ -196,15 +196,21 @@ def _skill_contexts(db: Database, class_id: int, level: int) -> tuple[SkillCapCo
         positive = [row for row in history if int(row["cap"] or 0) > 0]
         if not positive:
             continue
-        current = positive[-1]
-        current_cap = int(current["cap"])
+        current = history[-1]
+        current_cap = int(current["cap"] or 0)
+        if current_cap <= 0:
+            # An explicit zero at or below the requested level withdraws availability;
+            # never resurrect an older positive cap merely because it was favorable.
+            continue
         current_level = int(current["level"])
         first_level = int(positive[0]["level"])
-        previous = positive[-2] if len(positive) >= 2 else None
+        new_this_level = first_level == level
+        previous = history[-2] if len(history) >= 2 else None
         changed_this_level = bool(
             current_level == level
+            and not new_this_level
             and previous is not None
-            and int(previous["cap"]) != current_cap
+            and int(previous["cap"] or 0) != current_cap
         )
         skill = db.entity_by_namespaced_external_id("eqclient:skill", str(skill_id))
         out.append(
@@ -215,7 +221,7 @@ def _skill_contexts(db: Database, class_id: int, level: int) -> tuple[SkillCapCo
                 cap=current_cap,
                 row_level=current_level,
                 first_positive_level=first_level,
-                new_this_level=(first_level == level),
+                new_this_level=new_this_level,
                 changed_this_level=changed_this_level,
                 source=_source_from_row(current),
             )

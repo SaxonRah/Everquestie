@@ -5,7 +5,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .db import Database, normalize_name
 from .eqmap import discover_base_maps, map_to_game, normalize_map_name, parse_map_file
@@ -198,6 +198,9 @@ class MapCatalog:
             and str(row["zone_name"] or "") == zone_name
             and str(row["root"] or "") == root
         )
+        if unchanged and row is not None:
+            return int(row["id"]), True
+
         now = datetime.now().isoformat(timespec="seconds")
         self.db.conn.execute(
             """
@@ -217,87 +220,126 @@ class MapCatalog:
         source_id = int(
             self.db.conn.execute("SELECT id FROM map_sources WHERE path=?", (str(path),)).fetchone()[0]
         )
-        return source_id, unchanged
+        return source_id, False
 
-    def index_root(self, root: str | Path) -> MapIndexStats:
+    def index_root(
+        self,
+        root: str | Path,
+        *,
+        progress: Callable[[str, int, int, str], None] | None = None,
+    ) -> MapIndexStats:
+        """Incrementally index map labels without monopolizing SQLite.
+
+        Map files are parsed before a write transaction begins. Changed files are
+        committed one file at a time, and reconciliation writes are chunked so the UI
+        connection can continue saving settings, view state, and log-derived state.
+        """
         root_path = Path(root).resolve()
         if not root_path.is_dir():
             raise FileNotFoundError(root_path)
         root_s = str(root_path)
         zone_by_stem = self._zone_map()
         base_maps = discover_base_maps(root_path)
+        candidates: list[tuple[str, int, Path, str]] = []
+        for base in base_maps:
+            map_stem = base.stem
+            zone_name = zone_by_stem.get(normalize_map_name(map_stem), "")
+            for layer_no in range(4):
+                path = root_path / (f"{map_stem}.txt" if layer_no == 0 else f"{map_stem}_{layer_no}.txt")
+                if path.exists():
+                    candidates.append((map_stem, layer_no, path.resolve(), zone_name))
+
+        total_files = len(candidates)
+        if progress:
+            progress("scan", 0, max(1, total_files), f"Scanning {total_files:,} map files")
         seen_paths: set[str] = set()
         files_indexed = 0
         files_unchanged = 0
         stale_removed = 0
 
-        with self.db.batch():
-            for base in base_maps:
-                map_stem = base.stem
-                zone_name = zone_by_stem.get(normalize_map_name(map_stem), "")
-                for layer_no in range(4):
-                    path = root_path / (f"{map_stem}.txt" if layer_no == 0 else f"{map_stem}_{layer_no}.txt")
-                    if not path.exists():
-                        continue
-                    path = path.resolve()
-                    seen_paths.add(str(path))
-                    stat = path.stat()
-                    source_id, unchanged = self._upsert_source(
-                        root=root_s,
-                        map_stem=map_stem,
-                        zone_name=zone_name,
-                        layer=layer_no,
-                        path=path,
-                        mtime_ns=stat.st_mtime_ns,
-                        size=stat.st_size,
-                    )
-                    if unchanged:
-                        files_unchanged += 1
-                        continue
-                    files_indexed += 1
-                    layer = parse_map_file(path, layer=layer_no)
-                    self.db.conn.execute("DELETE FROM map_labels WHERE source_id=?", (source_id,))
-                    rows = []
-                    for point in layer.points:
-                        raw = point.display_text
-                        clean = self._canonical_text(raw)
-                        rows.append((
-                            source_id, map_stem, zone_name, layer_no, int(point.source_line),
-                            raw, clean, normalize_name(clean), float(point.x), float(point.y),
-                            float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
-                        ))
-                    if rows:
-                        self.db.conn.executemany(
-                            """
-                            INSERT INTO map_labels(
-                                source_id,map_stem,zone_name,layer,source_line,
-                                raw_text,clean_text,normalized_text,x,y,z,r,g,b,size
-                            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """,
-                            rows,
-                        )
+        for index, (map_stem, layer_no, path, zone_name) in enumerate(candidates, start=1):
+            seen_paths.add(str(path))
+            stat = path.stat()
+            existing = self.db.conn.execute(
+                "SELECT * FROM map_sources WHERE path=?", (str(path),)
+            ).fetchone()
+            unchanged = bool(
+                existing
+                and int(existing["mtime_ns"] or 0) == int(stat.st_mtime_ns)
+                and int(existing["size"] or 0) == int(stat.st_size)
+                and str(existing["zone_name"] or "") == zone_name
+                and str(existing["root"] or "") == root_s
+            )
+            if unchanged:
+                files_unchanged += 1
+                if progress:
+                    progress("index", index, max(1, total_files), f"Checked {path.name}")
+                continue
 
-            stale = self.db.conn.execute(
-                "SELECT id,path FROM map_sources WHERE root=?", (root_s,)
-            ).fetchall()
+            # File parsing is intentionally outside the SQLite transaction.
+            parsed = parse_map_file(path, layer=layer_no)
+            labels = []
+            for point in parsed.points:
+                raw = point.display_text
+                clean = self._canonical_text(raw)
+                labels.append((
+                    map_stem, zone_name, layer_no, int(point.source_line),
+                    raw, clean, normalize_name(clean), float(point.x), float(point.y),
+                    float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
+                ))
+
+            with self.db.batch():
+                source_id, _ = self._upsert_source(
+                    root=root_s,
+                    map_stem=map_stem,
+                    zone_name=zone_name,
+                    layer=layer_no,
+                    path=path,
+                    mtime_ns=stat.st_mtime_ns,
+                    size=stat.st_size,
+                )
+                self.db.conn.execute("DELETE FROM map_labels WHERE source_id=?", (source_id,))
+                if labels:
+                    self.db.conn.executemany(
+                        """
+                        INSERT INTO map_labels(
+                            source_id,map_stem,zone_name,layer,source_line,
+                            raw_text,clean_text,normalized_text,x,y,z,r,g,b,size
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        [(source_id, *row) for row in labels],
+                    )
+                self.db.set_meta("map_links_dirty", "1")
+            files_indexed += 1
+            if progress:
+                progress("index", index, max(1, total_files), f"Indexed {path.name} ({len(labels):,} labels)")
+
+        stale = self.db.conn.execute(
+            "SELECT id,path FROM map_sources WHERE root=?", (root_s,)
+        ).fetchall()
+        with self.db.batch():
             for row in stale:
                 if str(row["path"]) not in seen_paths:
                     self.db.conn.execute("DELETE FROM map_sources WHERE id=?", (int(row["id"]),))
                     stale_removed += 1
             self.db.set_meta("map_catalog_root", root_s)
-            if files_indexed or stale_removed:
+            if stale_removed:
                 self.db.set_meta("map_links_dirty", "1")
 
-        reconciliation = self.reconcile_all(force=bool(files_indexed or stale_removed))
-        labels = int(self.db.conn.execute(
+        reconciliation = self.reconcile_all(
+            force=bool(files_indexed or stale_removed), progress=progress
+        )
+        label_count = int(self.db.conn.execute(
             "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
             (root_s,),
         ).fetchone()[0])
+        if progress:
+            progress("done", 1, 1, f"Ready: {label_count:,} indexed labels")
         return MapIndexStats(
             base_maps=len(base_maps),
             files_indexed=files_indexed,
             files_unchanged=files_unchanged,
-            labels=labels,
+            labels=label_count,
             linked=reconciliation["linked"],
             ambiguous=reconciliation["ambiguous"],
             unresolved=reconciliation["unresolved"],
@@ -347,7 +389,13 @@ class MapCatalog:
             (normalized_text, normalized_text),
         ).fetchall()
 
-    def reconcile_all(self, *, force: bool = False) -> dict[str, int]:
+    def reconcile_all(
+        self,
+        *,
+        force: bool = False,
+        progress: Callable[[str, int, int, str], None] | None = None,
+        chunk_size: int = 250,
+    ) -> dict[str, int]:
         if not force and self.db.get_meta("map_links_dirty", "1") != "1":
             row = self.db.conn.execute(
                 """
@@ -361,60 +409,82 @@ class MapCatalog:
                 "unresolved": int(row[2] or 0),
             }
 
-        location_by_zone: dict[str, set[int]] = {}
         labels = self.db.conn.execute(
             "SELECT id,normalized_text,zone_name FROM map_labels ORDER BY id"
         ).fetchall()
+        total = len(labels)
+        if progress:
+            progress("reconcile", 0, max(1, total), f"Reconciling {total:,} map labels")
+        location_by_zone: dict[str, set[int]] = {}
         linked = ambiguous = unresolved = 0
-        with self.db.batch():
-            for label in labels:
-                normalized = str(label["normalized_text"] or "")
-                zone_name = str(label["zone_name"] or "")
-                candidates = list(self._candidate_entities(normalized)) if normalized else []
-                chosen = None
-                reason = ""
-                status = "unresolved"
+        pending: list[tuple[int | None, str, str, int]] = []
+        chunk_size = max(25, int(chunk_size))
 
-                if len(candidates) == 1:
-                    chosen = candidates[0]
-                    status = "linked"
-                    reason = "exact cleaned name/alias; unique local entity"
-                elif len(candidates) > 1:
-                    if zone_name:
-                        key = normalize_name(zone_name)
-                        if key not in location_by_zone:
-                            location_by_zone[key] = {
-                                int(r["entity_id"]) for r in self.db.locations_in_zone(zone_name)
-                            }
-                        zone_ids = location_by_zone[key]
-                        narrowed = [
-                            row for row in candidates
-                            if self._entity_zone_matches(row, zone_name, zone_ids)
-                        ]
-                        if len(narrowed) == 1:
-                            chosen = narrowed[0]
-                            status = "linked"
-                            reason = "exact cleaned name/alias; unique current-zone entity"
-                        else:
-                            status = "ambiguous"
-                            reason = f"{len(narrowed) or len(candidates)} exact entity candidates"
+        def flush() -> None:
+            if not pending:
+                return
+            with self.db.batch():
+                self.db.conn.executemany(
+                    "UPDATE map_labels SET linked_entity_id=?,link_status=?,link_reason=? WHERE id=?",
+                    pending,
+                )
+            pending.clear()
+
+        for index, label in enumerate(labels, start=1):
+            normalized = str(label["normalized_text"] or "")
+            zone_name = str(label["zone_name"] or "")
+            candidates = list(self._candidate_entities(normalized)) if normalized else []
+            chosen = None
+            reason = ""
+            status = "unresolved"
+
+            if len(candidates) == 1:
+                chosen = candidates[0]
+                status = "linked"
+                reason = "exact cleaned name/alias; unique local entity"
+            elif len(candidates) > 1:
+                if zone_name:
+                    key = normalize_name(zone_name)
+                    if key not in location_by_zone:
+                        location_by_zone[key] = {
+                            int(r["entity_id"]) for r in self.db.locations_in_zone(zone_name)
+                        }
+                    zone_ids = location_by_zone[key]
+                    narrowed = [
+                        row for row in candidates
+                        if self._entity_zone_matches(row, zone_name, zone_ids)
+                    ]
+                    if len(narrowed) == 1:
+                        chosen = narrowed[0]
+                        status = "linked"
+                        reason = "exact cleaned name/alias; unique current-zone entity"
                     else:
                         status = "ambiguous"
-                        reason = f"{len(candidates)} exact entity candidates"
-
-                entity_id = int(chosen["id"]) if chosen is not None else None
-                self.db.conn.execute(
-                    "UPDATE map_labels SET linked_entity_id=?,link_status=?,link_reason=? WHERE id=?",
-                    (entity_id, status, reason, int(label["id"])),
-                )
-                if status == "linked":
-                    linked += 1
-                elif status == "ambiguous":
-                    ambiguous += 1
+                        reason = f"{len(narrowed) or len(candidates)} exact entity candidates"
                 else:
-                    unresolved += 1
+                    status = "ambiguous"
+                    reason = f"{len(candidates)} exact entity candidates"
+
+            entity_id = int(chosen["id"]) if chosen is not None else None
+            pending.append((entity_id, status, reason, int(label["id"])))
+            if status == "linked":
+                linked += 1
+            elif status == "ambiguous":
+                ambiguous += 1
+            else:
+                unresolved += 1
+
+            if len(pending) >= chunk_size:
+                flush()
+                if progress:
+                    progress("reconcile", index, max(1, total), f"Reconciled {index:,}/{total:,} labels")
+
+        flush()
+        with self.db.batch():
             self.db.set_meta("map_links_dirty", "0")
             self.db.set_meta("map_links_last_reconcile", datetime.now().isoformat(timespec="seconds"))
+        if progress:
+            progress("reconcile", max(1, total), max(1, total), f"Reconciled {total:,} labels")
         return {"linked": linked, "ambiguous": ambiguous, "unresolved": unresolved}
 
     def ensure_reconciled(self) -> None:
@@ -441,7 +511,6 @@ class MapCatalog:
         current_zone: str | None = None,
         limit: int = 100,
     ) -> list[MapCatalogHit]:
-        self.ensure_reconciled()
         query = parse_local_query(raw_query)
         if query.source:
             src = normalize_name(query.source)
@@ -541,7 +610,6 @@ class MapCatalog:
         return fuzzy[: max(1, int(limit))]
 
     def hits_for_entity(self, entity_id: int, *, limit: int = 100) -> list[MapCatalogHit]:
-        self.ensure_reconciled()
         rows = self.db.conn.execute(
             """
             SELECT ml.*,ms.path FROM map_labels ml

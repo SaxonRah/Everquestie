@@ -174,6 +174,8 @@ class MapViewerFrame(ttk.Frame):
         self._lookup_selected_map_hit: MapLabelHit | MapCatalogHit | None = None
         self._catalog_index_results: queue.Queue[tuple[str, object]] = queue.Queue()
         self._catalog_indexing = False
+        self.catalog_progress_var = tk.DoubleVar(value=0.0)
+        self.catalog_progress_text = tk.StringVar(value="Map catalog idle")
 
         self._build()
         self._apply_map_background()
@@ -299,7 +301,8 @@ class MapViewerFrame(ttk.Frame):
         lookup_entry.grid(row=0, column=0, sticky="ew")
         lookup_entry.bind("<Return>", lambda _e: self._lookup_name(self.lookup_query.get()))
         ttk.Button(lookup_row, text="Search", command=lambda: self._lookup_name(self.lookup_query.get())).grid(row=0, column=1, padx=(4, 0))
-        ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog).grid(row=0, column=2, padx=(4, 0))
+        self.index_maps_button = ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog)
+        self.index_maps_button.grid(row=0, column=2, padx=(4, 0))
 
         self.lookup_tree = ttk.Treeview(side, columns=("kind", "relation"), show="tree headings", height=8, selectmode="browse")
         self.lookup_tree.heading("#0", text="Name")
@@ -328,6 +331,11 @@ class MapViewerFrame(ttk.Frame):
         lookup_actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(3, 0))
         ttk.Button(lookup_actions, text="Open in Knowledge", command=self._open_lookup_in_knowledge).pack(side="left")
         ttk.Button(lookup_actions, text="Open Map", command=self._open_lookup_on_map).pack(side="left", padx=(5, 0))
+        self.catalog_progress = ttk.Progressbar(
+            lookup_actions, variable=self.catalog_progress_var, maximum=1.0, length=135, mode="determinate"
+        )
+        self.catalog_progress.pack(side="right", padx=(6, 0))
+        ttk.Label(lookup_actions, textvariable=self.catalog_progress_text).pack(side="right", padx=(6, 0))
         ttk.Label(lookup_actions, textvariable=self.lookup_status).pack(side="left", padx=(6, 0))
 
         ttk.Label(side, text="Imported locations in this zone").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
@@ -382,17 +390,24 @@ class MapViewerFrame(ttk.Frame):
             self.lookup_status.set("Choose a valid map pack before indexing.")
             return
         if self._catalog_indexing:
-            self.lookup_status.set("Map catalog indexing is already running.")
             return
         self._catalog_indexing = True
-        self.lookup_status.set("Indexing local map labels…")
+        self.index_maps_button.configure(state="disabled")
+        self.catalog_progress.configure(maximum=1.0)
+        self.catalog_progress_var.set(0.0)
+        self.catalog_progress_text.set("Starting map index…")
+        self.lookup_status.set("Updating local map catalog in background…")
         db_path = self.db.path
 
         def worker() -> None:
             thread_db = None
             try:
                 thread_db = Database(db_path)
-                stats = MapCatalog(thread_db).index_root(root)
+
+                def progress(stage: str, current: int, total: int, detail: str) -> None:
+                    self._catalog_index_results.put(("progress", (stage, current, total, detail)))
+
+                stats = MapCatalog(thread_db).index_root(root, progress=progress)
                 self._catalog_index_results.put(("ok", stats))
             except Exception as exc:
                 self._catalog_index_results.put(("error", str(exc)))
@@ -402,21 +417,45 @@ class MapViewerFrame(ttk.Frame):
 
         threading.Thread(target=worker, name="EverQuestieMapCatalog", daemon=True).start()
 
+
     def _poll_catalog_index_results(self) -> None:
         try:
             while True:
                 status, payload = self._catalog_index_results.get_nowait()
+                if status == "progress":
+                    stage, current, total, detail = payload
+                    total = max(1, int(total))
+                    current = max(0, min(int(current), total))
+                    self.catalog_progress.configure(maximum=float(total))
+                    self.catalog_progress_var.set(float(current))
+                    label = {
+                        "scan": "Scanning",
+                        "index": "Indexing",
+                        "reconcile": "Linking",
+                        "done": "Ready",
+                    }.get(str(stage), "Working")
+                    self.catalog_progress_text.set(f"{label} {current:,}/{total:,}")
+                    self.lookup_status.set(str(detail))
+                    continue
+
                 self._catalog_indexing = False
+                self.index_maps_button.configure(state="normal")
                 if status == "ok":
                     stats = payload
+                    self.catalog_progress.configure(maximum=1.0)
+                    self.catalog_progress_var.set(1.0)
+                    self.catalog_progress_text.set("Map catalog ready")
                     self.lookup_status.set(
                         f"Map catalog: {stats.labels:,} labels | {stats.linked:,} linked | {stats.ambiguous:,} ambiguous"
                     )
                 else:
+                    self.catalog_progress.configure(maximum=1.0)
+                    self.catalog_progress_var.set(0.0)
+                    self.catalog_progress_text.set("Map catalog failed")
                     self.lookup_status.set(f"Map catalog index failed: {payload}")
         except queue.Empty:
             pass
-        self.after(300, self._poll_catalog_index_results)
+        self.after(150, self._poll_catalog_index_results)
 
     def suggest_root_from_log(self, log_path: str | Path) -> None:
         """Infer EverQuest/maps from an eqlog path, without overriding a chosen pack."""

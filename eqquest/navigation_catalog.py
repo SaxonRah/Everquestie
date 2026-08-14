@@ -151,15 +151,18 @@ def ensure_builder_navigation_catalog(db, *, force: bool = False) -> NavigationC
     if not getattr(db, "knowledge_writable", True):
         return NavigationCatalogRefresh(False)
 
-    # Ensure the stored map-evidence schema exists before installing triggers that
-    # reference it. This creates tables only; it does not crawl or parse local maps.
-    MapCatalog(db)
-    _install_dirty_triggers(db)
-
+    # Clean Travel reads must be effectively free. A current version marker implies
+    # the dirty triggers were installed by the successful refresh that wrote it, so
+    # avoid repeating schema/index/trigger work on every button click.
     version = db.get_meta("navigation_catalog_version", "")
     dirty = db.get_meta("navigation_catalog_dirty", "1") == "1"
     if not force and version == NAVIGATION_CATALOG_VERSION and not dirty:
         return NavigationCatalogRefresh(False)
+
+    # Ensure the stored map-evidence schema exists before installing triggers that
+    # reference it. This creates tables only; it does not crawl or parse local maps.
+    MapCatalog(db)
+    _install_dirty_triggers(db)
 
     with db.batch():
         bindings = ZoneMapCatalog(db).reconcile()

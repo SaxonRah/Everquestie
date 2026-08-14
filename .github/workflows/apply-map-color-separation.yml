@@ -28,72 +28,63 @@ jobs:
 
           p = Path('eqquest/mapraster.py')
           s = p.read_text(encoding='utf-8')
-
-          replacement = '''def _clamp8(value: float) -> int:
-              return max(0, min(255, int(round(value))))
-
-
-          def themed_map_rgb(theme_id: str, r: int, g: int, b: int, *, label: bool = False) -> RGB:
-              """Keep native EQ map colors distinct while giving them a light theme bias.
-
-              Stone and parchment are now background-driven themes.  Saturated source
-              colors retain their original hue relationships instead of being collapsed
-              into a small themed palette.  We only apply a gentle temperature shift:
-              cooler for stone and warmer for parchment.  Near-neutral colors receive
-              small readability corrections against the themed backgrounds.
-              """
-              if theme_id == MAP_THEME_ORIGINAL:
-                  if r > 245 and g > 245 and b > 245:
-                      return (102, 102, 102) if label else (153, 153, 153)
-                  return r, g, b
-
-              rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
-              _hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)
-
-              if theme_id == MAP_THEME_STONE:
-                  # Dark/neutral source colors need a lift on the dark stone surface,
-                  # but chromatic colors stay recognizably red/green/blue/etc.
-                  if sat < 0.08 and value < 0.35:
-                      lift = 135.0 + value * 110.0
-                      return (_clamp8(lift * 0.86), _clamp8(lift * 0.94), _clamp8(lift))
-                  if sat < 0.08 and value > 0.94:
-                      return (210, 218, 228) if label else (195, 208, 222)
-
-                  if label:
-                      return (
-                          _clamp8(r * 0.97),
-                          _clamp8(g * 1.00 + 1),
-                          _clamp8(b * 1.04 + 3),
-                      )
-                  return (
-                      _clamp8(r * 0.92),
-                      _clamp8(g * 0.99 + 2),
-                      _clamp8(b * 1.08 + 6),
-                  )
-
-              # Parchment: keep the original hue separation and add only a subtle
-              # warm cast.  Very light neutral map strokes are darkened enough to
-              # remain readable against the paper background.
-              if sat < 0.08 and value > 0.90:
-                  return (108, 96, 72) if label else (122, 109, 82)
-              if sat < 0.08 and value < 0.12:
-                  return (62, 52, 38)
-
-              if label:
-                  return (
-                      _clamp8(r * 1.03 + 3),
-                      _clamp8(g * 1.00 + 1),
-                      _clamp8(b * 0.96),
-                  )
-              return (
-                  _clamp8(r * 1.06 + 5),
-                  _clamp8(g * 1.01 + 2),
-                  _clamp8(b * 0.92),
-              )
-
-
-          '''
-          replacement = replacement.replace('\n          ', '\n').lstrip()
+          lines = [
+              'def _clamp8(value: float) -> int:',
+              '    return max(0, min(255, int(round(value))))',
+              '',
+              '',
+              'def themed_map_rgb(theme_id: str, r: int, g: int, b: int, *, label: bool = False) -> RGB:',
+              '    """Keep native EQ map colors distinct while giving them a light theme bias.',
+              '',
+              '    Stone and parchment are background-driven themes. Saturated source colors',
+              '    retain their native hue relationships; only a gentle cool/warm temperature',
+              '    shift is applied. Near-neutral colors receive readability corrections.',
+              '    """',
+              '    if theme_id == MAP_THEME_ORIGINAL:',
+              '        if r > 245 and g > 245 and b > 245:',
+              '            return (102, 102, 102) if label else (153, 153, 153)',
+              '        return r, g, b',
+              '',
+              '    rf, gf, bf = r / 255.0, g / 255.0, b / 255.0',
+              '    _hue, sat, value = colorsys.rgb_to_hsv(rf, gf, bf)',
+              '',
+              '    if theme_id == MAP_THEME_STONE:',
+              '        if sat < 0.08 and value < 0.35:',
+              '            lift = 135.0 + value * 110.0',
+              '            return (_clamp8(lift * 0.86), _clamp8(lift * 0.94), _clamp8(lift))',
+              '        if sat < 0.08 and value > 0.94:',
+              '            return (210, 218, 228) if label else (195, 208, 222)',
+              '        if label:',
+              '            return (',
+              '                _clamp8(r * 0.97),',
+              '                _clamp8(g * 1.00 + 1),',
+              '                _clamp8(b * 1.04 + 3),',
+              '            )',
+              '        return (',
+              '            _clamp8(r * 0.92),',
+              '            _clamp8(g * 0.99 + 2),',
+              '            _clamp8(b * 1.08 + 6),',
+              '        )',
+              '',
+              '    if sat < 0.08 and value > 0.90:',
+              '        return (108, 96, 72) if label else (122, 109, 82)',
+              '    if sat < 0.08 and value < 0.12:',
+              '        return (62, 52, 38)',
+              '    if label:',
+              '        return (',
+              '            _clamp8(r * 1.03 + 3),',
+              '            _clamp8(g * 1.00 + 1),',
+              '            _clamp8(b * 0.96),',
+              '        )',
+              '    return (',
+              '        _clamp8(r * 1.06 + 5),',
+              '        _clamp8(g * 1.01 + 2),',
+              '        _clamp8(b * 0.92),',
+              '    )',
+              '',
+              '',
+          ]
+          replacement = '\n'.join(lines)
           pattern = r'def themed_map_rgb\(.*?\n\n\n@dataclass\(slots=True, frozen=True\)'
           match = re.search(pattern, s, flags=re.S)
           if not match:
@@ -103,39 +94,34 @@ jobs:
 
           p = Path('tests/test_mapraster.py')
           s = p.read_text(encoding='utf-8')
-          old = '''    def test_theme_palette_is_stable(self) -> None:
-                  self.assertEqual(map_background_rgb(MAP_THEME_STONE), (43, 53, 66))
-                  self.assertEqual(map_background_rgb(MAP_THEME_PARCHMENT), (217, 207, 173))
-                  self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (181, 133, 103))
-                  self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (126, 66, 50))
-          '''
-          old = old.replace('\n              ', '\n')
-          new = '''    def test_theme_palette_is_stable(self) -> None:
-                  self.assertEqual(map_background_rgb(MAP_THEME_STONE), (43, 53, 66))
-                  self.assertEqual(map_background_rgb(MAP_THEME_PARCHMENT), (217, 207, 173))
-                  self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (235, 2, 6))
-                  self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (255, 2, 0))
-
-              def test_themed_colors_preserve_source_separation(self) -> None:
-                  primaries = ((255, 0, 0), (0, 255, 0), (0, 0, 255))
-                  for theme in (MAP_THEME_STONE, MAP_THEME_PARCHMENT):
-                      themed = [themed_map_rgb(theme, *rgb) for rgb in primaries]
-                      distances = []
-                      for index, left in enumerate(themed):
-                          for right in themed[index + 1:]:
-                              distances.append(sum(abs(a - b) for a, b in zip(left, right)))
-                      self.assertGreater(min(distances), 400)
-
-              def test_theme_temperature_bias_is_subtle_and_directional(self) -> None:
-                  stone_gray = themed_map_rgb(MAP_THEME_STONE, 120, 120, 120)
-                  parchment_gray = themed_map_rgb(MAP_THEME_PARCHMENT, 120, 120, 120)
-                  self.assertGreater(stone_gray[2], stone_gray[0])
-                  self.assertGreater(parchment_gray[0], parchment_gray[2])
-          '''
-          new = new.replace('\n              ', '\n')
-          if old not in s:
-              raise SystemExit('theme palette test block not found')
-          s = s.replace(old, new, 1)
+          start = s.index('    def test_theme_palette_is_stable(self) -> None:')
+          end = s.index('    def test_exact_zoom_rasters_exist_at_requested_sizes(self) -> None:', start)
+          test_lines = [
+              '    def test_theme_palette_is_stable(self) -> None:',
+              '        self.assertEqual(map_background_rgb(MAP_THEME_STONE), (43, 53, 66))',
+              '        self.assertEqual(map_background_rgb(MAP_THEME_PARCHMENT), (217, 207, 173))',
+              '        self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (235, 2, 6))',
+              '        self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (255, 2, 0))',
+              '',
+              '    def test_themed_colors_preserve_source_separation(self) -> None:',
+              '        primaries = ((255, 0, 0), (0, 255, 0), (0, 0, 255))',
+              '        for theme in (MAP_THEME_STONE, MAP_THEME_PARCHMENT):',
+              '            themed = [themed_map_rgb(theme, *rgb) for rgb in primaries]',
+              '            distances = []',
+              '            for index, left in enumerate(themed):',
+              '                for right in themed[index + 1:]:',
+              '                    distances.append(sum(abs(a - b) for a, b in zip(left, right)))',
+              '            self.assertGreater(min(distances), 400)',
+              '',
+              '    def test_theme_temperature_bias_is_directional(self) -> None:',
+              '        stone_gray = themed_map_rgb(MAP_THEME_STONE, 120, 120, 120)',
+              '        parchment_gray = themed_map_rgb(MAP_THEME_PARCHMENT, 120, 120, 120)',
+              '        self.assertGreater(stone_gray[2], stone_gray[0])',
+              '        self.assertGreater(parchment_gray[0], parchment_gray[2])',
+              '',
+              '',
+          ]
+          s = s[:start] + '\n'.join(test_lines) + s[end:]
           p.write_text(s, encoding='utf-8')
 
       - name: Compile and test

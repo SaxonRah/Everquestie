@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .db import Database
+from .zone_identity import resolve_zone
 from .zone_travel import ZoneTravelCatalog
 
 
@@ -21,8 +22,11 @@ def _resolve_zone(db: Database, value: str):
     text = " ".join((value or "").split()).strip()
     if not text:
         return None, "empty"
-    row, status = db.resolve_entity(text, "zone")
-    return row, status
+    resolution = resolve_zone(db, text)
+    if resolution.identity is None:
+        return None, resolution.status
+    row = db.entity(resolution.identity.entity_id)
+    return row, resolution.match_kind
 
 
 def _best_edge_for_hop(db: Database, source_id: int, target_id: int):

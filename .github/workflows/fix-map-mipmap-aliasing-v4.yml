@@ -1,0 +1,262 @@
+name: Fix map mipmap aliasing v4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-map-mipmap-aliasing-v4.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch raster mip pyramid structurally
+        shell: python
+        run: |
+          from pathlib import Path
+          import textwrap
+
+          p = Path('eqquest/mapraster.py')
+          s = p.read_text(encoding='utf-8')
+
+          if '    mip_levels: int = 0\n' not in s:
+              marker = '    line_width: int = 1\n'
+              if marker not in s:
+                  raise SystemExit('line_width marker missing')
+              s = s.replace(
+                  marker,
+                  marker + '    # Lower-resolution wall rasters built once from the same vectors.\n    mip_levels: int = 0\n',
+                  1,
+              )
+
+          if '    mipmaps: tuple[tuple[int, bytes], ...] = ()\n' not in s:
+              marker = '    source_lines: int\n'
+              if marker not in s:
+                  raise SystemExit('source_lines marker missing')
+              s = s.replace(
+                  marker,
+                  marker + '    # (divisor, PPM bytes): 2=half size, 4=quarter size, etc.\n    mipmaps: tuple[tuple[int, bytes], ...] = ()\n',
+                  1,
+              )
+
+          tail_start = s.rfind('    header = f"P6')
+          if tail_start < 0:
+              raise SystemExit('raster tail marker missing')
+          tail = '''    header = f"P6\\n{width} {height}\\n255\\n".encode("ascii")
+              ppm = header + bytes(pixels)
+              mipmaps: list[tuple[int, bytes]] = []
+              for level in range(1, max(0, int(req.mip_levels)) + 1):
+                  divisor = 2 ** level
+                  mip_req = RasterRequest(
+                      generation=req.generation,
+                      zone_map=req.zone_map,
+                      canvas_width=max(1, req.canvas_width // divisor),
+                      canvas_height=max(1, req.canvas_height // divisor),
+                      buffer_px=max(0, req.buffer_px // divisor),
+                      scale=req.scale / divisor,
+                      offset_x=req.offset_x / divisor,
+                      offset_y=req.offset_y / divisor,
+                      enabled_layers=req.enabled_layers,
+                      theme_id=req.theme_id,
+                      elevation_enabled=req.elevation_enabled,
+                      elevation_z=req.elevation_z,
+                      elevation_span=req.elevation_span,
+                      line_width=max(1, int(round(req.line_width / divisor))),
+                      mip_levels=0,
+                  )
+                  mip_result = render_map_raster(mip_req)
+                  mipmaps.append((divisor, mip_result.ppm))
+
+              return RasterResult(
+                  generation=req.generation,
+                  ppm=ppm,
+                  image_x=-buffer_px,
+                  image_y=-buffer_px,
+                  image_width=width,
+                  image_height=height,
+                  viewport_lines=viewport_lines,
+                  buffered_lines=buffered_lines,
+                  source_lines=source_lines,
+                  mipmaps=tuple(mipmaps),
+              )
+          '''
+          tail = textwrap.dedent(tail)
+          # Tail belongs inside render_map_raster, so indent one function level.
+          tail = textwrap.indent(tail, '    ')
+          s = s[:tail_start] + tail
+          p.write_text(s, encoding='utf-8')
+
+      - name: Patch map viewer to use mips
+        shell: python
+        run: |
+          from pathlib import Path
+          import textwrap
+
+          p = Path('eqquest/mapview.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '        self._wall_scaled_cache: dict[tuple[int, int], tk.PhotoImage] = {}\n'
+          if old in s:
+              s = s.replace(
+                  old,
+                  '        self._wall_scaled_cache: dict[tuple[int, int, int], tk.PhotoImage] = {}\n'
+                  '        self._wall_mip_photos: dict[int, tk.PhotoImage] = {}\n',
+                  1,
+              )
+
+          marker = '        self._wall_scaled_cache.clear()\n        self._wall_dirty = True\n'
+          if marker in s:
+              s = s.replace(
+                  marker,
+                  '        self._wall_scaled_cache.clear()\n        self._wall_mip_photos.clear()\n        self._wall_dirty = True\n',
+                  1,
+              )
+
+          marker = '            line_width=factor,\n            elevation_enabled=enabled_z,\n'
+          if marker in s:
+              s = s.replace(
+                  marker,
+                  '            line_width=factor,\n            mip_levels=3,\n            elevation_enabled=enabled_z,\n',
+                  1,
+              )
+
+          marker = '        self._raster_photo = photo\n        self._display_photo = None\n        self._wall_scaled_cache.clear()\n'
+          if marker in s:
+              s = s.replace(
+                  marker,
+                  '        self._raster_photo = photo\n'
+                  '        self._display_photo = None\n'
+                  '        self._wall_scaled_cache.clear()\n'
+                  '        self._wall_mip_photos = {1: photo}\n'
+                  '        for divisor, mip_ppm in result.mipmaps:\n'
+                  '            try:\n'
+                  '                self._wall_mip_photos[int(divisor)] = tk.PhotoImage(data=mip_ppm, format="PPM")\n'
+                  '            except tk.TclError:\n'
+                  '                continue\n',
+                  1,
+              )
+
+          start = s.index('    def _scaled_wall_photo(self) -> tk.PhotoImage | None:')
+          end = s.index('    def _refresh_wall_display(self) -> None:', start)
+          method = '''def _scaled_wall_photo(self) -> tk.PhotoImage | None:
+              """Choose a pre-rasterized mip and never shrink thin walls in Tk."""
+              if self._raster_photo is None:
+                  return None
+              desired_ratio = self.scale / max(self._wall_base_scale, 1e-9)
+              if desired_ratio <= 0:
+                  return None
+
+              available = sorted(self._wall_mip_photos)
+              if not available:
+                  return self._raster_photo
+              divisor = available[-1]
+              for candidate in available:
+                  if (1.0 / candidate) <= desired_ratio + 1e-12:
+                      divisor = candidate
+                      break
+              source = self._wall_mip_photos.get(divisor, self._raster_photo)
+              mip_ratio = 1.0 / divisor
+              upscale = max(1.0, desired_ratio / mip_ratio)
+              fraction = Fraction(upscale).limit_denominator(16)
+              numerator = max(1, fraction.numerator)
+              denominator = max(1, fraction.denominator)
+              if numerator < denominator:
+                  numerator = denominator = 1
+              if numerator == denominator:
+                  return source
+
+              key = (divisor, numerator, denominator)
+              cached = self._wall_scaled_cache.get(key)
+              if cached is not None:
+                  return cached
+              target = tk.PhotoImage()
+              try:
+                  target.tk.call(
+                      str(target), "copy", str(source),
+                      "-zoom", numerator, numerator,
+                      "-subsample", denominator, denominator,
+                  )
+              except tk.TclError:
+                  return source
+              self._wall_scaled_cache[key] = target
+              if len(self._wall_scaled_cache) > 12:
+                  oldest = next(iter(self._wall_scaled_cache))
+                  if oldest != key:
+                      self._wall_scaled_cache.pop(oldest, None)
+              return target
+
+          '''
+          method = textwrap.indent(textwrap.dedent(method), '    ')
+          s = s[:start] + method + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+      - name: Add regression test
+        shell: python
+        run: |
+          from pathlib import Path
+          import textwrap
+
+          p = Path('tests/test_mapraster.py')
+          s = p.read_text(encoding='utf-8')
+          if 'def test_vector_mips_keep_diagonal_continuous' not in s:
+              insert_at = s.index('\n\nif __name__')
+              block = '''def test_vector_mips_keep_diagonal_continuous(self) -> None:
+                  layer = MapLayer(0, Path('diagonal.txt'))
+                  layer.lines.append(MapLine(0, 0, 0, 31, 31, 0, 255, 0, 0))
+                  zone = ZoneMap('diagonal', Path('.'), {0: layer})
+                  req = RasterRequest(
+                      generation=9,
+                      zone_map=zone,
+                      canvas_width=32,
+                      canvas_height=32,
+                      buffer_px=0,
+                      scale=1.0,
+                      offset_x=0.0,
+                      offset_y=0.0,
+                      enabled_layers=(0,),
+                      theme_id=MAP_THEME_STONE,
+                      mip_levels=2,
+                  )
+                  result = render_map_raster(req)
+                  self.assertEqual([d for d, _ppm in result.mipmaps], [2, 4])
+                  background = bytes(map_background_rgb(MAP_THEME_STONE))
+                  for divisor, ppm in result.mipmaps:
+                      _magic, dims, _maximum, pixels = ppm.split(b'\\n', 3)
+                      width, height = map(int, dims.split())
+                      for y in range(height):
+                          row = pixels[y * width * 3:(y + 1) * width * 3]
+                          self.assertTrue(
+                              any(row[x:x + 3] != background for x in range(0, len(row), 3)),
+                              f'missing diagonal at divisor {divisor}, row {y}',
+                          )
+
+              '''
+              block = textwrap.indent(textwrap.dedent(block), '    ')
+              s = s[:insert_at] + '\n\n' + block.rstrip() + s[insert_at:]
+              p.write_text(s, encoding='utf-8')
+
+      - name: Compile and test
+        run: |
+          python -m compileall -q eqquest EverQuestie.py
+          python -m unittest discover -s tests -v
+          grep -q 'mip_levels=3' eqquest/mapview.py
+          grep -q '_wall_mip_photos' eqquest/mapview.py
+
+      - name: Commit mipmap fix
+        run: |
+          git config user.name "EverQuestie Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add eqquest/mapview.py eqquest/mapraster.py tests/test_mapraster.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Use cached vector mipmaps for map zoom"
+          git push

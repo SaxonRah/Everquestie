@@ -88,7 +88,7 @@ class ZoneTravelCatalog:
                 source_version TEXT NOT NULL DEFAULT '',
                 source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
                 map_stem TEXT NOT NULL DEFAULT '',
-                label_id INTEGER REFERENCES map_labels(id) ON DELETE CASCADE,
+                label_id INTEGER,
                 x REAL,
                 y REAL,
                 z REAL,

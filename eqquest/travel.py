@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .db import Database
+from .nearby import nearby_points, nearby_text
 from .zone_context import build_zone_context, zone_context_text
 from .zone_identity import resolve_zone
 from .zone_travel import ZoneTravelCatalog
@@ -139,14 +140,18 @@ def build_route_result(db: Database, source_text: str, target_text: str) -> Trav
 class TravelFrame(ttk.Frame):
     """Read-only navigation UI over finalized canonical zone knowledge."""
 
-    def __init__(self, master, *, db: Database, get_zone):
+    def __init__(self, master, *, db: Database, get_zone, get_location=None):
         super().__init__(master, padding=8)
         self.db = db
         self.get_zone = get_zone
+        self.get_location = get_location or (lambda: None)
         self.from_var = tk.StringVar()
         self.to_var = tk.StringVar()
         self.status_var = tk.StringVar(
-            value="Routes and zone overviews use shipped canonical knowledge; no map parsing or network access occurs here."
+            value=(
+                "Routes, zone overviews and nearby points use shipped canonical knowledge; "
+                "no map parsing or network access occurs here."
+            )
         )
         self._build()
 
@@ -167,12 +172,15 @@ class TravelFrame(ttk.Frame):
         ttk.Button(controls, text="Show zone", command=self.show_zone_context).grid(
             row=0, column=3, padx=(6, 0)
         )
+        ttk.Button(controls, text="Nearby", command=self.show_nearby).grid(
+            row=0, column=4, padx=(6, 0)
+        )
 
         ttk.Label(controls, text="To").grid(row=1, column=0, sticky="w", pady=(8, 0))
         to_entry = ttk.Entry(controls, textvariable=self.to_var)
         to_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(controls, text="Find route", command=self.find_route).grid(
-            row=1, column=2, columnspan=2, sticky="ew", pady=(8, 0)
+            row=1, column=2, columnspan=3, sticky="ew", pady=(8, 0)
         )
         from_entry.bind("<Return>", lambda _e: self.show_zone_context())
         to_entry.bind("<Return>", lambda _e: self.find_route())
@@ -205,11 +213,15 @@ class TravelFrame(ttk.Frame):
         else:
             self.status_var.set("Current zone is not known yet.")
 
-    def show_zone_context(self) -> None:
+    def _selected_or_current_zone(self) -> str:
         zone = self.from_var.get().strip()
         if not zone:
             self.use_current_zone()
             zone = self.from_var.get().strip()
+        return zone
+
+    def show_zone_context(self) -> None:
+        zone = self._selected_or_current_zone()
         if not zone:
             self.status_var.set("Choose a zone or wait for the current zone from the log.")
             return
@@ -227,6 +239,30 @@ class TravelFrame(ttk.Frame):
             self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess.")
         else:
             self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
+
+    def show_nearby(self) -> None:
+        zone = self._selected_or_current_zone()
+        if not zone:
+            self.status_var.set("Choose a zone or wait for the current zone from the log.")
+            return
+        location = self.get_location()
+        self._set_result(nearby_text(self.db, zone, location, limit=50))
+        points, status = nearby_points(self.db, zone, location, limit=50)
+        if status == "location_unknown":
+            self.status_var.set(
+                "Current /loc is unknown. Use /loc in EverQuest; the observed coordinate is never written into shipped knowledge."
+            )
+        elif status == "ambiguous":
+            self.status_var.set("Zone identity is ambiguous; EverQuestie will not rank nearby points by guessing.")
+        elif status != "linked":
+            self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
+        else:
+            travel_count = sum(point.point_type == "travel" for point in points)
+            entity_count = len(points) - travel_count
+            self.status_var.set(
+                f"Nearby confirmed points: {len(points)} | {entity_count} entity location(s) | "
+                f"{travel_count} usable travel point(s). Straight-line X/Y only; ΔZ is shown separately."
+            )
 
     def find_route(self) -> None:
         source = self.from_var.get().strip()

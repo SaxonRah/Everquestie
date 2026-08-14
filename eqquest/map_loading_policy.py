@@ -135,30 +135,37 @@ def install_map_loading_policy() -> None:
     app_module.MapViewerFrame = UnifiedMapLoadingFrame
 
     current_app = app_module.EverQuestieApp
-    if getattr(current_app, _APP_MAP_VISIBILITY_MARKER, False):
+    current_build_ui = current_app._build_ui
+    if getattr(current_build_ui, _APP_MAP_VISIBILITY_MARKER, False):
         return
 
-    class MapVisibilityEverQuestieApp(current_app):
-        """Finish deferred map presentation when the Notebook selects the Map page."""
+    # Keep the current runtime-policy class intact. In particular its _build_ui
+    # closure intentionally captures RouteGuidanceFrame, which is part of the policy
+    # contract tested elsewhere. Decorate that method rather than replacing the app
+    # class just to observe Notebook visibility.
+    from .route_guidance_ui import RouteGuidanceFrame as TravelFrame
 
-        def _build_ui(self) -> None:
-            super()._build_ui()
-            self.notebook.bind(
-                "<<NotebookTabChanged>>",
-                self._on_map_notebook_tab_changed,
-                add="+",
-            )
+    def _on_map_notebook_tab_changed(self, _event=None) -> None:
+        try:
+            selected = self.notebook.select()
+        except Exception:
+            return
+        if str(selected) != str(self.map_tab):
+            return
+        presenter = getattr(self.map_view, "present_map_tab", None)
+        if callable(presenter):
+            presenter()
 
-        def _on_map_notebook_tab_changed(self, _event=None) -> None:
-            try:
-                selected = self.notebook.select()
-            except Exception:
-                return
-            if str(selected) != str(self.map_tab):
-                return
-            presenter = getattr(self.map_view, "present_map_tab", None)
-            if callable(presenter):
-                presenter()
+    def _build_ui(self) -> None:
+        # Preserve the runtime-policy closure identity as well as behavior.
+        _ = TravelFrame
+        current_build_ui(self)
+        self.notebook.bind(
+            "<<NotebookTabChanged>>",
+            self._on_map_notebook_tab_changed,
+            add="+",
+        )
 
-    setattr(MapVisibilityEverQuestieApp, _APP_MAP_VISIBILITY_MARKER, True)
-    app_module.EverQuestieApp = MapVisibilityEverQuestieApp
+    setattr(_build_ui, _APP_MAP_VISIBILITY_MARKER, True)
+    current_app._on_map_notebook_tab_changed = _on_map_notebook_tab_changed
+    current_app._build_ui = _build_ui

@@ -113,6 +113,70 @@ def _focus_runtime_navigation_target(
     return True
 
 
+def _choose_runtime_local_map_variant(viewer) -> bool:
+    """Resolve one ambiguous local canonical map variant into explicit user state."""
+    from .local_map_variant import bind_local_map_variant, current_local_map_variants
+    from .local_map_variant_ui import ask_local_map_variant
+    from .mapview import _binding_key
+
+    zone = " ".join(str(viewer.get_zone() or "").split()).strip()
+    if not zone:
+        viewer.map_status.set("Current zone is not known from the log yet.")
+        return False
+    root = viewer.map_root.get().strip()
+    readiness, candidates = current_local_map_variants(viewer.db, zone, root)
+    if readiness.status == "root_unavailable":
+        viewer.map_status.set("Choose a map pack folder first.")
+        return False
+    if readiness.status == "zone_ambiguous":
+        viewer.map_status.set(
+            f"Canonical zone identity is ambiguous for {zone}; EverQuestie will not offer local map variants."
+        )
+        return False
+    if len(candidates) < 2:
+        if readiness.ready and readiness.path is not None:
+            viewer.map_status.set(
+                f"No variant choice is needed for {readiness.canonical_zone_name or zone}: "
+                f"{readiness.path.name}."
+            )
+        else:
+            viewer.map_status.set(
+                f"No multiple canonical local map variants are currently available for {readiness.canonical_zone_name or zone}."
+            )
+        return False
+
+    selected = ask_local_map_variant(
+        viewer,
+        readiness.canonical_zone_name or zone,
+        candidates,
+    )
+    if selected is None:
+        viewer.map_status.set("Local map variant choice canceled.")
+        return False
+
+    result = bind_local_map_variant(
+        viewer.db,
+        zone,
+        root,
+        selected,
+        binding_key=_binding_key(zone),
+    )
+    if not result.ok or result.selected_path is None:
+        viewer.map_status.set(
+            "Local map variant was not applied because the current canonical candidate set changed. "
+            f"{result.reason}."
+        )
+        return False
+
+    viewer.load_map(result.selected_path)
+    viewer._base_map_status = f"{viewer._base_map_status} | user map binding"
+    viewer.map_status.set(
+        f"{viewer._base_map_status} | bound {result.readiness.canonical_zone_name or zone} -> "
+        f"{result.selected_path.name}"
+    )
+    return True
+
+
 def install_runtime_policy() -> None:
     """Install packaged-runtime guards before the application UI is launched.
 
@@ -218,6 +282,9 @@ def install_runtime_policy() -> None:
                     bound_stem=bound,
                 )
 
+            def choose_local_map_variant(self) -> bool:
+                return _choose_runtime_local_map_variant(self)
+
             def load_current_zone(self) -> None:
                 if not self._packaged_runtime():
                     return super().load_current_zone()
@@ -236,10 +303,12 @@ def install_runtime_policy() -> None:
                             f"Canonical zone identity is ambiguous for {zone}; EverQuestie will not guess a local map."
                         )
                     elif readiness.status == "map_ambiguous":
+                        if self.choose_local_map_variant():
+                            return
                         choices = ", ".join(path.name for path in readiness.candidates[:6])
                         self.map_status.set(
-                            f"Multiple canonical maps are present for {zone}: {choices}. "
-                            "Open the intended map once and press Bind zone."
+                            f"Multiple canonical maps remain present for {zone}: {choices}. "
+                            "No local variant was bound."
                         )
                     else:
                         self.map_status.set(

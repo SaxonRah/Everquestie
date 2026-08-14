@@ -42,6 +42,8 @@ class ZoneMapCatalog:
 
     Canonical identity signals are owned by :mod:`eqquest.zone_identity`; this class
     only applies the builder-only map-stem inference policy and persists its evidence.
+    Reconciliation is recomputable: previously derived zone/map rows and display-name
+    backfills are never allowed to prove their own identity on a later build.
     """
 
     def __init__(self, db: Database):
@@ -90,19 +92,11 @@ class ZoneMapCatalog:
     @staticmethod
     def _resolve(
         map_stem: str,
-        existing_zone_name: str,
         identities: ZoneIdentityIndex,
     ) -> tuple[ZoneIdentity | None, str, str]:
         stem = normalize_map_name(map_stem)
         if not stem:
             return None, "unresolved", "empty map stem"
-
-        if existing_zone_name:
-            existing = identities.resolve(existing_zone_name)
-            if existing.identity is not None:
-                return existing.identity, "linked", "existing canonical map-zone name"
-            if existing.status == "ambiguous":
-                return None, "ambiguous", "existing map-zone name matches multiple zones"
 
         # Historic map reconciliation intentionally did not treat numeric EQ zone IDs
         # as map filenames. Keep that boundary even though the shared runtime identity
@@ -219,9 +213,11 @@ class ZoneMapCatalog:
             args,
         ).fetchall()
 
-        # Do not feed the table being derived back into its own identity input. This
-        # prevents a stale zone_map_bindings row from preserving itself after stronger
-        # provider/client identity evidence changes.
+        # Do not feed the table being derived back into its own identity input. The
+        # map_sources.zone_name field is also deliberately excluded from resolution:
+        # it may be a display-name backfill from an earlier catalog pass. Only current
+        # canonical name/alias/short-name evidence applied to the filename stem can
+        # create or retain a linked binding.
         identities = ZoneIdentityIndex(self.db, include_map_bindings=False)
         now = datetime.now().isoformat(timespec="seconds")
         linked = ambiguous = unresolved = changed = 0
@@ -234,8 +230,10 @@ class ZoneMapCatalog:
                 version = str(row["source_version"] or "")
                 existing_name = str(row["zone_name"] or "")
                 seen.add((source, stem))
-                chosen, status, reason = self._resolve(stem, existing_name, identities)
+                chosen, status, reason = self._resolve(stem, identities)
                 zone_id = chosen.entity_id if chosen is not None else None
+                # Keep any source/display name for diagnostics when unresolved, but it
+                # has no authority over status or canonical zone identity.
                 zone_name = chosen.name if chosen is not None else existing_name
 
                 previous = self.db.conn.execute(
@@ -284,7 +282,8 @@ class ZoneMapCatalog:
                 if chosen is not None:
                     # Backfill the canonical zone name into the existing map catalog so
                     # current zone filtering and entity reconciliation benefit without
-                    # maintaining a second query path.
+                    # maintaining a second query path. This is display/query metadata,
+                    # not identity evidence for future zone-map reconciliation.
                     self.db.conn.execute(
                         "UPDATE map_sources SET zone_name=? "
                         "WHERE source_name=? AND map_stem=? AND zone_name<>?",

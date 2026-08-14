@@ -100,7 +100,7 @@ class UnifiedLocationEvidenceTests(unittest.TestCase):
         self.assertEqual(mapped.zone_name, "South Qeynos")
         self.assertEqual(mapped.source_name, "Brewall")
         self.assertEqual(mapped.source_version, "2026-08")
-        self.assertEqual(mapped.label, "Guard_Hezlan")
+        self.assertEqual(mapped.label, "Guard Hezlan")
 
     def test_where_text_exposes_both_sources_with_provenance(self):
         zone_id, npc_id = self._build_linked_map()

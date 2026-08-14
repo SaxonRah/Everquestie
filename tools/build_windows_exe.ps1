@@ -2,6 +2,7 @@ param(
     [switch]$OneFile,
     [string]$KnowledgeDb = "",
     [string]$DistPath = "",
+    [string]$PythonExe = "",
     [switch]$CleanOutput
 )
 
@@ -20,18 +21,31 @@ function Resolve-OutputPath([string]$Value, [string]$BasePath) {
     return [System.IO.Path]::GetFullPath((Join-Path $BasePath $Value))
 }
 
+function Resolve-Python([string]$Requested) {
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $Command = Get-Command $Requested -ErrorAction SilentlyContinue
+        if (-not $Command) {
+            throw "Requested Python interpreter '$Requested' was not found."
+        }
+        return $Command.Source
+    }
+    foreach ($Candidate in @("python", "py")) {
+        $Command = Get-Command $Candidate -ErrorAction SilentlyContinue
+        if ($Command) {
+            return $Command.Source
+        }
+    }
+    throw "No Python interpreter was found in PATH. Pass -PythonExe explicitly."
+}
+
 if (-not (Test-Path $Entry -PathType Leaf)) {
     throw "EverQuestie.py was not found at '$Entry'."
 }
 
-$Python = Get-Command py -ErrorAction SilentlyContinue
-if (-not $Python) {
-    throw "The Python launcher 'py' was not found in PATH."
-}
-
-& py -m PyInstaller --version *> $null
+$PythonCommand = Resolve-Python $PythonExe
+& $PythonCommand -m PyInstaller --version *> $null
 if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller is not installed. Install it explicitly with: py -m pip install pyinstaller"
+    throw "PyInstaller is not installed for '$PythonCommand'. Install it with: `"$PythonCommand`" -m pip install pyinstaller"
 }
 
 $ResolvedDist = Resolve-OutputPath $DistPath $ProjectRoot
@@ -95,7 +109,7 @@ $Args += $Entry
 
 Push-Location $ProjectRoot
 try {
-    & py @Args
+    & $PythonCommand @Args
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller failed with exit code $LASTEXITCODE."
     }
@@ -117,6 +131,7 @@ if (-not (Test-Path $Target)) {
 }
 
 Write-Host "Build complete: $Target"
+Write-Host "Python interpreter: $PythonCommand"
 if ($KnowledgeResolved) {
     if ($OneFile) {
         Write-Host "Knowledge snapshot embedded in one-file executable: $KnowledgeResolved"

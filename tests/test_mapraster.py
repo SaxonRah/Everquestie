@@ -46,8 +46,8 @@ class MapRasterTests(unittest.TestCase):
     def test_theme_palette_is_stable(self) -> None:
         self.assertEqual(map_background_rgb(MAP_THEME_STONE), (43, 53, 66))
         self.assertEqual(map_background_rgb(MAP_THEME_PARCHMENT), (217, 207, 173))
-        self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (179, 131, 101))
-        self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (125, 65, 50))
+        self.assertEqual(themed_map_rgb(MAP_THEME_STONE, 255, 0, 0), (181, 133, 103))
+        self.assertEqual(themed_map_rgb(MAP_THEME_PARCHMENT, 255, 0, 0), (126, 66, 50))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,8 +21,10 @@ class ZoneMapCatalogTests(unittest.TestCase):
         self.db.close()
         self.tempdir.cleanup()
 
-    def _map(self, stem: str, label: str = "Test_Label") -> None:
-        (self.root / f"{stem}.txt").write_text(
+    def _map(self, stem: str, label: str = "Test_Label", *, root: Path | None = None) -> None:
+        target = root or self.root
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{stem}.txt").write_text(
             f"P 1,2,3,255,0,0,2,{label}\n",
             encoding="utf-8",
         )
@@ -53,6 +56,10 @@ class ZoneMapCatalogTests(unittest.TestCase):
         label = self.db.conn.execute("SELECT zone_name FROM map_labels LIMIT 1").fetchone()
         self.assertEqual(source["zone_name"], "South Qeynos")
         self.assertEqual(label["zone_name"], "South Qeynos")
+
+        zone_data = json.loads(self.db.entity(zone_id)["data_json"])
+        self.assertEqual(zone_data["map_short_name"], "qeynos")
+        self.assertEqual(zone_data["map_short_name_source"], "zone_map_catalog")
 
     def test_shared_word_is_recorded_ambiguous_not_guessed(self):
         self.db.upsert_entity(kind="zone", name="South Qeynos", merge_by_name=True)
@@ -90,6 +97,9 @@ class ZoneMapCatalogTests(unittest.TestCase):
                 "exact canonical name/alias/short-name match",
             },
         )
+        zone_data = json.loads(self.db.entity(south)["data_json"])
+        self.assertEqual(zone_data["map_short_name"], "qeynos")
+        self.assertNotIn("map_short_name_source", zone_data)
 
     def test_later_provider_alias_can_resolve_previously_unknown_map(self):
         zone_id = self.db.upsert_entity(
@@ -131,6 +141,36 @@ class ZoneMapCatalogTests(unittest.TestCase):
         bindings = zone_catalog.maps_for_zone(zone_id)
         self.assertEqual({b.source_name for b in bindings}, {"Good", "Brewall"})
         self.assertEqual({b.map_stem for b in bindings}, {"stonehive"})
+
+    def test_disagreeing_map_packs_remove_only_catalog_owned_short_name_hint(self):
+        zone_id = self.db.upsert_entity(
+            kind="zone",
+            name="The Plane of Knowledge",
+            merge_by_name=True,
+        )
+        self.db.add_alias(zone_id, "poknowledge", alias_type="map_short_name")
+        self.db.add_alias(zone_id, "planeofknowledge", alias_type="map_short_name")
+
+        good = Path(self.tempdir.name) / "good"
+        brewall = Path(self.tempdir.name) / "brewall"
+        self._map("poknowledge", root=good)
+        self._map("planeofknowledge", root=brewall)
+
+        map_catalog = MapCatalog(self.db)
+        map_catalog.index_root(good, source_name="Good")
+        zone_catalog = ZoneMapCatalog(self.db)
+        first = zone_catalog.reconcile(source_name="Good")
+        self.assertEqual(first.linked, 1)
+        data = json.loads(self.db.entity(zone_id)["data_json"])
+        self.assertEqual(data["map_short_name"], "poknowledge")
+        self.assertEqual(data["map_short_name_source"], "zone_map_catalog")
+
+        map_catalog.index_root(brewall, source_name="Brewall")
+        second = zone_catalog.reconcile(source_name="Brewall")
+        self.assertEqual(second.linked, 1)
+        data = json.loads(self.db.entity(zone_id)["data_json"])
+        self.assertNotIn("map_short_name", data)
+        self.assertNotIn("map_short_name_source", data)
 
 
 if __name__ == "__main__":

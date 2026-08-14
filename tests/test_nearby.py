@@ -10,6 +10,7 @@ from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 from eqquest.nearby import nearby_points, nearby_text
 from eqquest.runtime import RuntimeDatabase
+from eqquest.state import SessionState
 from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
@@ -175,6 +176,17 @@ class NearbyNavigationTests(unittest.TestCase):
         text = nearby_text(self.db, "Stone Hive", None)
         self.assertIn("player /loc unknown", text)
         self.assertIn("needs an observed /loc", text)
+
+    def test_session_zone_change_invalidates_previous_loc(self):
+        state = SessionState(
+            current_zone="Stone Hive",
+            zone_source="log",
+            last_location=(10.0, 20.0, 3.0),
+        )
+        changed = state.set_zone("Blightfire Moors", source="log", force=True)
+        self.assertTrue(changed)
+        self.assertEqual(state.current_zone, "Blightfire Moors")
+        self.assertIsNone(state.last_location)
 
     def test_ambiguous_zone_identity_does_not_rank_points(self):
         north = self.db.upsert_entity(kind="zone", name="North Freeport", merge_by_name=True)

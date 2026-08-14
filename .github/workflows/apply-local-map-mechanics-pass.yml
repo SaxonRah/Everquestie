@@ -20,10 +20,15 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Patch map catalog for incremental indexing and entity navigation
+      - name: Patch map catalog
         shell: python
         run: |
           from pathlib import Path
+          from textwrap import dedent, indent
+
+          def block(src: str, spaces: int = 4) -> str:
+              return indent(dedent(src).strip("\n"), " " * spaces) + "\n\n"
+
           p = Path('eqquest/map_catalog.py')
           s = p.read_text(encoding='utf-8')
           s = s.replace(
@@ -34,7 +39,8 @@ jobs:
 
           start = s.index('    def index_root(self, root: str | Path) -> MapIndexStats:')
           end = s.index('    def stats(self, root: str | Path | None = None) -> dict[str, int]:', start)
-          block = '''    def index_root(self, root: str | Path) -> MapIndexStats:
+          replacement = block('''
+          def index_root(self, root: str | Path) -> MapIndexStats:
               root_path = Path(root).resolve()
               if not root_path.is_dir():
                   raise FileNotFoundError(root_path)
@@ -44,6 +50,7 @@ jobs:
               seen_paths: set[str] = set()
               files_indexed = 0
               files_unchanged = 0
+              stale_removed = 0
 
               with self.db.batch():
                   for base in base_maps:
@@ -75,13 +82,11 @@ jobs:
                           for point in layer.points:
                               raw = point.display_text
                               clean = self._canonical_text(raw)
-                              rows.append(
-                                  (
-                                      source_id, map_stem, zone_name, layer_no, int(point.source_line),
-                                      raw, clean, normalize_name(clean), float(point.x), float(point.y),
-                                      float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
-                                  )
-                              )
+                              rows.append((
+                                  source_id, map_stem, zone_name, layer_no, int(point.source_line),
+                                  raw, clean, normalize_name(clean), float(point.x), float(point.y),
+                                  float(point.z), int(point.r), int(point.g), int(point.b), int(point.size),
+                              ))
                           if rows:
                               self.db.conn.executemany(
                                   """
@@ -99,17 +104,16 @@ jobs:
                   for row in stale:
                       if str(row["path"]) not in seen_paths:
                           self.db.conn.execute("DELETE FROM map_sources WHERE id=?", (int(row["id"]),))
+                          stale_removed += 1
                   self.db.set_meta("map_catalog_root", root_s)
-                  if files_indexed or stale:
+                  if files_indexed or stale_removed:
                       self.db.set_meta("map_links_dirty", "1")
 
-              reconciliation = self.reconcile_all(force=bool(files_indexed))
-              labels = int(
-                  self.db.conn.execute(
-                      "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
-                      (root_s,),
-                  ).fetchone()[0]
-              )
+              reconciliation = self.reconcile_all(force=bool(files_indexed or stale_removed))
+              labels = int(self.db.conn.execute(
+                  "SELECT COUNT(*) FROM map_labels ml JOIN map_sources ms ON ms.id=ml.source_id WHERE ms.root=?",
+                  (root_s,),
+              ).fetchone()[0])
               return MapIndexStats(
                   base_maps=len(base_maps),
                   files_indexed=files_indexed,
@@ -119,70 +123,63 @@ jobs:
                   ambiguous=reconciliation["ambiguous"],
                   unresolved=reconciliation["unresolved"],
               )
-
-          '''
-          # Preserve the method indentation in the literal above.
-          block = '\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines()) + '\n'
-          s = s[:start] + block + s[end:]
+          ''')
+          s = s[:start] + replacement + s[end:]
 
           marker = '    @staticmethod\n    def _hit(row, score: tuple, reason: str) -> MapCatalogHit:\n'
           if marker not in s:
               raise SystemExit('MapCatalog _hit marker missing')
-          addition = '''    def hits_for_entity(self, entity_id: int, *, limit: int = 100) -> list[MapCatalogHit]:
+          addition = block('''
+          def hits_for_entity(self, entity_id: int, *, limit: int = 100) -> list[MapCatalogHit]:
               self.ensure_reconciled()
               rows = self.db.conn.execute(
                   """
                   SELECT ml.*,ms.path FROM map_labels ml
                   JOIN map_sources ms ON ms.id=ml.source_id
                   WHERE ml.linked_entity_id=?
-                  ORDER BY CASE WHEN ml.zone_name<>'' THEN 0 ELSE 1 END,ml.zone_name,ml.map_stem,ml.layer,ml.source_line
+                  ORDER BY CASE WHEN ml.zone_name<>'' THEN 0 ELSE 1 END,
+                           ml.zone_name,ml.map_stem,ml.layer,ml.source_line
                   LIMIT ?
                   """,
                   (int(entity_id), max(1, min(int(limit), 1000))),
               ).fetchall()
               return [self._hit(row, (0, i), "linked local map evidence") for i, row in enumerate(rows)]
-
-          '''
-          addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.splitlines()) + '\n'
+          ''')
           s = s.replace(marker, addition + marker, 1)
 
           if 'def map_evidence_lines(' not in s:
-              s += '''\n\ndef map_evidence_lines(db: Database, entity_id: int, *, limit: int = 50) -> list[str]:
-              """Render linked map-label evidence without turning it into entity-location truth."""
-              try:
-                  rows = db.conn.execute(
-                      """
-                      SELECT ml.*,ms.path FROM map_labels ml
-                      JOIN map_sources ms ON ms.id=ml.source_id
-                      WHERE ml.linked_entity_id=?
-                      ORDER BY ml.zone_name,ml.map_stem,ml.layer,ml.source_line
-                      LIMIT ?
-                      """,
-                      (int(entity_id), max(1, min(int(limit), 500))),
-                  ).fetchall()
-              except Exception:
-                  return []
-              if not rows:
-                  return []
-              lines = ["", "Local map evidence:"]
-              for row in rows:
-                  gx, gy, gz = map_to_game(float(row["x"]), float(row["y"]), float(row["z"]))
-                  zone = str(row["zone_name"] or row["map_stem"])
-                  lines.append(
-                      f"  • {row['raw_text']} | {zone} | /loc Y {gy:g}, X {gx:g}, Z {gz:g} | "
-                      f"layer {row['layer']} | {Path(str(row['path'])).name}:{row['source_line']}"
-                  )
-              return lines
-          '''
-              # Undo workflow indentation only for the appended function literal.
-              prefix, tail = s.rsplit('\n\ndef map_evidence_lines', 1)
-              tail = '\n\ndef map_evidence_lines' + tail
-              tail = '\n'.join(line[10:] if line.startswith('          ') else line for line in tail.splitlines())
-              s = prefix + tail + '\n'
+              s += '\n' + dedent('''
+              def map_evidence_lines(db: Database, entity_id: int, *, limit: int = 50) -> list[str]:
+                  """Render linked map-label evidence without promoting it to entity-location truth."""
+                  try:
+                      rows = db.conn.execute(
+                          """
+                          SELECT ml.*,ms.path FROM map_labels ml
+                          JOIN map_sources ms ON ms.id=ml.source_id
+                          WHERE ml.linked_entity_id=?
+                          ORDER BY ml.zone_name,ml.map_stem,ml.layer,ml.source_line
+                          LIMIT ?
+                          """,
+                          (int(entity_id), max(1, min(int(limit), 500))),
+                      ).fetchall()
+                  except Exception:
+                      return []
+                  if not rows:
+                      return []
+                  lines = ["", "Local map evidence:"]
+                  for row in rows:
+                      gx, gy, gz = map_to_game(float(row["x"]), float(row["y"]), float(row["z"]))
+                      zone = str(row["zone_name"] or row["map_stem"])
+                      lines.append(
+                          f"  • {row['raw_text']} | {zone} | /loc Y {gy:g}, X {gx:g}, Z {gz:g} | "
+                          f"layer {row['layer']} | {Path(str(row['path'])).name}:{row['source_line']}"
+                      )
+                  return lines
+              ''').lstrip('\n')
 
           p.write_text(s, encoding='utf-8')
 
-      - name: Patch Knowledge vendor and map evidence rendering
+      - name: Patch Knowledge rendering
         shell: python
         run: |
           from pathlib import Path
@@ -199,60 +196,66 @@ jobs:
               1,
           )
           anchor = '    lines.extend(_render_local_detail(db, entity_id, str(r["kind"])))\n\n    locs = db.locations_for_entity(entity_id)\n'
-          replacement = '    lines.extend(_render_local_detail(db, entity_id, str(r["kind"])))\n    lines.extend(vendor_section_lines(db, entity_id))\n    lines.extend(map_evidence_lines(db, entity_id))\n\n    locs = db.locations_for_entity(entity_id)\n'
           if anchor not in s:
-              raise SystemExit('Knowledge detail insertion anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('Knowledge detail anchor missing')
+          s = s.replace(
+              anchor,
+              '    lines.extend(_render_local_detail(db, entity_id, str(r["kind"])))\n'
+              '    lines.extend(vendor_section_lines(db, entity_id))\n'
+              '    lines.extend(map_evidence_lines(db, entity_id))\n\n'
+              '    locs = db.locations_for_entity(entity_id)\n',
+              1,
+          )
           anchor = '    rels = db.relationships_for_entity(entity_id)\n    if rels:\n'
-          replacement = '    rels = [rel for rel in db.relationships_for_entity(entity_id) if str(rel["relation"]) not in VENDOR_RELATIONS]\n    if rels:\n'
           if anchor not in s:
-              raise SystemExit('Knowledge relationships anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('Knowledge relationship anchor missing')
+          s = s.replace(
+              anchor,
+              '    rels = [rel for rel in db.relationships_for_entity(entity_id) if str(rel["relation"]) not in VENDOR_RELATIONS]\n    if rels:\n',
+              1,
+          )
           p.write_text(s, encoding='utf-8')
 
-      - name: Patch application Mechanics tab and Knowledge navigation
+      - name: Patch application Mechanics tab
         shell: python
         run: |
           from pathlib import Path
+          from textwrap import dedent, indent
+
+          def block(src: str, spaces: int = 4) -> str:
+              return indent(dedent(src).strip("\n"), " " * spaces) + "\n\n"
+
           p = Path('eqquest/app.py')
           s = p.read_text(encoding='utf-8')
-          s = s.replace(
-              'from .mapview import MapViewerFrame\n',
-              'from .mapview import MapViewerFrame\nfrom .mechanics import MechanicsFrame\n',
-              1,
-          )
+          s = s.replace('from .mapview import MapViewerFrame\n', 'from .mapview import MapViewerFrame\nfrom .mechanics import MechanicsFrame\n', 1)
           anchor = '        self.knowledge_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n        self.search_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n'
-          replacement = '        self.knowledge_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n        self.mechanics_tab = ttk.Frame(notebook, style="Stone.TFrame")\n        self.search_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n'
           if anchor not in s:
               raise SystemExit('app tab declaration anchor missing')
-          s = s.replace(anchor, replacement, 1)
+          s = s.replace(anchor, '        self.knowledge_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n        self.mechanics_tab = ttk.Frame(notebook, style="Stone.TFrame")\n        self.search_tab = ttk.Frame(notebook, padding=8, style="Stone.TFrame")\n', 1)
           anchor = '        notebook.add(self.knowledge_tab, text="Knowledge")\n        notebook.add(self.search_tab, text="Search")\n'
-          replacement = '        notebook.add(self.knowledge_tab, text="Knowledge")\n        notebook.add(self.mechanics_tab, text="Mechanics")\n        notebook.add(self.search_tab, text="Search")\n'
           if anchor not in s:
-              raise SystemExit('app notebook add anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('app notebook anchor missing')
+          s = s.replace(anchor, '        notebook.add(self.knowledge_tab, text="Knowledge")\n        notebook.add(self.mechanics_tab, text="Mechanics")\n        notebook.add(self.search_tab, text="Search")\n', 1)
           anchor = '        self._build_knowledge()\n        self._build_search()\n'
-          replacement = '        self._build_knowledge()\n        self._build_mechanics()\n        self._build_search()\n'
           if anchor not in s:
-              raise SystemExit('app build call anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('app build anchor missing')
+          s = s.replace(anchor, '        self._build_knowledge()\n        self._build_mechanics()\n        self._build_search()\n', 1)
 
           marker = '    def _build_search(self):\n'
           if marker not in s:
-              raise SystemExit('app _build_search marker missing')
-          addition = '''    def _build_mechanics(self):
+              raise SystemExit('app search marker missing')
+          s = s.replace(marker, block('''
+          def _build_mechanics(self):
               self.mechanics_tab.rowconfigure(0, weight=1)
               self.mechanics_tab.columnconfigure(0, weight=1)
               self.mechanics_view = MechanicsFrame(self.mechanics_tab, db=self.db)
               self.mechanics_view.grid(row=0, column=0, sticky="nsew")
-
-          '''
-          addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.splitlines()) + '\n'
-          s = s.replace(marker, addition + marker, 1)
+          ''') + marker, 1)
 
           start = s.index('    def _map_entity_selected(self, entity_id: int):')
           end = s.index('    def _map_label_to_knowledge(self, term: str) -> None:', start)
-          block = '''    def _map_entity_selected(self, entity_id: int):
+          s = s[:start] + block('''
+          def _map_entity_selected(self, entity_id: int):
               row = self.db.entity(entity_id)
               if row is None:
                   return
@@ -273,121 +276,109 @@ jobs:
               self.entity_tree.focus(iid)
               self.entity_tree.see(iid)
               self._show_entity()
-
-          '''
-          block = '\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines()) + '\n'
-          s = s[:start] + block + s[end:]
+          ''') + s[end:]
           p.write_text(s, encoding='utf-8')
 
-      - name: Patch Map viewer global catalog UI and navigation
+      - name: Patch Map viewer global catalog UI
         shell: python
         run: |
           from pathlib import Path
+          from textwrap import dedent, indent
+
+          def block(src: str, spaces: int = 4, trailing: int = 2) -> str:
+              return indent(dedent(src).strip("\n"), " " * spaces) + ("\n" * trailing)
+
           p = Path('eqquest/mapview.py')
           s = p.read_text(encoding='utf-8')
-          s = s.replace(
-              'from .map_search import MapLabelHit, find_map_label_hits\n',
-              'from .map_search import MapLabelHit, find_map_label_hits\nfrom .map_catalog import MapCatalog, MapCatalogHit\n',
-              1,
-          )
+          s = s.replace('from .map_search import MapLabelHit, find_map_label_hits\n', 'from .map_search import MapLabelHit, find_map_label_hits\nfrom .map_catalog import MapCatalog, MapCatalogHit\n', 1)
           anchor = '        self.on_entity = on_entity\n        self.on_knowledge_search = on_knowledge_search\n\n        self.map_root = tk.StringVar'
-          replacement = '        self.on_entity = on_entity\n        self.on_knowledge_search = on_knowledge_search\n        self.map_catalog = MapCatalog(db)\n\n        self.map_root = tk.StringVar'
           if anchor not in s:
-              raise SystemExit('MapViewer catalog constructor anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map constructor anchor missing')
+          s = s.replace(anchor, '        self.on_entity = on_entity\n        self.on_knowledge_search = on_knowledge_search\n        self.map_catalog = MapCatalog(db)\n\n        self.map_root = tk.StringVar', 1)
 
           anchor = '        self._lookup_entity_by_item: dict[str, int] = {}\n        self._lookup_map_hit_by_item: dict[str, MapLabelHit] = {}\n        self._lookup_selected_entity: int | None = None\n        self._lookup_selected_map_hit: MapLabelHit | None = None\n'
-          replacement = '        self._lookup_entity_by_item: dict[str, int] = {}\n        self._lookup_map_hit_by_item: dict[str, MapLabelHit | MapCatalogHit] = {}\n        self._lookup_selected_entity: int | None = None\n        self._lookup_selected_map_hit: MapLabelHit | MapCatalogHit | None = None\n        self._catalog_index_results: queue.Queue[tuple[str, object]] = queue.Queue()\n        self._catalog_indexing = False\n'
           if anchor not in s:
-              raise SystemExit('MapViewer lookup state anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map lookup state anchor missing')
+          s = s.replace(anchor, '        self._lookup_entity_by_item: dict[str, int] = {}\n        self._lookup_map_hit_by_item: dict[str, MapLabelHit | MapCatalogHit] = {}\n        self._lookup_selected_entity: int | None = None\n        self._lookup_selected_map_hit: MapLabelHit | MapCatalogHit | None = None\n        self._catalog_index_results: queue.Queue[tuple[str, object]] = queue.Queue()\n        self._catalog_indexing = False\n', 1)
 
           anchor = '        self.after(30, self._poll_raster_results)\n        self.after(250, self._poll_state)\n'
-          replacement = '        self.after(30, self._poll_raster_results)\n        self.after(250, self._poll_state)\n        self.after(300, self._poll_catalog_index_results)\n        self.after(700, self.ensure_map_catalog)\n'
           if anchor not in s:
-              raise SystemExit('MapViewer after anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map after anchor missing')
+          s = s.replace(anchor, '        self.after(30, self._poll_raster_results)\n        self.after(250, self._poll_state)\n        self.after(300, self._poll_catalog_index_results)\n        self.after(700, self.ensure_map_catalog)\n', 1)
 
           anchor = '        ttk.Button(lookup_row, text="Search", command=lambda: self._lookup_name(self.lookup_query.get())).grid(row=0, column=1, padx=(4, 0))\n'
-          replacement = anchor + '        ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog).grid(row=0, column=2, padx=(4, 0))\n'
           if anchor not in s:
-              raise SystemExit('MapViewer lookup button anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map lookup search button missing')
+          s = s.replace(anchor, anchor + '        ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog).grid(row=0, column=2, padx=(4, 0))\n', 1)
 
           anchor = '        ttk.Button(lookup_actions, text="Open in Knowledge", command=self._open_lookup_in_knowledge).pack(side="left")\n        ttk.Label(lookup_actions, textvariable=self.lookup_status).pack(side="left", padx=(6, 0))\n'
-          replacement = '        ttk.Button(lookup_actions, text="Open in Knowledge", command=self._open_lookup_in_knowledge).pack(side="left")\n        ttk.Button(lookup_actions, text="Open Map", command=self._open_lookup_on_map).pack(side="left", padx=(5, 0))\n        ttk.Label(lookup_actions, textvariable=self.lookup_status).pack(side="left", padx=(6, 0))\n'
           if anchor not in s:
-              raise SystemExit('MapViewer lookup action anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map lookup actions missing')
+          s = s.replace(anchor, '        ttk.Button(lookup_actions, text="Open in Knowledge", command=self._open_lookup_in_knowledge).pack(side="left")\n        ttk.Button(lookup_actions, text="Open Map", command=self._open_lookup_on_map).pack(side="left", padx=(5, 0))\n        ttk.Label(lookup_actions, textvariable=self.lookup_status).pack(side="left", padx=(6, 0))\n', 1)
 
           anchor = '        count = len(discover_base_maps(root))\n        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")\n\n    def suggest_root_from_log'
-          replacement = '        count = len(discover_base_maps(root))\n        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")\n        self.after(50, self.ensure_map_catalog)\n\n    def suggest_root_from_log'
           if anchor not in s:
-              raise SystemExit('MapViewer set root anchor missing')
-          s = s.replace(anchor, replacement, 1)
+              raise SystemExit('map root anchor missing')
+          s = s.replace(anchor, '        count = len(discover_base_maps(root))\n        self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files")\n        self.after(50, self.ensure_map_catalog)\n\n    def suggest_root_from_log', 1)
 
           marker = '    def suggest_root_from_log(self, log_path: str | Path) -> None:\n'
           if marker not in s:
-              raise SystemExit('MapViewer suggest_root marker missing')
-          addition = '''    def ensure_map_catalog(self) -> None:
+              raise SystemExit('map suggest-root marker missing')
+          catalog_methods = block('''
+          def ensure_map_catalog(self) -> None:
               root = self.map_root.get().strip()
               if not root or not Path(root).is_dir() or self._catalog_indexing:
                   return
-              # Always run the lightweight fingerprint pass; unchanged map files are
-              # stat-checked but not reparsed.
               self.index_map_catalog()
 
-              def index_map_catalog(self) -> None:
-                  root = self.map_root.get().strip()
-                  if not root or not Path(root).is_dir():
-                      self.lookup_status.set("Choose a valid map pack before indexing.")
-                      return
-                  if self._catalog_indexing:
-                      self.lookup_status.set("Map catalog indexing is already running.")
-                      return
-                  self._catalog_indexing = True
-                  self.lookup_status.set("Indexing local map labels…")
-                  db_path = self.db.path
+          def index_map_catalog(self) -> None:
+              root = self.map_root.get().strip()
+              if not root or not Path(root).is_dir():
+                  self.lookup_status.set("Choose a valid map pack before indexing.")
+                  return
+              if self._catalog_indexing:
+                  self.lookup_status.set("Map catalog indexing is already running.")
+                  return
+              self._catalog_indexing = True
+              self.lookup_status.set("Indexing local map labels…")
+              db_path = self.db.path
 
-                  def worker() -> None:
-                      thread_db = None
-                      try:
-                          thread_db = Database(db_path)
-                          stats = MapCatalog(thread_db).index_root(root)
-                          self._catalog_index_results.put(("ok", stats))
-                      except Exception as exc:
-                          self._catalog_index_results.put(("error", str(exc)))
-                      finally:
-                          if thread_db is not None:
-                              thread_db.close()
-
-                  threading.Thread(target=worker, name="EverQuestieMapCatalog", daemon=True).start()
-
-              def _poll_catalog_index_results(self) -> None:
+              def worker() -> None:
+                  thread_db = None
                   try:
-                      while True:
-                          status, payload = self._catalog_index_results.get_nowait()
-                          self._catalog_indexing = False
-                          if status == "ok":
-                              stats = payload
-                              self.lookup_status.set(
-                                  f"Map catalog: {stats.labels:,} labels | {stats.linked:,} linked | "
-                                  f"{stats.ambiguous:,} ambiguous"
-                              )
-                          else:
-                              self.lookup_status.set(f"Map catalog index failed: {payload}")
-                  except queue.Empty:
-                      pass
-                  self.after(300, self._poll_catalog_index_results)
+                      thread_db = Database(db_path)
+                      stats = MapCatalog(thread_db).index_root(root)
+                      self._catalog_index_results.put(("ok", stats))
+                  except Exception as exc:
+                      self._catalog_index_results.put(("error", str(exc)))
+                  finally:
+                      if thread_db is not None:
+                          thread_db.close()
 
-          '''
-          addition = '\n'.join(line[10:] if line.startswith('          ') else line for line in addition.splitlines()) + '\n'
-          s = s.replace(marker, addition + marker, 1)
+              threading.Thread(target=worker, name="EverQuestieMapCatalog", daemon=True).start()
 
-          # Replace detail + search-summary methods together.
+          def _poll_catalog_index_results(self) -> None:
+              try:
+                  while True:
+                      status, payload = self._catalog_index_results.get_nowait()
+                      self._catalog_indexing = False
+                      if status == "ok":
+                          stats = payload
+                          self.lookup_status.set(
+                              f"Map catalog: {stats.labels:,} labels | {stats.linked:,} linked | {stats.ambiguous:,} ambiguous"
+                          )
+                      else:
+                          self.lookup_status.set(f"Map catalog index failed: {payload}")
+              except queue.Empty:
+                  pass
+              self.after(300, self._poll_catalog_index_results)
+          ''')
+          s = s.replace(marker, catalog_methods + marker, 1)
+
           start = s.index('    def _map_label_detail_text(self, hit: MapLabelHit) -> str:')
           end = s.index('    def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:', start)
-          block = '''    def _map_label_detail_text(self, hit: MapLabelHit | MapCatalogHit) -> str:
+          detail_methods = block('''
+          def _map_label_detail_text(self, hit: MapLabelHit | MapCatalogHit) -> str:
               gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
               if isinstance(hit, MapCatalogHit):
                   zone = hit.zone_name or hit.map_stem
@@ -434,34 +425,34 @@ jobs:
               ]
               return "\\n".join(lines)
 
-              def map_label_search_summary(self, term: str, *, limit: int = 20) -> list[str]:
-                  lines: list[str] = []
-                  catalog_hits = self.map_catalog.search(term, current_zone=self.get_zone(), limit=limit)
-                  if catalog_hits:
-                      for hit in catalog_hits:
-                          gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
-                          zone = hit.zone_name or hit.map_stem
-                          linked = f" | linked entity {hit.linked_entity_id}" if hit.linked_entity_id is not None else ""
-                          lines.append(
-                              f"[map label] {hit.text} | {zone} | layer {hit.layer} | "
-                              f"/loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}{linked}"
-                          )
-                      return lines
-                  for hit in self.map_label_matches(term, limit=limit):
+          def map_label_search_summary(self, term: str, *, limit: int = 20) -> list[str]:
+              lines: list[str] = []
+              catalog_hits = self.map_catalog.search(term, current_zone=self.get_zone(), limit=limit)
+              if catalog_hits:
+                  for hit in catalog_hits:
                       gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+                      zone = hit.zone_name or hit.map_stem
+                      linked = f" | linked entity {hit.linked_entity_id}" if hit.linked_entity_id is not None else ""
                       lines.append(
-                          f"[map label] {hit.text} | current map layer {hit.layer} | /loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}"
+                          f"[map label] {hit.text} | {zone} | layer {hit.layer} | "
+                          f"/loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}{linked}"
                       )
                   return lines
-
-          '''
-          block = '\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines()) + '\n'
-          s = s[:start] + block + s[end:]
+              for hit in self.map_label_matches(term, limit=limit):
+                  gx, gy, gz = map_to_game(hit.x, hit.y, hit.z)
+                  lines.append(
+                      f"[map label] {hit.text} | current map layer {hit.layer} | "
+                      f"/loc Y {gy:.1f}, X {gx:.1f}, Z {gz:.1f} | {hit.reason}"
+                  )
+              return lines
+          ''')
+          s = s[:start] + detail_methods + s[end:]
 
           lookup_start = s.index('    def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:')
           nohit_start = s.index('        if not hits:', lookup_start)
           nohit_end = s.index('        for hit in hits:', nohit_start)
-          nohit = '''        if not hits:
+          nohit = block('''
+          if not hits:
               catalog_hits = self.map_catalog.search(term, current_zone=self.get_zone(), limit=40)
               if catalog_hits:
                   for index, hit in enumerate(catalog_hits):
@@ -503,13 +494,13 @@ jobs:
               self.lookup_status.set("No local DB or indexed/current-map label match")
               self._set_lookup_detail(f"No local EverQuestie knowledge or map evidence matches: {term}")
               return
-          '''
-          nohit = '\n'.join(line[10:] if line.startswith('          ') else line for line in nohit.splitlines()) + '\n'
+          ''', spaces=8, trailing=1)
           s = s[:nohit_start] + nohit + s[nohit_end:]
 
           start = s.index('    def _open_lookup_in_knowledge(self, _event=None) -> None:')
           end = s.index('    # ------------------------------------------------------------------\n    # Map-only visual themes', start)
-          block = '''    def _open_lookup_in_knowledge(self, _event=None) -> None:
+          open_methods = block('''
+          def _open_lookup_in_knowledge(self, _event=None) -> None:
               if self._lookup_selected_entity is not None and self.on_entity:
                   self.on_entity(self._lookup_selected_entity)
                   return
@@ -525,51 +516,40 @@ jobs:
               if term and self.on_knowledge_search:
                   self.on_knowledge_search(term)
 
-              def _center_map_point(self, x: float, y: float) -> None:
-                  new_x = self.canvas.winfo_width() * 0.5 - float(x) * self.scale
-                  new_y = self.canvas.winfo_height() * 0.5 - float(y) * self.scale
-                  self._move_view_to(new_x, new_y)
-                  self._schedule_save_view()
+          def _center_map_point(self, x: float, y: float) -> None:
+              new_x = self.canvas.winfo_width() * 0.5 - float(x) * self.scale
+              new_y = self.canvas.winfo_height() * 0.5 - float(y) * self.scale
+              self._move_view_to(new_x, new_y)
+              self._schedule_save_view()
 
-              def _open_lookup_on_map(self, _event=None) -> None:
-                  hit = self._lookup_selected_map_hit
-                  if isinstance(hit, MapCatalogHit):
-                      try:
-                          self.load_map(hit.path)
-                      except Exception as exc:
-                          self.lookup_status.set(f"Could not open indexed map: {exc}")
-                          return
-                      self.after(80, lambda: self._center_map_point(hit.x, hit.y))
-                      self.lookup_status.set(
-                          f"Opened {hit.zone_name or hit.map_stem} at {hit.text}"
-                      )
+          def _open_lookup_on_map(self, _event=None) -> None:
+              hit = self._lookup_selected_map_hit
+              if isinstance(hit, MapCatalogHit):
+                  self.load_map(hit.path)
+                  self.after(80, lambda: self._center_map_point(hit.x, hit.y))
+                  self.lookup_status.set(f"Opened {hit.zone_name or hit.map_stem} at {hit.text}")
+                  return
+              if isinstance(hit, MapLabelHit):
+                  self._center_map_point(hit.x, hit.y)
+                  return
+              if self._lookup_selected_entity is not None:
+                  map_hits = self.map_catalog.hits_for_entity(self._lookup_selected_entity, limit=20)
+                  if map_hits:
+                      chosen = map_hits[0]
+                      current = normalize_map_name(self.get_zone() or "")
+                      for candidate in map_hits:
+                          if current and current in {
+                              normalize_map_name(candidate.zone_name), normalize_map_name(candidate.map_stem)
+                          }:
+                              chosen = candidate
+                              break
+                      self.load_map(chosen.path)
+                      self.after(80, lambda: self._center_map_point(chosen.x, chosen.y))
+                      self.lookup_status.set(f"Opened linked map evidence for {chosen.text}")
                       return
-                  if isinstance(hit, MapLabelHit):
-                      self._center_map_point(hit.x, hit.y)
-                      return
-                  if self._lookup_selected_entity is not None:
-                      map_hits = self.map_catalog.hits_for_entity(self._lookup_selected_entity, limit=20)
-                      if map_hits:
-                          chosen = map_hits[0]
-                          current = normalize_map_name(self.get_zone() or "")
-                          for candidate in map_hits:
-                              if current and current in {
-                                  normalize_map_name(candidate.zone_name), normalize_map_name(candidate.map_stem)
-                              }:
-                                  chosen = candidate
-                                  break
-                          self.load_map(chosen.path)
-                          self.after(80, lambda: self._center_map_point(chosen.x, chosen.y))
-                          self.lookup_status.set(
-                              f"Opened linked map evidence for {chosen.text}"
-                          )
-                          return
-                      self.focus_entity(self._lookup_selected_entity)
-
-          '''
-          block = '\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines()) + '\n'
-          s = s[:start] + block + s[end:]
-
+                  self.focus_entity(self._lookup_selected_entity)
+          ''')
+          s = s[:start] + open_methods + s[end:]
           p.write_text(s, encoding='utf-8')
 
       - name: Compile and test

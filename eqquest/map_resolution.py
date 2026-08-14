@@ -174,26 +174,26 @@ def resolve_catalog_map_for_zone(
                 ordered,
             )
 
-        # A richer provider corpus can temporarily make the compiled zone/map binding
-        # ambiguous even though runtime has a unique EQ-client-backed zone. Exact
-        # identity signals still provide a safe local rendering fallback, including a
-        # candidate set for the Good/Brewall chooser when both packs have the same map.
-        exact_local = _paths_for_stems(
-            by_norm,
-            _identity_stems(identity, zone_name=zone_name, hinted_stem=hinted_stem or ""),
-        )
-        if len(exact_local) == 1:
-            return MapResolution(
-                exact_local[0],
-                "canonical runtime zone identity local map match",
-                exact_local,
+        # Use exact local identity signals only when runtime actually resolved a prior
+        # canonical collision. Ordinary unique zones retain the historic legacy
+        # fallback ordering/reason below, avoiding unrelated behavior changes.
+        if len(zone_resolution.candidates) > 1:
+            exact_local = _paths_for_stems(
+                by_norm,
+                _identity_stems(identity, zone_name=zone_name, hinted_stem=hinted_stem or ""),
             )
-        if len(exact_local) > 1:
-            return MapResolution(
-                None,
-                "multiple local map-pack copies match the canonical runtime zone identity",
-                exact_local,
-            )
+            if len(exact_local) == 1:
+                return MapResolution(
+                    exact_local[0],
+                    "canonical runtime zone identity local map match",
+                    exact_local,
+                )
+            if len(exact_local) > 1:
+                return MapResolution(
+                    None,
+                    "multiple local map-pack copies match the canonical runtime zone identity",
+                    exact_local,
+                )
 
     # Broad legacy fallback remains useful for old/incomplete knowledge snapshots, but
     # only after canonical runtime identity failed to provide a direct local signal.

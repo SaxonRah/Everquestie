@@ -161,6 +161,7 @@ class NearbyLocalMapReadinessTests(unittest.TestCase):
             status_var=status,
             on_map_target=lambda *args: emitted.append(args),
         )
+        fake._selected_nearby_point = lambda: point
         fake._emit_map_point = lambda zone, selected: RouteGuidanceFrame._emit_map_point(
             fake, zone, selected
         )

@@ -162,11 +162,13 @@ class TravelFrame(ttk.Frame):
                 "no map parsing or network access occurs here."
             )
         )
+        self._nearby_points_by_item: dict[str, object] = {}
+        self._nearby_zone = ""
         self._build()
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
         controls = ttk.LabelFrame(self, text="Zone navigation", padding=10)
         controls.grid(row=0, column=0, sticky="ew")
@@ -201,8 +203,55 @@ class TravelFrame(ttk.Frame):
             row=1, column=0, sticky="ew", pady=(8, 6)
         )
 
+        self.nearby_frame = ttk.LabelFrame(self, text="Nearby confirmed points", padding=6)
+        self.nearby_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self.nearby_frame.columnconfigure(0, weight=1)
+
+        columns = ("distance", "dz", "type", "name", "loc", "source")
+        self.nearby_tree = ttk.Treeview(
+            self.nearby_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=7,
+        )
+        headings = {
+            "distance": "Horizontal",
+            "dz": "ΔZ",
+            "type": "Type",
+            "name": "Name / destination",
+            "loc": "/loc",
+            "source": "Source",
+        }
+        widths = {
+            "distance": 85,
+            "dz": 70,
+            "type": 90,
+            "name": 220,
+            "loc": 190,
+            "source": 160,
+        }
+        for column in columns:
+            self.nearby_tree.heading(column, text=headings[column])
+            self.nearby_tree.column(column, width=widths[column], minwidth=55, stretch=column in {"name", "source"})
+        self.nearby_tree.grid(row=0, column=0, sticky="ew")
+        nearby_scroll = ttk.Scrollbar(
+            self.nearby_frame,
+            orient="vertical",
+            command=self.nearby_tree.yview,
+        )
+        nearby_scroll.grid(row=0, column=1, sticky="ns")
+        self.nearby_tree.configure(yscrollcommand=nearby_scroll.set)
+        self.nearby_tree.bind("<Double-1>", lambda _e: self.map_selected_nearby())
+        ttk.Button(
+            self.nearby_frame,
+            text="Map selected",
+            command=self.map_selected_nearby,
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.nearby_frame.grid_remove()
+
         frame = ttk.LabelFrame(self, text="Canonical navigation knowledge", padding=6)
-        frame.grid(row=2, column=0, sticky="nsew")
+        frame.grid(row=3, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
         self.result_text = tk.Text(frame, wrap="word", state="disabled")
@@ -242,7 +291,66 @@ class TravelFrame(ttk.Frame):
             return f"Travel to {point.name}"
         return f"{point.name} [{point.kind}]"
 
+    @staticmethod
+    def _nearby_row_values(point) -> tuple[str, str, str, str, str, str]:
+        dz = "" if point.vertical_delta is None else f"{point.vertical_delta:+.1f}"
+        kind = (
+            f"travel: {point.kind.replace('_', ' ')}"
+            if point.point_type == "travel"
+            else point.kind
+        )
+        return (
+            f"{point.horizontal_distance:.1f}",
+            dz,
+            kind,
+            point.name,
+            point.loc_text,
+            point.source_label,
+        )
+
+    def _clear_nearby_points(self) -> None:
+        if not hasattr(self, "nearby_tree"):
+            return
+        for item in self.nearby_tree.get_children():
+            self.nearby_tree.delete(item)
+        self._nearby_points_by_item.clear()
+        self._nearby_zone = ""
+        if hasattr(self, "nearby_frame"):
+            self.nearby_frame.grid_remove()
+
+    def _set_nearby_points(self, zone: str, points) -> None:
+        self._clear_nearby_points()
+        self._nearby_zone = str(zone)
+        for index, point in enumerate(points, start=1):
+            iid = f"nearby:{index}"
+            self.nearby_tree.insert("", "end", iid=iid, values=self._nearby_row_values(point))
+            self._nearby_points_by_item[iid] = point
+        if points:
+            first = "nearby:1"
+            self.nearby_tree.selection_set(first)
+            self.nearby_tree.focus(first)
+            self.nearby_tree.see(first)
+            self.nearby_frame.grid()
+
+    def _selected_nearby_point(self):
+        selection = tuple(self.nearby_tree.selection())
+        iid = selection[0] if selection else self.nearby_tree.focus()
+        return self._nearby_points_by_item.get(str(iid or ""))
+
+    def _emit_map_point(self, zone: str, point) -> bool:
+        if self.on_map_target is None:
+            self.status_var.set("Map targeting is not connected in this application surface.")
+            return False
+        label = self._nearby_map_label(point)
+        self.on_map_target(zone, point.x, point.y, point.z, label)
+        self.status_var.set(
+            f"Map target: {label} | {point.distance_text}. "
+            "The Map tab owns local map selection, coordinate conversion and rendering."
+        )
+        return True
+
     def show_zone_context(self) -> None:
+        self._clear_nearby_points()
         zone = self._selected_or_current_zone()
         if not zone:
             self.status_var.set("Choose a zone or wait for the current zone from the log.")
@@ -268,11 +376,13 @@ class TravelFrame(ttk.Frame):
         # the editable From token to pair coordinates with knowledge.
         zone = self._live_current_zone()
         if not zone:
+            self._clear_nearby_points()
             self.status_var.set("Current zone is unknown; nearby ranking requires the live current zone.")
             return
         location = self.get_location()
         self._set_result(nearby_text(self.db, zone, location, limit=50))
         points, status = nearby_points(self.db, zone, location, limit=50)
+        self._set_nearby_points(zone, points if status == "linked" else [])
         if status == "location_unknown":
             self.status_var.set(
                 "Current /loc is unknown. Use /loc in EverQuest; the observed coordinate is never written into shipped knowledge."
@@ -287,7 +397,7 @@ class TravelFrame(ttk.Frame):
             self.status_var.set(
                 f"Nearby in {zone}: {len(points)} confirmed point(s) | "
                 f"{entity_count} entity location(s) | {travel_count} usable travel point(s). "
-                "Straight-line X/Y only; ΔZ is shown separately."
+                "Select any row and map it; distances are straight-line X/Y with ΔZ separate."
             )
 
     def map_nearest(self) -> None:
@@ -304,19 +414,25 @@ class TravelFrame(ttk.Frame):
         if status != "linked" or not points:
             self.status_var.set("No confirmed coordinate-bearing nearby point is available to map.")
             return
-        if self.on_map_target is None:
-            self.status_var.set("Map targeting is not connected in this application surface.")
-            return
+        self._emit_map_point(zone, points[0])
 
-        point = points[0]
-        label = self._nearby_map_label(point)
-        self.on_map_target(zone, point.x, point.y, point.z, label)
-        self.status_var.set(
-            f"Map target: {label} | {point.distance_text}. "
-            "The Map tab owns local map selection, coordinate conversion and rendering."
-        )
+    def map_selected_nearby(self) -> None:
+        point = self._selected_nearby_point()
+        if point is None:
+            self.status_var.set("Select a nearby confirmed point first.")
+            return
+        live_zone = self._live_current_zone()
+        if not live_zone or not self._nearby_zone:
+            self.status_var.set("Current zone is unknown; the nearby selection cannot be mapped safely.")
+            return
+        if live_zone.casefold() != self._nearby_zone.casefold():
+            self._clear_nearby_points()
+            self.status_var.set("Nearby results expired because the current zone changed. Refresh Nearby.")
+            return
+        self._emit_map_point(live_zone, point)
 
     def find_route(self) -> None:
+        self._clear_nearby_points()
         source = self.from_var.get().strip()
         target = self.to_var.get().strip()
         if not source:

@@ -140,11 +140,20 @@ def build_route_result(db: Database, source_text: str, target_text: str) -> Trav
 class TravelFrame(ttk.Frame):
     """Read-only navigation UI over finalized canonical zone knowledge."""
 
-    def __init__(self, master, *, db: Database, get_zone, get_location=None):
+    def __init__(
+        self,
+        master,
+        *,
+        db: Database,
+        get_zone,
+        get_location=None,
+        on_map_target=None,
+    ):
         super().__init__(master, padding=8)
         self.db = db
         self.get_zone = get_zone
         self.get_location = get_location or (lambda: None)
+        self.on_map_target = on_map_target
         self.from_var = tk.StringVar()
         self.to_var = tk.StringVar()
         self.status_var = tk.StringVar(
@@ -175,12 +184,15 @@ class TravelFrame(ttk.Frame):
         ttk.Button(controls, text="Nearby", command=self.show_nearby).grid(
             row=0, column=4, padx=(6, 0)
         )
+        ttk.Button(controls, text="Map nearest", command=self.map_nearest).grid(
+            row=0, column=5, padx=(6, 0)
+        )
 
         ttk.Label(controls, text="To").grid(row=1, column=0, sticky="w", pady=(8, 0))
         to_entry = ttk.Entry(controls, textvariable=self.to_var)
         to_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(controls, text="Find route", command=self.find_route).grid(
-            row=1, column=2, columnspan=3, sticky="ew", pady=(8, 0)
+            row=1, column=2, columnspan=4, sticky="ew", pady=(8, 0)
         )
         from_entry.bind("<Return>", lambda _e: self.show_zone_context())
         to_entry.bind("<Return>", lambda _e: self.find_route())
@@ -223,6 +235,12 @@ class TravelFrame(ttk.Frame):
     def _live_current_zone(self) -> str:
         """Zone paired with the ephemeral SessionState.last_location callback."""
         return " ".join(str(self.get_zone() or "").split()).strip()
+
+    @staticmethod
+    def _nearby_map_label(point) -> str:
+        if point.point_type == "travel":
+            return f"Travel to {point.name}"
+        return f"{point.name} [{point.kind}]"
 
     def show_zone_context(self) -> None:
         zone = self._selected_or_current_zone()
@@ -271,6 +289,32 @@ class TravelFrame(ttk.Frame):
                 f"{entity_count} entity location(s) | {travel_count} usable travel point(s). "
                 "Straight-line X/Y only; ΔZ is shown separately."
             )
+
+    def map_nearest(self) -> None:
+        """Send the nearest confirmed live-zone point to the Map owner in game space."""
+        zone = self._live_current_zone()
+        if not zone:
+            self.status_var.set("Current zone is unknown; map targeting requires the live current zone.")
+            return
+        location = self.get_location()
+        points, status = nearby_points(self.db, zone, location, limit=1)
+        if status == "location_unknown":
+            self.status_var.set("Current /loc is unknown; there is no safe nearest point to map yet.")
+            return
+        if status != "linked" or not points:
+            self.status_var.set("No confirmed coordinate-bearing nearby point is available to map.")
+            return
+        if self.on_map_target is None:
+            self.status_var.set("Map targeting is not connected in this application surface.")
+            return
+
+        point = points[0]
+        label = self._nearby_map_label(point)
+        self.on_map_target(zone, point.x, point.y, point.z, label)
+        self.status_var.set(
+            f"Map target: {label} | {point.distance_text}. "
+            "The Map tab owns local map selection, coordinate conversion and rendering."
+        )
 
     def find_route(self) -> None:
         source = self.from_var.get().strip()

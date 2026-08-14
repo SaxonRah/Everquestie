@@ -80,6 +80,16 @@ class MapCatalogTests(unittest.TestCase):
         self.assertTrue(hits)
         self.assertEqual(self.db.get_meta("map_links_dirty"), "1")
 
+    def test_map_evidence_renderer_uses_portable_provenance(self):
+        from eqquest.map_catalog import map_evidence_lines
+
+        self.catalog.index_root(self.root, source_name="Brewall", source_version="2026-08")
+        lines = map_evidence_lines(self.db, self.npc_id)
+        rendered = "\n".join(lines)
+        self.assertIn("Map catalog evidence:", rendered)
+        self.assertIn("Brewall:stonehive_1.txt", rendered)
+        self.assertNotIn(str(self.root), rendered)
+
     def test_same_catalog_source_can_move_without_duplicate_rows(self):
         self.catalog.index_root(self.root, source_name="Brewall")
         moved = Path(self.tmp.name) / "moved_maps"

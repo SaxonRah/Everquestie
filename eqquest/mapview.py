@@ -182,7 +182,6 @@ class MapViewerFrame(ttk.Frame):
         self.after(30, self._poll_raster_results)
         self.after(250, self._poll_state)
         self.after(300, self._poll_catalog_index_results)
-        self.after(700, self.ensure_map_catalog)
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -376,7 +375,6 @@ class MapViewerFrame(ttk.Frame):
         self.db.set_meta(MAP_ROOT_META, root)
         count = len(discover_base_maps(root))
         self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files | catalog refresh is manual")
-        self.after(50, self.ensure_map_catalog)
 
     def ensure_map_catalog(self) -> None:
         root = self.map_root.get().strip()

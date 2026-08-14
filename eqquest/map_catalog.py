@@ -678,7 +678,7 @@ class MapCatalog:
             """,
             (int(entity_id), max(1, min(int(limit), 1000))),
         ).fetchall()
-        return [self._hit(row, (0, i), "linked local map evidence") for i, row in enumerate(rows)]
+        return [self._hit(row, (0, i), "linked map catalog evidence") for i, row in enumerate(rows)]
 
     @staticmethod
     def _hit(row, score: tuple, reason: str) -> MapCatalogHit:
@@ -707,7 +707,8 @@ def map_evidence_lines(db: Database, entity_id: int, *, limit: int = 50) -> list
     try:
         rows = db.conn.execute(
             """
-            SELECT ml.*,ms.path FROM map_labels ml
+            SELECT ml.*,ms.path,ms.source_name,ms.source_version,ms.source_key
+            FROM map_labels ml
             JOIN map_sources ms ON ms.id=ml.source_id
             WHERE ml.linked_entity_id=?
             ORDER BY ml.zone_name,ml.map_stem,ml.layer,ml.source_line

@@ -9,6 +9,7 @@ from .allakhazam import extract_canonical_url, infer_kind_and_external_id
 @dataclass(frozen=True, slots=True)
 class AllakhazamMirrorAudit:
     root: Path
+    all_files: int
     html_candidates: int
     temporary_files: int
     readable_files: int
@@ -25,6 +26,7 @@ class AllakhazamMirrorAudit:
     def as_dict(self) -> dict[str, object]:
         return {
             "root": str(self.root),
+            "all_files": self.all_files,
             "html_candidates": self.html_candidates,
             "temporary_files": self.temporary_files,
             "readable_files": self.readable_files,
@@ -52,7 +54,17 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
     if not root.is_dir():
         raise FileNotFoundError(root)
 
-    paths = sorted(root.rglob("*.htm*"))
+    all_files = 0
+    paths: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        all_files += 1
+        # Match the importer's historical `rglob("*.htm*")` acceptance rule.
+        if ".htm" in path.name.casefold():
+            paths.append(path)
+    paths.sort()
+
     html_candidates = len(paths)
     temporary_files = 0
     readable_files = 0
@@ -83,7 +95,9 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
 
     canonical_files = sum(canonical_counts.values())
     unique_canonical_pages = len(canonical_counts)
-    duplicate_canonical_files = sum(max(0, count - 1) for count in canonical_counts.values())
+    duplicate_canonical_files = sum(
+        max(0, count - 1) for count in canonical_counts.values()
+    )
 
     pages_by_kind_dict: dict[str, int] = {}
     unclassified_canonical = 0
@@ -105,6 +119,7 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
 
     return AllakhazamMirrorAudit(
         root=root,
+        all_files=all_files,
         html_candidates=html_candidates,
         temporary_files=temporary_files,
         readable_files=readable_files,
@@ -134,6 +149,7 @@ def allakhazam_mirror_audit_text(
         f"Mirror root: {audit.root}",
         "Read-only filesystem audit. No DB writes and no network access.",
         "",
+        f"All mirror files: {audit.all_files:,}",
         f"HTML-like files discovered: {audit.html_candidates:,}",
         f"Temporary/in-progress files ignored: {audit.temporary_files:,}",
         f"Readable completed HTML files: {audit.readable_files:,}",

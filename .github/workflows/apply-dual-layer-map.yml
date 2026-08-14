@@ -1,0 +1,65 @@
+name: Apply dual-layer clickable map renderer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-dual-layer-map.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch map viewer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.map_dual_patch/apply.py')
+          s = p.read_text(encoding='utf-8')
+          old = "    end = s.index(f'    def {next_name}', start)\n"
+          new = "    marker = ('    ' + next_name) if next_name.startswith('#') else f'    def {next_name}'\n    end = s.index(marker, start)\n"
+          if old not in s:
+              raise SystemExit('replace_method helper line not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          python .map_dual_patch/apply.py
+          python -m py_compile eqquest/mapview.py eqquest/mapraster.py
+          python -m unittest tests.test_mapraster -v
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('eqquest/mapview.py').read_text(encoding='utf-8')
+          assert 'MAP_ZOOM_LEVELS' in s
+          assert 'cached full-detail wall' in s
+          assert 'map_label_clickable' in s
+          assert 'Map / local database lookup' in s
+          start = s.index('    def _zoom_at(')
+          end = s.index('    def _move_view_to(', start)
+          zoom = s[start:end]
+          assert '_request_raster_render' not in zoom
+          start = s.index('    def _pan_move(')
+          end = s.index('    def _motion(', start)
+          pan = s[start:end]
+          assert '_request_raster_render' not in pan
+          print('dual-layer map static checks OK')
+          PY
+
+      - name: Commit dual-layer map
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf .map_dual_patch
+          rm -f .github/workflows/apply-dual-layer-map.yml
+          git add -A
+          git commit -m "Split map walls from clickable knowledge layer"
+          git push

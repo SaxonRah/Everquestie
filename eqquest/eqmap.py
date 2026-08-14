@@ -202,7 +202,7 @@ def discover_local_base_maps(root: str | Path) -> list[Path]:
 
     The normal player may select either one concrete pack (for example
     ``maps/Good's Maps``) or the parent EverQuest ``maps`` directory containing
-    multiple packs.  Runtime rendering therefore searches the selected directory and
+    multiple packs. Runtime rendering therefore searches the selected directory and
     its immediate children while builder catalog ingestion remains source-scoped via
     :func:`discover_base_maps`.
     """
@@ -211,8 +211,7 @@ def discover_local_base_maps(root: str | Path) -> list[Path]:
         return []
 
     candidates: dict[Path, None] = {}
-    patterns = ("*.txt", "*/*.txt")
-    for pattern in patterns:
+    for pattern in ("*.txt", "*/*.txt"):
         for path in root.glob(pattern):
             if path.is_file() and not is_layer_stem(path.stem):
                 candidates[path] = None
@@ -220,6 +219,43 @@ def discover_local_base_maps(root: str | Path) -> list[Path]:
         candidates,
         key=lambda p: (normalize_map_name(p.stem), str(p.parent).casefold(), p.name.casefold()),
     )
+
+
+def player_map_binding_value(root: str | Path, selected: str | Path) -> str:
+    """Encode a local map choice without persisting a machine-specific absolute path.
+
+    Historic bindings stored only a filename stem and remain ideal when the selected
+    root is one concrete map pack. When the player selected a parent collection root,
+    retain the pack identity using a POSIX root-relative file key such as
+    ``Good's Maps/stonehive.txt``. The value belongs only in writable player state.
+    """
+    root_path = Path(root).expanduser().resolve()
+    selected_path = Path(selected).expanduser().resolve()
+    relative = selected_path.relative_to(root_path)
+    if selected_path.parent == root_path:
+        return selected_path.stem
+    return relative.as_posix()
+
+
+def _resolve_relative_player_binding(root: Path, binding: str) -> Path | None:
+    """Resolve one root-relative player binding while preventing path escape."""
+    token = str(binding or "").strip()
+    if not token or ("/" not in token and "\\" not in token and not token.casefold().endswith(".txt")):
+        return None
+    # Persisted bindings use POSIX separators so they stay deterministic. Accept a
+    # legacy/backslash spelling too when running on Windows or reading hand-edited state.
+    relative = Path(*[part for part in token.replace("\\", "/").split("/") if part])
+    if relative.is_absolute():
+        return None
+    root_resolved = root.expanduser().resolve()
+    candidate = (root_resolved / relative).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        return None
+    if candidate.is_file() and candidate.suffix.casefold() == ".txt" and not is_layer_stem(candidate.stem):
+        return candidate
+    return None
 
 
 def _zone_words(zone_name: str) -> list[str]:
@@ -248,13 +284,19 @@ def resolve_map_for_zone(
     """Best-effort local map resolver. Explicit bindings always win when unique.
 
     EverQuest logs expose long zone names while map files are normally named by
-    client short names.  ``root`` may be either one concrete map pack or the parent
-    ``EverQuest/maps`` collection containing Good/Brewall subdirectories.  When two
-    local packs contain the same candidate stem, this function returns ``None``
-    rather than silently choosing one; the packaged canonical resolver can then
-    expose the ambiguity to the player.
+    client short names. ``root`` may be either one concrete map pack or the parent
+    ``EverQuest/maps`` collection containing Good/Brewall subdirectories. Historic
+    player bindings contain only a stem; newer collection-root bindings may contain a
+    root-relative file key. When two unbound local packs contain the same candidate
+    stem, this function returns ``None`` rather than choosing by filesystem order.
     """
-    by_norm = _local_maps_by_normalized_stem(root)
+    root_path = Path(root)
+    if bound_stem:
+        relative_binding = _resolve_relative_player_binding(root_path, bound_stem)
+        if relative_binding is not None:
+            return relative_binding
+
+    by_norm = _local_maps_by_normalized_stem(root_path)
     if not by_norm:
         return None
 
@@ -264,10 +306,13 @@ def resolve_map_for_zone(
         matches = by_norm.get(normalize_map_name(value), [])
         return matches[0] if len(matches) == 1 else None
 
-    for stem in (bound_stem, hinted_stem):
-        candidate = unique_for_norm(stem)
+    if bound_stem:
+        candidate = unique_for_norm(bound_stem)
         if candidate is not None:
             return candidate
+    candidate = unique_for_norm(hinted_stem)
+    if candidate is not None:
+        return candidate
 
     full = normalize_map_name(zone_name)
     candidate = unique_for_norm(full)

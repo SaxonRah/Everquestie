@@ -13,7 +13,9 @@ from eqquest.eqmap import (
 )
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.local_map_readiness import resolve_local_map_readiness
+from eqquest.local_map_variant import bind_local_map_variant
 from eqquest.map_catalog import MapCatalog
+from eqquest.mapview import _binding_key
 from eqquest.runtime import RuntimeDatabase
 from eqquest.zone_catalog import ZoneMapCatalog
 
@@ -108,12 +110,12 @@ class PackagedMapCollectionRootTests(unittest.TestCase):
         finally:
             runtime.close()
 
-    def test_duplicate_same_stem_across_local_packs_is_explicitly_ambiguous(self):
+    def test_duplicate_same_stem_across_local_packs_can_be_bound_portably(self):
         collection = self.root / "EverQuest" / "maps"
         good = self._write_map(collection / "Good's Maps", "stonehive")
         brewall = self._write_map(collection / "Brewall's Maps", "stonehive")
 
-        # Legacy resolution refuses to choose one pack by filesystem ordering.
+        # Without a player choice, never select one pack by filesystem ordering.
         self.assertIsNone(resolve_map_for_zone("Stone Hive", collection))
 
         runtime = self._runtime_with_stonehive_catalog()
@@ -123,8 +125,50 @@ class PackagedMapCollectionRootTests(unittest.TestCase):
             self.assertEqual(readiness.status, "map_ambiguous")
             self.assertEqual(set(readiness.candidates), {good, brewall})
             self.assertIn("pack collection", readiness.reason)
+
+            key = _binding_key("Stone Hive")
+            result = bind_local_map_variant(
+                runtime,
+                "Stone Hive",
+                collection,
+                good,
+                binding_key=key,
+            )
+            self.assertTrue(result.ok)
+            self.assertEqual(result.selected_path, good)
+            self.assertEqual(result.reason, "user map binding")
+            self.assertEqual(runtime.get_meta(key), "Good's Maps/stonehive.txt")
+            row = runtime.conn.execute(
+                "SELECT value FROM user_meta WHERE key=?",
+                (key,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["value"], "Good's Maps/stonehive.txt")
+
+            rebound = resolve_local_map_readiness(
+                runtime,
+                "Stone Hive",
+                collection,
+                bound_stem=runtime.get_meta(key),
+            )
+            self.assertTrue(rebound.ready)
+            self.assertEqual(rebound.path, good)
+            self.assertEqual(rebound.reason, "user map binding")
         finally:
             runtime.close()
+
+    def test_root_relative_binding_cannot_escape_selected_collection(self):
+        collection = self.root / "EverQuest" / "maps"
+        collection.mkdir(parents=True)
+        outside = self._write_map(self.root / "outside", "stonehive")
+        self.assertIsNone(
+            resolve_map_for_zone(
+                "Stone Hive",
+                collection,
+                bound_stem="../../outside/stonehive.txt",
+            )
+        )
+        self.assertTrue(outside.is_file())
 
 
 if __name__ == "__main__":

@@ -23,6 +23,14 @@ class _Canvas:
         return self.height
 
 
+class _Notebook:
+    def __init__(self, selected):
+        self.selected = selected
+
+    def select(self):
+        return self.selected
+
+
 class MapInitialFitTests(unittest.TestCase):
     def test_hidden_or_placeholder_canvas_is_not_ready_for_fit(self):
         self.assertFalse(_canvas_ready_for_initial_fit(_Canvas(mapped=False, width=900, height=700)))
@@ -69,6 +77,42 @@ class MapInitialFitTests(unittest.TestCase):
             viewer_class.fit(viewer)
 
         parent_fit.assert_called_once_with(viewer)
+
+    def test_map_tab_selection_schedules_pending_fit_even_without_configure_event(self):
+        install_runtime_policy()
+        install_map_loading_policy()
+        from eqquest import mapview as mapview_module
+
+        viewer_class = mapview_module.MapViewerFrame
+        viewer = object.__new__(viewer_class)
+        viewer.zone_map = object()
+        viewer._fit_pending = True
+        viewer.fit = mock.Mock()
+        viewer.after_idle = mock.Mock(side_effect=lambda callback: callback())
+
+        viewer_class.present_map_tab(viewer)
+
+        viewer.after_idle.assert_called_once()
+        viewer.fit.assert_called_once_with()
+
+    def test_notebook_handler_only_presents_map_page(self):
+        install_runtime_policy()
+        install_map_loading_policy()
+        from eqquest import app as app_module
+
+        app_class = app_module.EverQuestieApp
+        app = object.__new__(app_class)
+        app.map_tab = "map-page"
+        app.map_view = mock.Mock()
+        app.notebook = _Notebook("map-page")
+
+        app_class._on_map_notebook_tab_changed(app)
+        app.map_view.present_map_tab.assert_called_once_with()
+
+        app.map_view.reset_mock()
+        app.notebook.selected = "live-page"
+        app_class._on_map_notebook_tab_changed(app)
+        app.map_view.present_map_tab.assert_not_called()
 
 
 if __name__ == "__main__":

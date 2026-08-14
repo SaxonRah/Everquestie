@@ -160,6 +160,7 @@ def install_runtime_policy() -> None:
                 self.notebook,
                 db=self.db,
                 get_zone=lambda: self.state_model.current_zone,
+                get_location=lambda: self.state_model.last_location,
             )
             # Live, Map, Travel, Knowledge, Mechanics keeps navigation-oriented
             # information close to the player's current location.

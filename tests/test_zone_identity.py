@@ -66,7 +66,9 @@ class ZoneIdentityTests(unittest.TestCase):
             "PoK": "alias",
             "poknowledge": "short_name",
             "202": "client_id",
-            "planeofknowledge": "map_stem",
+            # This is also a confirmed map stem, but canonical article-stripped name
+            # identity is intentionally the stronger explanation for the same token.
+            "planeofknowledge": "canonical_name",
         }
         for token, expected_kind in cases.items():
             with self.subTest(token=token):

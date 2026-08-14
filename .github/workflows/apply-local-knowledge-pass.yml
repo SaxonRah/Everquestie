@@ -20,275 +20,229 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Patch Knowledge renderer
+      - name: Patch source files
         shell: python
         run: |
           from pathlib import Path
+
+          def block(lines):
+              return "\n".join(lines) + "\n"
+
+          # Knowledge: structured local-client records for non-spell entity types.
           p = Path('eqquest/knowledge.py')
           s = p.read_text(encoding='utf-8')
-          old = 'import json\nfrom .db import Database\n'
-          new = 'import json\nfrom .db import Database\nfrom .detail_renderers import render_structured_local_detail\n'
-          if old not in s:
-              raise SystemExit('knowledge import anchor not found')
-          s = s.replace(old, new, 1)
-          old = '''    if kind == "spell" and isinstance(data, dict):
-              return _render_spell_detail(data)
+          anchor = 'from .db import Database\n'
+          if 'from .detail_renderers import render_structured_local_detail\n' not in s:
+              if anchor not in s:
+                  raise SystemExit('knowledge import anchor missing')
+              s = s.replace(anchor, anchor + 'from .detail_renderers import render_structured_local_detail\n', 1)
+          start = s.index('    if kind == "spell" and isinstance(data, dict):')
+          end = s.index('\n\n\ndef entity_detail_text', start)
+          s = s[:start] + block([
+              '    if kind == "spell" and isinstance(data, dict):',
+              '        return _render_spell_detail(data)',
+              '',
+              '    text = str(row["detail_text"] or "").strip()',
+              '    if isinstance(data, dict):',
+              '        structured = render_structured_local_detail(kind, data)',
+              '        if structured:',
+              '            if text:',
+              '                title = "Installed EverQuest client source detail"',
+              '                if fmt == "markdown":',
+              '                    title += " (via everquest1-mcp)"',
+              '                structured.extend(["", title + ":", text])',
+              '            return structured',
+              '',
+              '    if not text:',
+              '        return []',
+              '    title = "Installed EverQuest client detail"',
+              '    if fmt == "markdown":',
+              '        title += " (via everquest1-mcp)"',
+              '    return ["", title + ":", text]',
+          ]).rstrip('\n') + s[end:]
+          p.write_text(s, encoding='utf-8')
 
-          text = str(row["detail_text"] or "").strip()
-          if not text:
-              return []
-          title = "Installed EverQuest client detail"
-          if fmt == "markdown":
-              title += " (via everquest1-mcp)"
-          return ["", title + ":", text]
-          '''.replace('\n          ', '\n')
-          new = '''    if kind == "spell" and isinstance(data, dict):
-              return _render_spell_detail(data)
-
-          text = str(row["detail_text"] or "").strip()
-          if isinstance(data, dict):
-              structured = render_structured_local_detail(kind, data)
-              if structured:
-                  if text:
-                      title = "Installed EverQuest client source detail"
-                      if fmt == "markdown":
-                          title += " (via everquest1-mcp)"
-                      structured.extend(["", title + ":", text])
-                  return structured
-
-          if not text:
-              return []
-          title = "Installed EverQuest client detail"
-          if fmt == "markdown":
-              title += " (via everquest1-mcp)"
-          return ["", title + ":", text]
-          '''.replace('\n          ', '\n')
-          if old not in s:
-              raise SystemExit('knowledge detail block not found')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
-
-      - name: Patch map identity resolver
-        shell: python
-        run: |
-          from pathlib import Path
-          import re
+          # Map: canonicalize decorated labels, rank current-zone matches, and reuse
+          # the full Knowledge detail renderer in the side panel.
           p = Path('eqquest/mapview.py')
           s = p.read_text(encoding='utf-8')
           anchor = 'from .db import Database\n'
-          replacement = (
-              'from .db import Database\n'
-              'from .knowledge import entity_detail_text, relation_label\n'
-              'from .local_search import map_label_terms, resolve_local_hits\n'
-          )
-          if anchor not in s:
-              raise SystemExit('map import anchor missing')
-          s = s.replace(anchor, replacement, 1)
+          imports = 'from .knowledge import entity_detail_text, relation_label\nfrom .local_search import map_label_terms, resolve_local_hits\n'
+          if imports not in s:
+              if anchor not in s:
+                  raise SystemExit('map import anchor missing')
+              s = s.replace(anchor, anchor + imports, 1)
 
-          pattern = r'    @staticmethod\n    def _map_lookup_terms\(term: str\) -> list\[str\]:.*?\n    def _lookup_name\(self, term: str, preferred_entity_id: int \| None = None\) -> None:'
-          repl = '''    @staticmethod
-          def _map_lookup_terms(term: str) -> list[str]:
-              return map_label_terms(term)
+          start = s.index('    @staticmethod\n    def _map_lookup_terms')
+          end = s.index('    def _lookup_name(', start)
+          s = s[:start] + block([
+              '    @staticmethod',
+              '    def _map_lookup_terms(term: str) -> list[str]:',
+              '        return map_label_terms(term)',
+              '',
+              '    def _lookup_candidates(self, term: str, preferred_entity_id: int | None = None):',
+              '        return resolve_local_hits(',
+              '            self.db,',
+              '            term,',
+              '            current_zone=self.get_zone(),',
+              '            preferred_entity_id=preferred_entity_id,',
+              '            limit=40,',
+              '        )',
+              '',
+          ]) + s[end:]
 
-          def _lookup_candidates(self, term: str, preferred_entity_id: int | None = None):
-              return resolve_local_hits(
-                  self.db,
-                  term,
-                  current_zone=self.get_zone(),
-                  preferred_entity_id=preferred_entity_id,
-                  limit=40,
-              )
+          start = s.index('    def _lookup_name(')
+          end = s.index('    def _show_entity_in_lookup(', start)
+          s = s[:start] + block([
+              '    def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:',
+              '        term = " ".join((term or "").replace("_", " ").split()).strip()',
+              '        if not term:',
+              '            return',
+              '        self.lookup_query.set(term)',
+              '        hits = self._lookup_candidates(term, preferred_entity_id)',
+              '        self.lookup_tree.delete(*self.lookup_tree.get_children())',
+              '        self._lookup_entity_by_item.clear()',
+              '        self._lookup_selected_entity = None',
+              '        if not hits:',
+              '            self.lookup_status.set("No local DB match")',
+              '            self._set_lookup_detail(f"No local EverQuestie knowledge matches: {term}")',
+              '            return',
+              '        for hit in hits:',
+              '            row = hit.row',
+              '            item = self.lookup_tree.insert("", "end", text=row["name"], values=(row["kind"], hit.reason))',
+              '            self._lookup_entity_by_item[item] = int(row["id"])',
+              '        first = self.lookup_tree.get_children()[0]',
+              '        self.lookup_tree.selection_set(first)',
+              '        self.lookup_tree.focus(first)',
+              '        self.lookup_tree.see(first)',
+              '        self._show_entity_info(self._lookup_entity_by_item[first], tree_item=first)',
+              '        self.lookup_status.set(f"{len(hits)} ranked local match" + ("es" if len(hits) != 1 else ""))',
+              '',
+          ]) + s[end:]
 
-          def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:'''.replace('\n          ', '\n')
-          s2, count = re.subn(pattern, repl, s, flags=re.S)
-          if count != 1:
-              raise SystemExit(f'map lookup replacement count={count}')
-          s = s2
+          start = s.index('    def _show_entity_info(')
+          end = s.index('    def _set_lookup_detail(', start)
+          s = s[:start] + block([
+              '    def _show_entity_info(self, entity_id: int, *, tree_item: str | None = None) -> None:',
+              '        row = self.db.entity(entity_id)',
+              '        if row is None:',
+              '            return',
+              '        self._lookup_selected_entity = entity_id',
+              '        relationships = list(self.db.relationships_for_entity(entity_id))',
+              '        self._set_lookup_detail(entity_detail_text(self.db, entity_id, include_source_text=False))',
+              '',
+              '        if tree_item is not None and not self.lookup_tree.get_children(tree_item):',
+              '            for rel in relationships[:250]:',
+              '                if rel["direction"] == "out":',
+              '                    other_id = int(rel["target_entity_id"])',
+              '                    other_kind = str(rel["target_kind"])',
+              '                    other_name = str(rel["target_name"])',
+              '                    relation = relation_label(str(rel["relation"])) + " →"',
+              '                else:',
+              '                    other_id = int(rel["source_entity_id"])',
+              '                    other_kind = str(rel["source_kind"])',
+              '                    other_name = str(rel["source_name"])',
+              '                    relation = "← " + relation_label(str(rel["relation"]))',
+              '                child = self.lookup_tree.insert(tree_item, "end", text=other_name, values=(other_kind, relation))',
+              '                self._lookup_entity_by_item[child] = other_id',
+              '            if relationships:',
+              '                self.lookup_tree.item(tree_item, open=True)',
+              '',
+          ]) + s[end:]
+          p.write_text(s, encoding='utf-8')
 
-          old = '''        rows = self._lookup_candidates(term, preferred_entity_id)
-              self.lookup_tree.delete(*self.lookup_tree.get_children())
-              self._lookup_entity_by_item.clear()
-              self._lookup_selected_entity = None
-              if not rows:
-                  self.lookup_status.set("No local DB match")
-                  self._set_lookup_detail(f"No local EverQuestie knowledge matches: {term}")
-                  return
-              for row in rows:
-                  item = self.lookup_tree.insert("", "end", text=row["name"], values=(row["kind"], "match"))
-                  self._lookup_entity_by_item[item] = int(row["id"])
-              first = self.lookup_tree.get_children()[0]
-              self.lookup_tree.selection_set(first)
-              self.lookup_tree.focus(first)
-              self.lookup_tree.see(first)
-              self._show_entity_info(self._lookup_entity_by_item[first], tree_item=first)
-              self.lookup_status.set(f"{len(rows)} local match" + ("es" if len(rows) != 1 else ""))
-          '''.replace('\n              ', '\n')
-          new = '''        hits = self._lookup_candidates(term, preferred_entity_id)
-              self.lookup_tree.delete(*self.lookup_tree.get_children())
-              self._lookup_entity_by_item.clear()
-              self._lookup_selected_entity = None
-              if not hits:
-                  self.lookup_status.set("No local DB match")
-                  self._set_lookup_detail(f"No local EverQuestie knowledge matches: {term}")
-                  return
-              for hit in hits:
-                  row = hit.row
-                  item = self.lookup_tree.insert("", "end", text=row["name"], values=(row["kind"], hit.reason))
-                  self._lookup_entity_by_item[item] = int(row["id"])
-              first = self.lookup_tree.get_children()[0]
-              self.lookup_tree.selection_set(first)
-              self.lookup_tree.focus(first)
-              self.lookup_tree.see(first)
-              self._show_entity_info(self._lookup_entity_by_item[first], tree_item=first)
-              self.lookup_status.set(f"{len(hits)} ranked local match" + ("es" if len(hits) != 1 else ""))
-          '''.replace('\n              ', '\n')
-          if old not in s:
-              raise SystemExit('map lookup body anchor missing')
-          s = s.replace(old, new, 1)
-
-          pattern = r'    def _show_entity_info\(self, entity_id: int, \*, tree_item: str \| None = None\) -> None:.*?\n    def _set_lookup_detail\(self, text: str\) -> None:'
-          repl = '''    def _show_entity_info(self, entity_id: int, *, tree_item: str | None = None) -> None:
-              row = self.db.entity(entity_id)
-              if row is None:
-                  return
-              self._lookup_selected_entity = entity_id
-              relationships = list(self.db.relationships_for_entity(entity_id))
-              self._set_lookup_detail(entity_detail_text(self.db, entity_id, include_source_text=False))
-
-              if tree_item is not None and not self.lookup_tree.get_children(tree_item):
-                  for rel in relationships[:250]:
-                      if rel["direction"] == "out":
-                          other_id = int(rel["target_entity_id"])
-                          other_kind = str(rel["target_kind"])
-                          other_name = str(rel["target_name"])
-                          relation = relation_label(str(rel["relation"])) + " →"
-                      else:
-                          other_id = int(rel["source_entity_id"])
-                          other_kind = str(rel["source_kind"])
-                          other_name = str(rel["source_name"])
-                          relation = "← " + relation_label(str(rel["relation"]))
-                      child = self.lookup_tree.insert(tree_item, "end", text=other_name, values=(other_kind, relation))
-                      self._lookup_entity_by_item[child] = other_id
-                  if relationships:
-                      self.lookup_tree.item(tree_item, open=True)
-
-          def _set_lookup_detail(self, text: str) -> None:'''.replace('\n          ', '\n')
-          s2, count = re.subn(pattern, repl, s, flags=re.S)
-          if count != 1:
-              raise SystemExit(f'map detail replacement count={count}')
-          p.write_text(s2, encoding='utf-8')
-
-      - name: Patch app Knowledge Search and audit UI
-        shell: python
-        run: |
-          from pathlib import Path
+          # App: ranked query syntax in Knowledge/Search plus a read-only identity audit.
           p = Path('eqquest/app.py')
           s = p.read_text(encoding='utf-8')
-          old = 'from .knowledge import entity_detail_text, find_text, where_text\n'
-          new = (
-              'from .knowledge import entity_detail_text, find_text, where_text\n'
-              'from .local_search import count_local_entities_by_kind, query_summary, search_local_entities, search_local_hits\n'
-              'from .db_audit import identity_audit_text\n'
-          )
-          if old not in s:
-              raise SystemExit('app import anchor missing')
-          s = s.replace(old, new, 1)
+          anchor = 'from .knowledge import entity_detail_text, find_text, where_text\n'
+          imports = 'from .local_search import count_local_entities_by_kind, query_summary, search_local_entities, search_local_hits\nfrom .db_audit import identity_audit_text\n'
+          if imports not in s:
+              if anchor not in s:
+                  raise SystemExit('app import anchor missing')
+              s = s.replace(anchor, anchor + imports, 1)
 
-          old = '''        rows = self.db.search_entities(
-              term,
-              kind,
-              limit=KNOWLEDGE_CHILD_LIMIT,
-          )
-          '''.replace('\n              ', '\n')
-          new = '''        rows = search_local_entities(
-              self.db,
-              term,
-              default_kind=kind,
-              current_zone=self.state_model.current_zone,
-              limit=KNOWLEDGE_CHILD_LIMIT,
-          )
-          '''.replace('\n              ', '\n')
-          if old not in s:
-              raise SystemExit('knowledge population anchor missing')
-          s = s.replace(old, new, 1)
+          method_start = s.index('    def _populate_knowledge_kind(')
+          call_start = s.index('        rows = self.db.search_entities(', method_start)
+          call_end = s.index('        for row in rows:', call_start)
+          s = s[:call_start] + block([
+              '        rows = search_local_entities(',
+              '            self.db,',
+              '            term,',
+              '            default_kind=kind,',
+              '            current_zone=self.state_model.current_zone,',
+              '            limit=KNOWLEDGE_CHILD_LIMIT,',
+              '        )',
+          ]) + s[call_end:]
 
-          old = '''        counts = self.db.entity_kind_counts(term, kind)
-          '''.replace('\n          ', '\n')
-          new = '''        counts = count_local_entities_by_kind(
-              self.db,
-              term,
-              default_kind=kind,
-              current_zone=self.state_model.current_zone,
-          )
-          '''.replace('\n              ', '\n')
+          old = '        counts = self.db.entity_kind_counts(term, kind)\n'
           if old not in s:
               raise SystemExit('knowledge count anchor missing')
-          s = s.replace(old, new, 1)
-
-          old = '''                "Knowledge is grouped by topic. Expand a [+] topic to browse it; "
-                  "large topics are loaded lazily so spell/AA inventories stay responsive."
-          '''.replace('\n                  ', '\n')
-          new = '''                "Knowledge is grouped by topic. Expand a [+] topic to browse it; "
-                  "large topics are loaded lazily. Search supports type:, zone:, source:, exact: and quoted names."
-          '''.replace('\n                  ', '\n')
-          if old not in s:
-              raise SystemExit('knowledge help anchor missing')
-          s = s.replace(old, new, 1)
+          s = s.replace(old, block([
+              '        counts = count_local_entities_by_kind(',
+              '            self.db,',
+              '            term,',
+              '            default_kind=kind,',
+              '            current_zone=self.state_model.current_zone,',
+              '        )',
+          ]), 1)
+          s = s.replace(
+              'large topics are loaded lazily so spell/AA inventories stay responsive.',
+              'large topics are loaded lazily. Search supports type:, zone:, source:, exact: and quoted names.',
+              1,
+          )
 
           start = s.index('    def _search_local_from_search_tab(self) -> None:')
           end = s.index('    def _search_allakhazam_from_search_tab(self) -> None:', start)
-          new_method = '''    def _search_local_from_search_tab(self) -> None:
-              query = self.online_query_var.get().strip()
-              if not query:
-                  return
-              hits = search_local_hits(
-                  self.db,
-                  query,
-                  current_zone=self.state_model.current_zone,
-                  limit=250,
-              )
-              if not hits:
-                  self._set_online_result(f"LOCAL DB | no match: {query}")
-                  self.online_status_var.set("Local-only search complete. No network request was made.")
-                  return
-              lines = [f"LOCAL DB | {query} | {len(hits)} ranked match(es)", f"Filters: {query_summary(query)}", ""]
-              for hit in hits[:100]:
-                  row = hit.row
-                  zone = f" | {row['zone']}" if row["zone"] else ""
-                  lines.append(f"[{row['kind']}] {row['name']}{zone} | {hit.reason}")
-              if len(hits) > 100:
-                  lines.append(f"\\n...and {len(hits)-100} more")
-              self._set_online_result("\\n".join(lines))
-              self.online_status_var.set("Local-only ranked search complete. No network request was made.")
+          s = s[:start] + block([
+              '    def _search_local_from_search_tab(self) -> None:',
+              '        query = self.online_query_var.get().strip()',
+              '        if not query:',
+              '            return',
+              '        hits = search_local_hits(',
+              '            self.db,',
+              '            query,',
+              '            current_zone=self.state_model.current_zone,',
+              '            limit=250,',
+              '        )',
+              '        if not hits:',
+              '            self._set_online_result(f"LOCAL DB | no match: {query}")',
+              '            self.online_status_var.set("Local-only search complete. No network request was made.")',
+              '            return',
+              '        lines = [f"LOCAL DB | {query} | {len(hits)} ranked match(es)", f"Filters: {query_summary(query)}", ""]',
+              '        for hit in hits[:100]:',
+              '            row = hit.row',
+              '            zone = f" | {row[\'zone\']}" if row["zone"] else ""',
+              '            lines.append(f"[{row[\'kind\']}] {row[\'name\']}{zone} | {hit.reason}")',
+              '        if len(hits) > 100:',
+              '            lines.append(f"\\n...and {len(hits)-100} more")',
+              '        self._set_online_result("\\n".join(lines))',
+              '        self.online_status_var.set("Local-only ranked search complete. No network request was made.")',
+              '',
+          ]) + s[end:]
 
-          '''.replace('\n              ', '\n')
-          s = s[:start] + new_method + s[end:]
-
-          old = '''        ttk.Button(controls, text="Backup database…", command=self._backup_database).pack(
-              side="left", padx=(6, 0)
-          )
-          '''.replace('\n              ', '\n')
-          new = '''        ttk.Button(controls, text="Backup database…", command=self._backup_database).pack(
-              side="left", padx=(6, 0)
-          )
-          ttk.Button(controls, text="Identity audit", command=self._run_identity_audit).pack(
-              side="left", padx=(6, 0)
-          )
-          '''.replace('\n              ', '\n')
-          if old not in s:
+          button_anchor = block([
+              '        ttk.Button(controls, text="Backup database…", command=self._backup_database).pack(',
+              '            side="left", padx=(6, 0)',
+              '        )',
+          ])
+          if button_anchor not in s:
               raise SystemExit('database button anchor missing')
-          s = s.replace(old, new, 1)
-
-          anchor = '    def _database_diagnostic_text(self) -> str:\n'
-          method = '''    def _run_identity_audit(self) -> None:
-              self._set_database_text(identity_audit_text(self.db))
-
-          '''.replace('\n              ', '\n')
-          if anchor not in s:
+          s = s.replace(button_anchor, button_anchor + block([
+              '        ttk.Button(controls, text="Identity audit", command=self._run_identity_audit).pack(',
+              '            side="left", padx=(6, 0)',
+              '        )',
+          ]), 1)
+          method_anchor = '    def _database_diagnostic_text(self) -> str:\n'
+          if method_anchor not in s:
               raise SystemExit('database method anchor missing')
-          s = s.replace(anchor, method + anchor, 1)
+          s = s.replace(method_anchor, block([
+              '    def _run_identity_audit(self) -> None:',
+              '        self._set_database_text(identity_audit_text(self.db))',
+              '',
+          ]) + method_anchor, 1)
           p.write_text(s, encoding='utf-8')
 
-      - name: Add focused tests for structured details
+      - name: Add focused detail tests
         shell: bash
         run: |
           cat > tests/test_detail_renderers.py <<'PY'
@@ -297,8 +251,7 @@ jobs:
 
           class DetailRendererTests(unittest.TestCase):
               def test_aa_fields_are_structured(self):
-                  lines = render_structured_local_detail('aa', {'id': 12, 'maxRank': 5, 'cost': 3, 'classes': ['WAR', 'PAL']})
-                  text = '\n'.join(lines)
+                  text = '\n'.join(render_structured_local_detail('aa', {'id': 12, 'maxRank': 5, 'cost': 3, 'classes': ['WAR', 'PAL']}))
                   self.assertIn('ID: 12', text)
                   self.assertIn('Max rank: 5', text)
                   self.assertIn('WAR', text)

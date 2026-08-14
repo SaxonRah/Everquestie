@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 from fractions import Fraction
 import threading
 import time
@@ -771,9 +772,34 @@ class MapViewerFrame(ttk.Frame):
             self._schedule_save_view()
             return
 
+    @staticmethod
+    def _map_lookup_terms(term: str) -> list[str]:
+        """Return useful canonical guesses for decorated community-map labels."""
+        raw = " ".join((term or "").replace("_", " ").split()).strip()
+        if not raw:
+            return []
+        variants: list[str] = []
+
+        def add(value: str) -> None:
+            value = " ".join(value.split()).strip(" -*?:;,.[]{}")
+            if value and value.casefold() not in {v.casefold() for v in variants}:
+                variants.append(value)
+
+        add(raw)
+        # Zone-line labels are commonly "To <zone>", "Exit to <zone>", etc.
+        add(re.sub(r"^(?:zone\s+to|exit\s+to|entrance\s+to|to)\s+", "", raw, flags=re.I))
+        # Good/Brewall annotations often append role/quest notes such as (Q),
+        # (honeytender), (merchant), or author commentary. Try the clean name too.
+        no_paren = re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()
+        add(no_paren)
+        add(re.sub(r"^(?:zone\s+to|exit\s+to|entrance\s+to|to)\s+", "", no_paren, flags=re.I))
+        # Asterisks/question marks are also frequently map annotations.
+        add(re.sub(r"[?*]+$", "", no_paren).strip())
+        return variants
+
     def _lookup_candidates(self, term: str, preferred_entity_id: int | None = None):
-        term = " ".join((term or "").replace("_", " ").split()).strip()
-        if not term:
+        terms = self._map_lookup_terms(term)
+        if not terms:
             return []
         rows = []
         seen: set[int] = set()
@@ -782,15 +808,23 @@ class MapViewerFrame(ttk.Frame):
             if row is not None:
                 rows.append(row)
                 seen.add(int(row["id"]))
-        exact, _status = self.db.resolve_entity(term)
-        if exact is not None and int(exact["id"]) not in seen:
-            rows.append(exact)
-            seen.add(int(exact["id"]))
-        for row in self.db.search_entities_fts(term, limit=40):
-            eid = int(row["id"])
-            if eid not in seen:
-                rows.append(row)
-                seen.add(eid)
+
+        # Prefer exact/alias matches from any cleaned variant before fuzzy FTS.
+        for candidate in terms:
+            exact, _status = self.db.resolve_entity(candidate)
+            if exact is not None and int(exact["id"]) not in seen:
+                rows.append(exact)
+                seen.add(int(exact["id"]))
+        for candidate in terms:
+            for row in self.db.search_entities_fts(candidate, limit=40):
+                eid = int(row["id"])
+                if eid not in seen:
+                    rows.append(row)
+                    seen.add(eid)
+                if len(rows) >= 40:
+                    break
+            if len(rows) >= 40:
+                break
         return rows[:40]
 
     def _lookup_name(self, term: str, preferred_entity_id: int | None = None) -> None:

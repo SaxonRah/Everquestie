@@ -6,14 +6,18 @@ param(
     [string]$PythonExe = "",
     [switch]$OneFile,
     [switch]$SkipTests,
+    [switch]$SkipRouteAudit,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $KnowledgeName = "everquestie-knowledge.sqlite3"
+$StageTool = Join-Path $PSScriptRoot "stage_release_working_db.py"
 $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
+$RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
+$ApprovedTravelDir = Join-Path $ProjectRoot "builder-data\travel-supplements"
 
 function Resolve-FromProject([string]$Value, [string]$DefaultValue) {
     $Chosen = $Value
@@ -53,16 +57,17 @@ if ([string]::IsNullOrWhiteSpace($VersionSafe)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($WorkingDb)) {
-    $WorkingDb = Join-Path (Join-Path $HOME ".eqquest") "eqquest.sqlite3"
+    $WorkingDb = Join-Path (Join-Path $ProjectRoot "build") "working.sqlite3"
 }
 $WorkingDb = [System.IO.Path]::GetFullPath($WorkingDb)
 if (-not (Test-Path $WorkingDb -PathType Leaf)) {
-    throw "Builder database was not found at '$WorkingDb'. Run/catalog EverQuestie first or pass -WorkingDb."
+    throw "Builder database was not found at '$WorkingDb'. Build/import a working knowledge DB first or pass -WorkingDb."
 }
 
 $ResolvedOutputRoot = Resolve-FromProject $OutputRoot "release"
 $ReleaseDir = Join-Path $ResolvedOutputRoot $VersionSafe
 $StagingRoot = Join-Path (Join-Path $ProjectRoot "build\release") $VersionSafe
+$StagedWorkingDb = Join-Path $StagingRoot "working-with-approved-travel.sqlite3"
 $Snapshot = Join-Path $StagingRoot $KnowledgeName
 
 if (Test-Path $ReleaseDir) {
@@ -78,11 +83,13 @@ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
 $PythonCommand = Resolve-Python $PythonExe
-if (-not (Test-Path $FinalizeTool -PathType Leaf)) {
-    throw "Knowledge finalizer was not found: $FinalizeTool"
+foreach ($RequiredTool in @($StageTool, $FinalizeTool, $RouteAuditTool, $WindowsBuilder)) {
+    if (-not (Test-Path $RequiredTool -PathType Leaf)) {
+        throw "Required release helper was not found: $RequiredTool"
+    }
 }
-if (-not (Test-Path $WindowsBuilder -PathType Leaf)) {
-    throw "Windows build helper was not found: $WindowsBuilder"
+if (-not (Test-Path $ApprovedTravelDir -PathType Container)) {
+    throw "Approved travel supplement directory was not found: $ApprovedTravelDir"
 }
 
 Write-Host "=== EverQuestie release $Version ==="
@@ -91,8 +98,21 @@ Write-Host "Release output: $ReleaseDir"
 Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
-Write-Host "[1/4] Finalizing immutable knowledge snapshot..."
-& $PythonCommand $FinalizeTool --input $WorkingDb --output $Snapshot --version $Version --force
+Write-Host "[1/6] Staging builder DB and compiling approved travel supplements..."
+& $PythonCommand $StageTool `
+    --input $WorkingDb `
+    --output $StagedWorkingDb `
+    --supplement-dir $ApprovedTravelDir `
+    --force
+if ($LASTEXITCODE -ne 0) {
+    throw "Release staging failed with exit code $LASTEXITCODE."
+}
+if (-not (Test-Path $StagedWorkingDb -PathType Leaf)) {
+    throw "Release staging completed without producing '$StagedWorkingDb'."
+}
+
+Write-Host "[2/6] Finalizing immutable knowledge snapshot..."
+& $PythonCommand $FinalizeTool --input $StagedWorkingDb --output $Snapshot --version $Version --force
 if ($LASTEXITCODE -ne 0) {
     throw "Knowledge finalization failed with exit code $LASTEXITCODE."
 }
@@ -100,11 +120,22 @@ if (-not (Test-Path $Snapshot -PathType Leaf)) {
     throw "Knowledge finalizer completed without producing '$Snapshot'."
 }
 
-if ($SkipTests) {
-    Write-Host "[2/4] Regression suite skipped by -SkipTests."
+if ($SkipRouteAudit) {
+    Write-Host "[3/6] Route acceptance gate skipped by -SkipRouteAudit."
 }
 else {
-    Write-Host "[2/4] Running complete regression suite..."
+    Write-Host "[3/6] Verifying canonical route acceptance..."
+    & $PythonCommand $RouteAuditTool $Snapshot --full-paths --fail-unreachable
+    if ($LASTEXITCODE -ne 0) {
+        throw "Route acceptance failed with exit code $LASTEXITCODE. Release packaging aborted."
+    }
+}
+
+if ($SkipTests) {
+    Write-Host "[4/6] Regression suite skipped by -SkipTests."
+}
+else {
+    Write-Host "[4/6] Running complete regression suite..."
     Push-Location $ProjectRoot
     try {
         & $PythonCommand -m unittest discover -s tests -v
@@ -117,7 +148,7 @@ else {
     }
 }
 
-Write-Host "[3/4] Building Windows application and attaching knowledge snapshot..."
+Write-Host "[5/6] Building Windows application and attaching knowledge snapshot..."
 $BuilderParams = @{
     KnowledgeDb = $Snapshot
     DistPath = $ReleaseDir
@@ -154,7 +185,7 @@ if (-not $OneFile) {
     }
 }
 
-Write-Host "[4/4] Writing manifest and distributable ZIP..."
+Write-Host "[6/6] Writing manifest and distributable ZIP..."
 $SnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
 $ExecutableHash = (Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
 $SnapshotBytes = (Get-Item $Snapshot).Length
@@ -182,6 +213,8 @@ $Manifest = [ordered]@{
         bytes = $SnapshotBytes
         embedded = [bool]$OneFile
         immutable_runtime = $true
+        approved_travel_supplements_compiled = $true
+        route_acceptance_verified = [bool](-not $SkipRouteAudit)
     }
     user_state_included = $false
     builder_database_included = $false
@@ -217,4 +250,5 @@ else {
 }
 Write-Host "  manifest:   $ManifestPath"
 Write-Host "  archive:    $Archive"
+Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved supplements"
 Write-Host "  user DB:    NOT included; created/preserved separately on each player machine"

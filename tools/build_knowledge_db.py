@@ -192,6 +192,40 @@ def write_provider_travel_frontier_report(path: str | Path, summary) -> Path:
     return _write_json_report(path, summary.as_dict())
 
 
+def validate_audit_options(args: argparse.Namespace) -> None:
+    """Reject audit combinations that could disable or overwrite build artifacts."""
+    if args.skip_route_audit and args.route_report:
+        raise ValueError("--route-report cannot be used with --skip-route-audit")
+    if args.skip_route_audit and args.provider_travel_frontier_report:
+        raise ValueError("--provider-travel-frontier-report cannot be used with --skip-route-audit")
+    if args.skip_route_audit and args.require_route_acceptance:
+        raise ValueError("--require-route-acceptance cannot be used with --skip-route-audit")
+
+    working = Path(args.working_db).expanduser().resolve()
+    snapshot = Path(args.snapshot_db).expanduser().resolve()
+    reports: list[tuple[str, Path]] = []
+    if args.route_report:
+        reports.append(("--route-report", Path(args.route_report).expanduser().resolve()))
+    if args.provider_travel_frontier_report:
+        reports.append(
+            (
+                "--provider-travel-frontier-report",
+                Path(args.provider_travel_frontier_report).expanduser().resolve(),
+            )
+        )
+
+    for option, report_path in reports:
+        if report_path == working:
+            raise ValueError(f"{option} must not overwrite --working-db")
+        if report_path == snapshot:
+            raise ValueError(f"{option} must not overwrite --snapshot-db")
+
+    if len(reports) == 2 and reports[0][1] == reports[1][1]:
+        raise ValueError(
+            "--route-report and --provider-travel-frontier-report must use different paths"
+        )
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
@@ -265,12 +299,10 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    if args.skip_route_audit and args.route_report:
-        raise SystemExit("--route-report cannot be used with --skip-route-audit")
-    if args.skip_route_audit and args.provider_travel_frontier_report:
-        raise SystemExit("--provider-travel-frontier-report cannot be used with --skip-route-audit")
-    if args.skip_route_audit and args.require_route_acceptance:
-        raise SystemExit("--require-route-acceptance cannot be used with --skip-route-audit")
+    try:
+        validate_audit_options(args)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     try:
         invocations = build_invocations(args)

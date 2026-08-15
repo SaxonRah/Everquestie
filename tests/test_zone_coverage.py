@@ -100,6 +100,12 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertEqual(summary.travel_edges_with_source_coordinates, 0)
         self.assertEqual(summary.travel_edges_without_source_coordinates, 1)
         self.assertEqual(summary.zones_with_mappable_route_exit, 0)
+        self.assertEqual(summary.route_zones, 2)
+        self.assertEqual(summary.route_weak_components, 1)
+        self.assertEqual(summary.largest_weak_route_component, 2)
+        self.assertEqual(summary.route_strong_components, 2)
+        self.assertEqual(summary.largest_strong_route_component, 1)
+        self.assertEqual(summary.route_sink_zones, ("Goru'kar Mesa",))
         self.assertEqual(summary.zones_with_route_but_no_mappable_exit, ("Stone Hive",))
         self.assertEqual(summary.zones_without_client_identity, ("Future Provider Zone",))
         self.assertIn("Goru'kar Mesa", summary.zones_without_maps)
@@ -138,6 +144,11 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertEqual(first.route_directions_unmappable, 1)
         self.assertEqual(first.zones_with_mappable_route_exit, 1)
         self.assertEqual(first.zones_with_route_but_no_mappable_exit, ("Goru'kar Mesa",))
+        self.assertEqual(first.route_zones, 2)
+        self.assertEqual(first.route_weak_components, 1)
+        self.assertEqual(first.route_strong_components, 1)
+        self.assertEqual(first.largest_strong_route_component, 2)
+        self.assertEqual(first.route_sink_zones, ())
 
         rows = {row.name: row for row in ZoneCoverageCatalog(self.db).rows()}
         self.assertEqual((rows["Stone Hive"].route_outgoing, rows["Stone Hive"].route_outgoing_mappable), (1, 1))
@@ -168,6 +179,44 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertEqual(second.route_directions_unmappable, 0)
         self.assertEqual(second.zones_with_mappable_route_exit, 2)
         self.assertEqual(second.zones_with_route_but_no_mappable_exit, ())
+        self.assertEqual(second.route_strong_components, 1)
+        self.assertEqual(second.largest_strong_route_component, 2)
+
+    def test_route_graph_components_separate_islands_and_directionality(self):
+        stone, mesa, future = self._zones()
+        fourth = self.db.upsert_entity(
+            kind="zone",
+            name="Fourth Provider Zone",
+            external_id="future-2",
+            external_namespace="futuremirror:zone",
+            merge_by_name=True,
+        )
+        catalog = ZoneTravelCatalog(self.db)
+        catalog.add_provider_connection(
+            stone,
+            mesa,
+            source_name="Fixture",
+            source_kind="provider",
+            source_key="island-a",
+            evidence="one-way island A",
+        )
+        catalog.add_provider_connection(
+            future,
+            fourth,
+            bidirectional=True,
+            source_name="Fixture",
+            source_kind="provider",
+            source_key="island-b",
+            evidence="two-way island B",
+        )
+
+        summary = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(summary.route_zones, 4)
+        self.assertEqual(summary.route_weak_components, 2)
+        self.assertEqual(summary.largest_weak_route_component, 2)
+        self.assertEqual(summary.route_strong_components, 3)
+        self.assertEqual(summary.largest_strong_route_component, 2)
+        self.assertEqual(summary.route_sink_zones, ("Goru'kar Mesa",))
 
     def test_audit_names_gaps_instead_of_inventing_zone_facts(self):
         stone, mesa, future = self._zones()
@@ -180,14 +229,18 @@ class ZoneCoverageTests(unittest.TestCase):
             evidence="fixture edge",
         )
         text = zone_coverage_audit_text(self.db)
-        self.assertIn("Zone coverage v2", text)
+        self.assertIn("Zone coverage v3", text)
         self.assertIn("Canonical zones: 3", text)
         self.assertIn("EQ-client identities: 2/3", text)
         self.assertIn("Future Provider Zone", text)
         self.assertIn("Zones without confirmed map binding", text)
         self.assertIn("Canonical route directions: linked=1, mappable=0", text)
+        self.assertIn("Route graph: zones=2/3, weak components=1", text)
+        self.assertIn("largest mutually reachable component=1", text)
         self.assertIn("confirmed outgoing route but no mappable source coordinate", text)
+        self.assertIn("Directed route sinks", text)
         self.assertIn("Stone Hive", text)
+        self.assertIn("Goru'kar Mesa", text)
 
     def test_snapshot_persists_release_coverage_and_runtime_can_query_it(self):
         self._zones()
@@ -199,11 +252,14 @@ class ZoneCoverageTests(unittest.TestCase):
             snapshot,
             snapshot_version="zone-coverage-test",
         )
-        self.assertEqual(report.zone_coverage["coverage_version"], "2")
+        self.assertEqual(report.zone_coverage["coverage_version"], "3")
         self.assertEqual(report.zone_coverage["zones"], 3)
         self.assertEqual(report.zone_coverage["client_identity"], 2)
         self.assertEqual(report.zone_coverage["route_directions_linked"], 0)
         self.assertEqual(report.zone_coverage["route_directions_mappable"], 0)
+        self.assertEqual(report.zone_coverage["route_zones"], 0)
+        self.assertEqual(report.zone_coverage["route_weak_components"], 0)
+        self.assertEqual(report.zone_coverage["route_strong_components"], 0)
 
         runtime = RuntimeDatabase(snapshot, state)
         try:
@@ -211,6 +267,7 @@ class ZoneCoverageTests(unittest.TestCase):
             self.assertEqual(summary.zones, 3)
             self.assertEqual(summary.client_identity, 2)
             self.assertEqual(summary.route_directions_linked, 0)
+            self.assertEqual(summary.route_zones, 0)
             self.assertTrue(runtime.get_meta("zone_catalog_coverage", ""))
             with self.assertRaisesRegex(RuntimeError, "builder-only"):
                 ZoneCoverageCatalog(runtime).compile_summary()

@@ -7,7 +7,7 @@ from typing import Any
 from .db import Database
 
 
-ZONE_COVERAGE_VERSION = "2"
+ZONE_COVERAGE_VERSION = "3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +76,16 @@ class ZoneCoverageSummary:
     route_directions_mappable: int
     route_directions_unmappable: int
     zones_with_mappable_route_exit: int
+    route_zones: int
+    route_weak_components: int
+    largest_weak_route_component: int
+    route_strong_components: int
+    largest_strong_route_component: int
     zones_without_client_identity: tuple[str, ...]
     zones_without_maps: tuple[str, ...]
     zones_without_travel: tuple[str, ...]
     zones_with_route_but_no_mappable_exit: tuple[str, ...]
+    route_sink_zones: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -102,12 +108,18 @@ class ZoneCoverageSummary:
             "route_directions_mappable": self.route_directions_mappable,
             "route_directions_unmappable": self.route_directions_unmappable,
             "zones_with_mappable_route_exit": self.zones_with_mappable_route_exit,
+            "route_zones": self.route_zones,
+            "route_weak_components": self.route_weak_components,
+            "largest_weak_route_component": self.largest_weak_route_component,
+            "route_strong_components": self.route_strong_components,
+            "largest_strong_route_component": self.largest_strong_route_component,
             "zones_without_client_identity": list(self.zones_without_client_identity),
             "zones_without_maps": list(self.zones_without_maps),
             "zones_without_travel": list(self.zones_without_travel),
             "zones_with_route_but_no_mappable_exit": list(
                 self.zones_with_route_but_no_mappable_exit
             ),
+            "route_sink_zones": list(self.route_sink_zones),
         }
 
 
@@ -123,6 +135,11 @@ class ZoneCoverageCatalog:
     separately. One bidirectional evidence row creates two traversable directions, but
     its stored X/Y belongs only to the row's canonical source zone. A reverse direction
     becomes mappable only when independent direct evidence supplies a source-owned X/Y.
+
+    Route connectivity is also measured separately from raw edge counts. Weakly
+    connected components expose disconnected navigation islands while strongly
+    connected components expose mutual reachability under the graph's actual directed
+    semantics. Neither metric invents reverse travel for a one-way edge.
     """
 
     def __init__(self, db: Database):
@@ -165,6 +182,88 @@ class ZoneCoverageCatalog:
                 # Topology is usable in reverse, but the stored coordinate is not.
                 routes.setdefault(target_id, set()).add(source_id)
         return routes, mappable
+
+    @staticmethod
+    def _route_graph_metrics(
+        route_targets: dict[int, set[int]],
+    ) -> tuple[set[int], list[set[int]], list[set[int]], set[int]]:
+        """Return route nodes, weak components, strong components and directed sinks."""
+        nodes: set[int] = set(route_targets)
+        for targets in route_targets.values():
+            nodes.update(targets)
+        if not nodes:
+            return set(), [], [], set()
+
+        directed = {node: set(route_targets.get(node, ())) for node in nodes}
+        reverse = {node: set() for node in nodes}
+        weak = {node: set() for node in nodes}
+        for source, targets in directed.items():
+            for target in targets:
+                reverse[target].add(source)
+                weak[source].add(target)
+                weak[target].add(source)
+
+        weak_components: list[set[int]] = []
+        seen: set[int] = set()
+        for start in sorted(nodes):
+            if start in seen:
+                continue
+            component: set[int] = set()
+            stack = [start]
+            seen.add(start)
+            while stack:
+                node = stack.pop()
+                component.add(node)
+                for neighbor in weak[node]:
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            weak_components.append(component)
+
+        # Kosaraju without recursion so a future zone corpus cannot hit Python's
+        # recursion limit merely because one route chain grows very long.
+        finish_order: list[int] = []
+        seen.clear()
+        for start in sorted(nodes):
+            if start in seen:
+                continue
+            stack: list[tuple[int, bool]] = [(start, False)]
+            while stack:
+                node, expanded = stack.pop()
+                if expanded:
+                    finish_order.append(node)
+                    continue
+                if node in seen:
+                    continue
+                seen.add(node)
+                stack.append((node, True))
+                for neighbor in sorted(directed[node], reverse=True):
+                    if neighbor not in seen:
+                        stack.append((neighbor, False))
+
+        strong_components: list[set[int]] = []
+        seen.clear()
+        for start in reversed(finish_order):
+            if start in seen:
+                continue
+            component: set[int] = set()
+            stack = [start]
+            seen.add(start)
+            while stack:
+                node = stack.pop()
+                component.add(node)
+                for neighbor in reverse[node]:
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            strong_components.append(component)
+
+        sinks = {
+            node
+            for node in nodes
+            if reverse[node] and not directed[node]
+        }
+        return nodes, weak_components, strong_components, sinks
 
     def rows(self) -> list[ZoneCoverageRow]:
         map_available = self._object_exists("zone_map_bindings")
@@ -260,6 +359,9 @@ class ZoneCoverageCatalog:
         travel = self._status_counts("zone_travel_edges")
         coordinate_present, coordinate_missing = self._travel_coordinate_counts()
         route_targets, mappable_targets = self._route_direction_sets()
+        route_nodes, weak_components, strong_components, sink_ids = self._route_graph_metrics(
+            route_targets
+        )
         route_directions = sum(len(targets) for targets in route_targets.values())
         mappable_directions = sum(len(targets) for targets in mappable_targets.values())
         no_client = tuple(row.name for row in rows if not row.has_client_identity)
@@ -269,6 +371,10 @@ class ZoneCoverageCatalog:
             row.name
             for row in rows
             if row.has_route_outgoing and not row.has_mappable_route_exit
+        )
+        name_by_id = {row.entity_id: row.name for row in rows}
+        sink_names = tuple(
+            sorted(name_by_id[entity_id] for entity_id in sink_ids if entity_id in name_by_id)
         )
         return ZoneCoverageSummary(
             zones=len(rows),
@@ -289,10 +395,16 @@ class ZoneCoverageCatalog:
             route_directions_mappable=mappable_directions,
             route_directions_unmappable=max(0, route_directions - mappable_directions),
             zones_with_mappable_route_exit=sum(row.has_mappable_route_exit for row in rows),
+            route_zones=len(route_nodes),
+            route_weak_components=len(weak_components),
+            largest_weak_route_component=max((len(component) for component in weak_components), default=0),
+            route_strong_components=len(strong_components),
+            largest_strong_route_component=max((len(component) for component in strong_components), default=0),
             zones_without_client_identity=no_client,
             zones_without_maps=no_maps,
             zones_without_travel=no_travel,
             zones_with_route_but_no_mappable_exit=route_coordinate_gaps,
+            route_sink_zones=sink_names,
         )
 
     def compile_summary(self) -> ZoneCoverageSummary:
@@ -336,6 +448,12 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
         f"linked={summary.route_directions_linked}, "
         f"mappable={summary.route_directions_mappable}, "
         f"without source coordinate={summary.route_directions_unmappable}",
+        "Route graph: "
+        f"zones={summary.route_zones}/{summary.zones}, "
+        f"weak components={summary.route_weak_components}, "
+        f"largest weak component={summary.largest_weak_route_component}, "
+        f"strong components={summary.route_strong_components}, "
+        f"largest mutually reachable component={summary.largest_strong_route_component}",
     ]
 
     def add_gap(label: str, names: tuple[str, ...]) -> None:
@@ -352,5 +470,9 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
     add_gap(
         "Zones with confirmed outgoing route but no mappable source coordinate",
         summary.zones_with_route_but_no_mappable_exit,
+    )
+    add_gap(
+        "Directed route sinks (incoming route but no outgoing direction; some may be legitimate one-way destinations)",
+        summary.route_sink_zones,
     )
     return "\n".join(lines)

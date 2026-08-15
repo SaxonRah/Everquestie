@@ -9,10 +9,12 @@ import unittest
 from unittest.mock import patch
 
 from eqquest.db import Database
+from eqquest.mcp_client import MCPError
 from eqquest.sources.mcp_snapshot import (
     MCPLocalSnapshotCompiler,
     MCPSnapshotCapture,
     _detail_search_text,
+    _detail_storage_payload,
 )
 
 
@@ -152,6 +154,65 @@ class MCPRichDetailTests(unittest.TestCase):
 
         self.assertTrue(second.details_unchanged)
         self.assertEqual(1, second.detail_imported_by_kind["spell"])
+
+    def test_populated_system_with_no_rich_records_fails(self) -> None:
+        capture = self.capture()
+        compiler = MCPLocalSnapshotCompiler(self.db)
+        result = compiler.import_capture(capture)
+        fake = _FakeDetailProcess(
+            [
+                {"type": "system_start", "system": "spells", "kind": "spell", "total": 1},
+                {
+                    "type": "record_error",
+                    "system": "spells",
+                    "kind": "spell",
+                    "external_id": "42",
+                    "reason": "not_found",
+                },
+                {
+                    "type": "system_done",
+                    "system": "spells",
+                    "kind": "spell",
+                    "imported": 0,
+                    "errors": 1,
+                    "total": 1,
+                },
+            ]
+        )
+        status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
+
+        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+            "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
+        ):
+            with self.assertRaisesRegex(MCPError, "zero records"):
+                compiler.import_details(capture, result)
+
+        self.assertIsNone(
+            self.db.conn.execute(
+                "SELECT 1 FROM source_pages WHERE source_kind='mcp_local_details'"
+            ).fetchone()
+        )
+
+    def test_missing_upstream_getter_fails_full_detail_pass(self) -> None:
+        capture = self.capture()
+        compiler = MCPLocalSnapshotCompiler(self.db)
+        result = compiler.import_capture(capture)
+        fake = _FakeDetailProcess(
+            [{"type": "system_missing", "system": "spells", "kind": "spell"}]
+        )
+        status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
+
+        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+            "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
+        ):
+            with self.assertRaisesRegex(MCPError, "missing required rich-detail getter"):
+                compiler.import_details(capture, result)
+
+    def test_string_detail_is_wrapped_as_valid_json(self) -> None:
+        payload, text = _detail_storage_payload("A lore story")
+        self.assertEqual({"text": "A lore story"}, payload)
+        self.assertEqual("A lore story", text)
+        self.assertEqual({"text": "A lore story"}, json.loads(json.dumps(payload)))
 
     def test_detail_search_text_keeps_structured_fields_but_is_bounded(self) -> None:
         text = _detail_search_text(

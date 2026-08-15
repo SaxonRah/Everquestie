@@ -14,6 +14,7 @@ from .zone_provider_reconciliation import (
     ProviderZoneBinding,
     ProviderZoneReconciliationCatalog,
 )
+from .zone_relationship_context import ZoneRelatedEntity, related_entities_for_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class ZoneContext:
     maps: tuple[ZoneMapBinding, ...]
     connections: tuple[ZoneConnection, ...]
     locations: tuple[ZoneLocatedEntity, ...]
+    related_entities: tuple[ZoneRelatedEntity, ...]
     provider_bindings: tuple[ProviderZoneBinding, ...] = ()
 
     @property
@@ -85,8 +87,36 @@ class ZoneContext:
         return len({row.entity_id for row in self.locations})
 
     @property
+    def related_entity_count(self) -> int:
+        return len({row.entity_id for row in self.related_entities})
+
+    @property
     def usable_connections(self) -> tuple[ZoneConnection, ...]:
         return tuple(row for row in self.connections if row.usable_from_zone)
+
+    @property
+    def known_npcs(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(
+            row
+            for row in self.related_entities
+            if row.relation == "found_in" and row.kind == "npc"
+        )
+
+    @property
+    def known_items(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(
+            row
+            for row in self.related_entities
+            if row.relation == "found_in" and row.kind == "item"
+        )
+
+    @property
+    def quests_starting(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(row for row in self.related_entities if row.relation == "starts_in")
+
+    @property
+    def quests_occurring(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(row for row in self.related_entities if row.relation == "occurs_in")
 
 
 def _relation_exists(db: Database, name: str) -> bool:
@@ -336,6 +366,7 @@ def build_zone_context(
     zone_token: str,
     *,
     location_limit: int = 500,
+    relationship_limit: int = 1000,
 ) -> tuple[ZoneContext | None, str]:
     """Resolve one canonical zone and project its attached shipped knowledge.
 
@@ -376,6 +407,12 @@ def build_zone_context(
             limit=max(1, int(location_limit)),
         )
     )
+    related_entities = related_entities_for_zone(
+        db,
+        identity.entity_id,
+        projected_zone_ids,
+        limit=max(1, int(relationship_limit)),
+    )
     return (
         ZoneContext(
             identity=identity,
@@ -395,10 +432,30 @@ def build_zone_context(
             maps=maps,
             connections=connections,
             locations=locations,
+            related_entities=related_entities,
             provider_bindings=provider_bindings,
         ),
         "linked",
     )
+
+
+def _append_related_section(
+    lines: list[str],
+    title: str,
+    rows: tuple[ZoneRelatedEntity, ...],
+    *,
+    limit: int,
+) -> None:
+    if not rows:
+        return
+    lines += ["", f"{title} (evidence-backed; not exhaustive):"]
+    for row in rows[: max(1, int(limit))]:
+        details = [row.source_label]
+        if row.preview_text:
+            details.append(row.preview_text)
+        if row.source_field:
+            details.append(row.source_field)
+        lines.append(f"  • {row.name} | " + " | ".join(details))
 
 
 def zone_context_text(
@@ -406,12 +463,14 @@ def zone_context_text(
     zone_token: str,
     *,
     location_limit: int = 25,
+    relationship_limit: int = 25,
 ) -> str:
     """Compact text rendering suitable for future UI/guidance surfaces."""
     context, status = build_zone_context(
         db,
         zone_token,
         location_limit=max(1, int(location_limit)),
+        relationship_limit=max(1, int(relationship_limit)) * 4,
     )
     if context is None:
         if status == "ambiguous":
@@ -459,6 +518,31 @@ def zone_context_text(
                 f"  • {arrow} {connection.neighbor_zone_name} | "
                 f"{connection.connection_kind.replace('_', ' ')} | {source}{usability}"
             )
+
+    _append_related_section(
+        lines,
+        "Known NPCs",
+        context.known_npcs,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Quests starting here",
+        context.quests_starting,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Quests occurring here",
+        context.quests_occurring,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Items associated with this zone",
+        context.known_items,
+        limit=relationship_limit,
+    )
 
     if context.locations:
         lines += ["", f"Confirmed located entities: {context.entity_count}"]

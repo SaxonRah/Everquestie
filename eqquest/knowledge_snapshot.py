@@ -14,6 +14,7 @@ from .map_catalog import MapCatalog
 from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
 from .provider_zone_travel import ProviderZoneTravelCatalog
+from .quest_faction_reconciliation import QuestFactionReconciliationCatalog
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
 from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
@@ -73,6 +74,7 @@ class KnowledgeSnapshotReport:
     stripped_meta_rows: int
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
+    quest_faction_reconciliation: dict[str, int]
     provider_zone_reconciliation: dict[str, int]
     provider_zone_travel: dict[str, int]
     zone_coverage: dict[str, Any]
@@ -231,6 +233,12 @@ def finalize_knowledge_snapshot(
     # semantic layer makes them queryable by stable names and future provider IDs.
     mechanics_coverage = MechanicsCatalog(db).reconcile()
 
+    # Structured Allakhazam quest faction names become graph edges only after all
+    # providers have populated the builder DB and only when one exact client-backed
+    # faction identity exists. Raw quest metadata remains untouched for unresolved or
+    # ambiguous names; runtime consumes only the finalized ordinary relationships.
+    quest_faction = QuestFactionReconciliationCatalog(db).reconcile()
+
     # Reconcile provider-owned zone identities into a separate, non-destructive
     # gameplay projection before any downstream catalogs are finalized. The provider
     # entities and their provenance remain untouched; runtime consumes only rows that
@@ -322,6 +330,7 @@ def finalize_knowledge_snapshot(
         stripped_meta_rows=stripped_meta,
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
+        quest_faction_reconciliation=quest_faction.as_dict(),
         provider_zone_reconciliation=provider_zone.as_dict(),
         provider_zone_travel=provider_travel.as_dict(),
         zone_coverage=zone_coverage.as_dict(),

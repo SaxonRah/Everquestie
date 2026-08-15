@@ -55,6 +55,13 @@ def main() -> int:
         )
     )
     print(
+        "quest faction reconciliation: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.quest_faction_reconciliation.items()
+        )
+    )
+    print(
         "provider zone reconciliation: "
         + ", ".join(
             f"{name}={value}"

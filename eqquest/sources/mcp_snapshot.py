@@ -186,6 +186,13 @@ def _detail_search_text(value: Any, *, max_chars: int = 12000) -> str:
     return "\n".join(parts)
 
 
+def _detail_storage_payload(record: Any) -> tuple[Any, str]:
+    """Preserve raw structured values while keeping entity_details.detail_json valid JSON."""
+    if isinstance(record, str):
+        return {"text": record}, record.strip()
+    return record, _detail_search_text(record)
+
+
 class MCPLocalSnapshotCompiler:
     """Compile everquest1-mcp's offline local inventory and rich records into EverQuestie."""
 
@@ -397,6 +404,43 @@ class MCPLocalSnapshotCompiler:
         ).fetchone()
         return int(row["id"]) if row is not None else None
 
+    @staticmethod
+    def _expected_detail_kinds(capture: MCPSnapshotCapture) -> set[str]:
+        expected: set[str] = set()
+        systems = capture.snapshot.get("systems") or {}
+        if not isinstance(systems, dict):
+            return expected
+        for system, payload in systems.items():
+            kind = SYSTEM_KIND_MAP.get(str(system))
+            if not kind or not isinstance(payload, dict):
+                continue
+            names = payload.get("names") or {}
+            if isinstance(names, dict) and any(str(value or "").strip() for value in names.values()):
+                expected.add(kind)
+        return expected
+
+    def _validate_detail_result(
+        self,
+        capture: MCPSnapshotCapture,
+        result: MCPCompileResult,
+    ) -> None:
+        if result.detail_bridge_missing_systems:
+            raise MCPError(
+                "everquest1-mcp is missing required rich-detail getter(s) for: "
+                + ", ".join(sorted(result.detail_bridge_missing_systems))
+            )
+        expected = self._expected_detail_kinds(capture)
+        missing = sorted(
+            kind for kind in expected if int(result.detail_imported_by_kind.get(kind, 0)) <= 0
+        )
+        if missing:
+            raise MCPError(
+                "MCP rich-detail compilation produced zero records for populated system(s): "
+                + ", ".join(missing)
+            )
+        if expected and result.total_details <= 0:
+            raise MCPError("MCP rich-detail compilation produced no records.")
+
     def import_details(
         self,
         capture: MCPSnapshotCapture,
@@ -446,6 +490,7 @@ class MCPLocalSnapshotCompiler:
                 result.detail_imported_by_kind = {
                     str(row["kind"]): int(row["n"]) for row in rows
                 }
+                self._validate_detail_result(capture, result)
                 return
 
         version_parts = [
@@ -553,12 +598,13 @@ class MCPLocalSnapshotCompiler:
                     )
                     continue
 
+                detail_json, detail_text = _detail_storage_payload(record)
                 self.db.upsert_entity_detail(
                     entity_id,
                     source_page_id=detail_source_id,
                     detail_format="mcp-json",
-                    detail_text=_detail_search_text(record),
-                    detail_json=record,
+                    detail_text=detail_text,
+                    detail_json=detail_json,
                 )
                 result.detail_imported_by_kind[kind] = (
                     result.detail_imported_by_kind.get(kind, 0) + 1
@@ -571,6 +617,8 @@ class MCPLocalSnapshotCompiler:
                     "Rich-detail compiler failed"
                     + (f":\n{stderr}" if stderr else f" with exit code {return_code}.")
                 )
+
+            self._validate_detail_result(capture, result)
 
             self.db.set_meta("eq_mcp_detail_last_compile", result.snapshot_timestamp)
             self.db.set_meta(

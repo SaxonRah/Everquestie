@@ -10,6 +10,10 @@ from .locations import LocationEvidence
 from .zone_catalog import ZoneMapBinding, ZoneMapCatalog
 from .zone_authority import resolve_authoritative_zone
 from .zone_identity import ZoneIdentity
+from .zone_provider_reconciliation import (
+    ProviderZoneBinding,
+    ProviderZoneReconciliationCatalog,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,7 @@ class ZoneLocatedEntity:
     name: str
     kind: str
     location: LocationEvidence
+    projected_from_zone_entity_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +78,7 @@ class ZoneContext:
     maps: tuple[ZoneMapBinding, ...]
     connections: tuple[ZoneConnection, ...]
     locations: tuple[ZoneLocatedEntity, ...]
+    provider_bindings: tuple[ProviderZoneBinding, ...] = ()
 
     @property
     def entity_count(self) -> int:
@@ -156,31 +162,46 @@ def _connections_for_zone(db: Database, zone_entity_id: int) -> list[ZoneConnect
 
 def _provider_locations_in_zone(
     db: Database,
-    zone_entity_id: int,
+    gameplay_zone_entity_id: int,
+    projected_zone_entity_ids: tuple[int, ...],
     *,
     limit: int,
 ) -> list[ZoneLocatedEntity]:
+    zone_ids = tuple(dict.fromkeys(int(value) for value in projected_zone_entity_ids))
+    if not zone_ids:
+        return []
+    canonical = db.entity(int(gameplay_zone_entity_id))
+    canonical_name = str(canonical["name"] or "") if canonical is not None else ""
+    placeholders = ",".join("?" for _ in zone_ids)
     rows = db.conn.execute(
-        """
+        f"""
         SELECT l.entity_id,l.zone_entity_id,l.x,l.y,l.z,l.label,l.source_page_id,l.evidence,
-               e.name AS entity_name,e.kind AS entity_kind,z.name AS zone_name,
+               e.name AS entity_name,e.kind AS entity_kind,z.name AS source_zone_name,
                sp.source_name,sp.source_version,sp.source_key,sp.url
         FROM entity_locations l
         JOIN entities e ON e.id=l.entity_id
         JOIN entities z ON z.id=l.zone_entity_id
         LEFT JOIN source_pages sp ON sp.id=l.source_page_id
-        WHERE l.zone_entity_id=? AND e.kind<>'zone'
+        WHERE l.zone_entity_id IN ({placeholders}) AND e.kind<>'zone'
         ORDER BY e.kind,e.name,l.id
         LIMIT ?
         """,
-        (int(zone_entity_id), max(1, int(limit))),
+        (*zone_ids, max(1, int(limit))),
     ).fetchall()
     result: list[ZoneLocatedEntity] = []
     for row in rows:
+        source_zone_id = int(row["zone_entity_id"])
+        projected_from = (
+            source_zone_id
+            if source_zone_id != int(gameplay_zone_entity_id)
+            else None
+        )
         location = LocationEvidence(
             entity_id=int(row["entity_id"]),
-            zone_entity_id=int(row["zone_entity_id"]),
-            zone_name=str(row["zone_name"] or ""),
+            # Runtime consumers operate in canonical gameplay zone space. Preserve
+            # the original provider zone ID separately on ZoneLocatedEntity.
+            zone_entity_id=int(gameplay_zone_entity_id),
+            zone_name=canonical_name or str(row["source_zone_name"] or ""),
             x=(float(row["x"]) if row["x"] is not None else None),
             y=(float(row["y"]) if row["y"] is not None else None),
             z=(float(row["z"]) if row["z"] is not None else None),
@@ -202,6 +223,7 @@ def _provider_locations_in_zone(
                 name=str(row["entity_name"]),
                 kind=str(row["entity_kind"]),
                 location=location,
+                projected_from_zone_entity_id=projected_from,
             )
         )
     return result
@@ -282,13 +304,19 @@ def _map_locations_in_zone(
 def _locations_for_zone(
     db: Database,
     zone_entity_id: int,
+    projected_zone_entity_ids: tuple[int, ...],
     *,
     limit: int,
 ) -> list[ZoneLocatedEntity]:
     # Apply the final limit after combining sources so one high-volume source cannot
     # entirely hide evidence from the other projection.
     per_source = max(1, int(limit))
-    rows = _provider_locations_in_zone(db, zone_entity_id, limit=per_source)
+    rows = _provider_locations_in_zone(
+        db,
+        zone_entity_id,
+        projected_zone_entity_ids,
+        limit=per_source,
+    )
     rows.extend(_map_locations_in_zone(db, zone_entity_id, limit=per_source))
     rows.sort(
         key=lambda row: (
@@ -313,7 +341,8 @@ def build_zone_context(
 
     No rows are written and no source-specific builder is invoked. The same function
     therefore works against both the writable builder database and finalized packaged
-    ``RuntimeDatabase`` views.
+    ``RuntimeDatabase`` views. Provider facts are inherited only through builder-made
+    projection-safe zone bindings already present in shipped knowledge.
     """
     resolution = resolve_authoritative_zone(db, zone_token)
     if resolution.identity is None:
@@ -330,12 +359,20 @@ def build_zone_context(
     if not isinstance(data, dict):
         data = {}
 
+    provider_catalog = ProviderZoneReconciliationCatalog(db)
+    provider_bindings = provider_catalog.bindings_for_gameplay_zone(
+        identity.entity_id,
+        linked_only=True,
+    )
+    projected_zone_ids = provider_catalog.projected_zone_entity_ids(identity.entity_id)
+
     maps = tuple(ZoneMapCatalog(db).maps_for_zone(identity.entity_id))
     connections = tuple(_connections_for_zone(db, identity.entity_id))
     locations = tuple(
         _locations_for_zone(
             db,
             identity.entity_id,
+            projected_zone_ids,
             limit=max(1, int(location_limit)),
         )
     )
@@ -358,6 +395,7 @@ def build_zone_context(
             maps=maps,
             connections=connections,
             locations=locations,
+            provider_bindings=provider_bindings,
         ),
         "linked",
     )
@@ -395,6 +433,14 @@ def zone_context_text(
         )
     if identity.aliases:
         lines.append("Aliases: " + ", ".join(identity.aliases))
+
+    if context.provider_bindings:
+        lines += ["", "Projected provider knowledge:"]
+        for binding in context.provider_bindings:
+            lines.append(
+                f"  • {binding.provider_zone_name} | "
+                f"{binding.corroboration_count} structured zone-link corroboration(s)"
+            )
 
     if context.maps:
         lines += ["", "Map bindings:"]

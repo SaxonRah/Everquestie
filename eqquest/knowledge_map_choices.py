@@ -17,6 +17,20 @@ _RELATION_LABELS = {
     "related_creature": "related creature",
 }
 
+_RELATED_LOCATION_RELATIONS = {
+    "item": {
+        ("out", "drops_from"): "drops from",
+        ("out", "turn_in_to"): "turn-in NPC",
+        ("in", "sells"): "vendor",
+    },
+    "spell": {
+        ("in", "teaches_spell"): "spell teacher",
+    },
+    "skill": {
+        ("in", "trains_skill"): "trainer",
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeMapChoice:
@@ -36,7 +50,7 @@ class KnowledgeMapChoice:
 
     @property
     def map_label(self) -> str:
-        if self.origin == "quest_actor" and self.relation_label:
+        if self.origin != "entity" and self.relation_label:
             return f"{self.location_entity_name} ({self.relation_label})"
         return self.location_entity_name
 
@@ -167,6 +181,71 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
     return choices, elsewhere, list(context.related_locations)
 
 
+def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
+    """Project explicit item/vendor/trainer relationships through NPC locations.
+
+    The relationship identifies *which NPC is relevant*; it never supplies the
+    coordinate itself. Coordinates remain independently sourced `entity_locations`
+    or linked map evidence on that NPC and must already be canonical/navigable.
+    """
+    context = build_world_entity_context_for_id(db, entity_id)
+    if context is None:
+        return [], [], []
+    allowed = _RELATED_LOCATION_RELATIONS.get(context.kind, {})
+    if not allowed:
+        return [], [], []
+
+    choices: list[KnowledgeMapChoice] = []
+    elsewhere: list = []
+    all_locations: list = []
+    for fact in context.relationships:
+        relation_label = allowed.get((fact.direction, fact.relation))
+        if not relation_label or fact.other_kind != "npc":
+            continue
+        locations = location_evidence_for_entity(db, fact.other_entity_id)
+        all_locations.extend(locations)
+        current = [
+            row
+            for row in locations
+            if row.navigable and int(row.zone_entity_id) == int(zone_id)
+        ]
+        elsewhere.extend(
+            row
+            for row in locations
+            if row.navigable and int(row.zone_entity_id) != int(zone_id)
+        )
+        grouped: dict[tuple[float, float, float | None], list] = {}
+        for row in current:
+            assert row.x is not None and row.y is not None
+            key = (
+                float(row.x),
+                float(row.y),
+                float(row.z) if row.z is not None else None,
+            )
+            grouped.setdefault(key, []).append(row)
+        for (x, y, z), evidence_rows in grouped.items():
+            choices.append(
+                KnowledgeMapChoice(
+                    selected_entity_id=int(entity_id),
+                    location_entity_id=int(fact.other_entity_id),
+                    location_entity_name=str(fact.other_name),
+                    origin="related_entity",
+                    relation=str(fact.relation),
+                    relation_label=relation_label,
+                    zone_entity_id=int(zone_id),
+                    zone_name=zone_name,
+                    x=x,
+                    y=y,
+                    z=z,
+                    evidence_count=len(evidence_rows),
+                    source_labels=_source_tuple(
+                        [fact.source_label, *(row.source_label for row in evidence_rows)]
+                    ),
+                )
+            )
+    return choices, elsewhere, all_locations
+
+
 def knowledge_map_choices(
     db: Database,
     entity_id: int,
@@ -174,9 +253,10 @@ def knowledge_map_choices(
 ) -> KnowledgeMapChoiceSet:
     """Return only safe, canonical current-zone choices for a Knowledge selection.
 
-    Direct entity locations and explicit quest-actor locations are eligible. The
-    function never chooses among distinct coordinates and never exposes provider
-    candidate/unresolved coordinates as choices.
+    Direct locations, explicit quest-actor locations, and supported related-NPC
+    locations are eligible. Relationships select relevant entities but never invent
+    coordinates. The function never chooses among distinct coordinates and never
+    exposes provider candidate/unresolved coordinates as choices.
     """
     entity = db.entity(int(entity_id))
     if entity is None:
@@ -229,10 +309,13 @@ def knowledge_map_choices(
     actor, actor_elsewhere, actor_all = _quest_actor_choices(
         db, int(entity_id), zone_id, zone_name
     )
-    choices = direct + actor
+    related, related_elsewhere, related_all = _related_entity_choices(
+        db, int(entity_id), zone_id, zone_name
+    )
+    choices = direct + actor + related
     choices.sort(
         key=lambda row: (
-            0 if row.origin == "entity" else 1,
+            0 if row.origin == "entity" else 1 if row.origin == "quest_actor" else 2,
             row.relation_label.casefold(),
             row.location_entity_name.casefold(),
             row.y,
@@ -241,6 +324,8 @@ def knowledge_map_choices(
         )
     )
 
+    elsewhere = direct_elsewhere + actor_elsewhere + related_elsewhere
+    all_locations = direct_all + actor_all + related_all
     if choices:
         return KnowledgeMapChoiceSet(
             "ready",
@@ -252,10 +337,10 @@ def knowledge_map_choices(
             zone_id,
             zone_name,
             tuple(choices),
-            len(direct_elsewhere) + len(actor_elsewhere),
+            len(elsewhere),
         )
 
-    if direct_elsewhere or actor_elsewhere:
+    if elsewhere:
         return KnowledgeMapChoiceSet(
             "not_in_current_zone",
             f"{entity_name} has safe mapped location evidence, but none is in the current zone {zone_name}.",
@@ -264,9 +349,9 @@ def knowledge_map_choices(
             zone_id,
             zone_name,
             (),
-            len(direct_elsewhere) + len(actor_elsewhere),
+            len(elsewhere),
         )
-    if direct_all or actor_all:
+    if all_locations:
         return KnowledgeMapChoiceSet(
             "no_navigable_location",
             f"Location evidence exists for {entity_name}, but none has both a safe gameplay-zone identity and explicit X/Y coordinates.",

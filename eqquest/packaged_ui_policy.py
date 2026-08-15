@@ -4,6 +4,7 @@ from __future__ import annotations
 _PACKAGED_UI_POLICY_MARKER = "_everquestie_packaged_ui_entrypoint_policy"
 _OPEN_SEARCH_BUTTON_TEXT = "Open Search tab"
 _KNOWLEDGE_MAP_BUTTON_TEXT = "Map location"
+_LIVE_MAP_BUTTON_TEXT = "Map objective"
 
 
 def _widget_children(widget) -> list:
@@ -76,6 +77,31 @@ def _install_knowledge_map_button(app) -> bool:
     return True
 
 
+def _install_live_map_button(app) -> bool:
+    """Add an explicit Live objective action beside the tracked-quest surface."""
+    if not _packaged_runtime(app):
+        return False
+    if getattr(app, "live_map_objective_button", None) is not None:
+        return False
+    tree = getattr(app, "tracked_tree", None)
+    parent = getattr(tree, "master", None)
+    if parent is None:
+        return False
+
+    from tkinter import ttk
+
+    button = ttk.Button(
+        parent,
+        text=_LIVE_MAP_BUTTON_TEXT,
+        command=app._map_selected_live_objective,
+    )
+    # Base Live uses rows 0-5 in the right pane. Keep the packaged action additive
+    # instead of copying/rebuilding the legacy control row.
+    button.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    app.live_map_objective_button = button
+    return True
+
+
 def apply_packaged_ui_visibility(app) -> int:
     """Remove normal-user entry points to hidden builder/developer tabs."""
     if not _packaged_runtime(app):
@@ -125,12 +151,14 @@ def guard_packaged_notebook_selection(app, _event=None) -> bool:
 
 
 def install_packaged_ui_policy() -> None:
-    """Install final normal-user visibility and Knowledge-action guards."""
+    """Install final normal-user visibility and map-action guards."""
     from . import app as app_module
     from .knowledge_map_choices import knowledge_map_choices
+    from .live_quest_map import live_quest_map_choices
 
     current_app = app_module.EverQuestieApp
     current_build_ui = current_app._build_ui
+    current_tracked_tree_selected = current_app._tracked_tree_selected
     if getattr(current_build_ui, _PACKAGED_UI_POLICY_MARKER, False):
         return
 
@@ -180,12 +208,70 @@ def install_packaged_ui_policy() -> None:
             choice.map_label,
         )
 
+    def _map_selected_live_objective(self) -> None:
+        selected_step = self._tracked_selected_step()
+        if selected_step is not None:
+            quest_id, step_order = selected_step
+        else:
+            quest_id = self._tracked_selected_quest_id()
+            step_order = None
+        if quest_id is None:
+            self.status.set("Select a tracked quest or objective first.")
+            return
+
+        result = live_quest_map_choices(
+            self.db,
+            quest_id,
+            self.state_model.current_zone,
+            selected_step_order=step_order,
+        )
+        if not result.ready or result.objective is None or result.choice_set is None:
+            self.status.set(result.reason)
+            return
+
+        choices = result.choice_set.choices
+        if len(choices) == 1:
+            choice = choices[0]
+        else:
+            from .knowledge_location_ui import ask_knowledge_map_choice
+
+            title = (
+                f"{result.objective.quest_name} — step {result.objective.step_order}: "
+                f"{result.objective.target_name}"
+            )
+            choice = ask_knowledge_map_choice(
+                self,
+                title,
+                result.choice_set.current_zone_name,
+                choices,
+            )
+            if choice is None:
+                self.status.set("Map objective selection cancelled.")
+                return
+
+        self._focus_navigation_map_target(
+            choice.zone_name,
+            choice.x,
+            choice.y,
+            choice.z,
+            choice.map_label,
+        )
+
+    def _tracked_tree_selected(self, event=None) -> None:
+        # The legacy handler resolves names and calls MapViewer.focus_entity()
+        # directly. Preserve it for source-checkout/builder mode, but packaged users
+        # use the explicit Map objective action so every location passes through the
+        # canonical provider-zone/current-zone safety projection first.
+        if not _packaged_runtime(self):
+            current_tracked_tree_selected(self, event)
+
     def _build_ui(self) -> None:
         _ = TravelFrame
         current_build_ui(self)
         if not _packaged_runtime(self):
             return
         _install_knowledge_map_button(self)
+        _install_live_map_button(self)
         apply_packaged_ui_visibility(self)
         self.notebook.bind(
             "<<NotebookTabChanged>>",
@@ -196,4 +282,6 @@ def install_packaged_ui_policy() -> None:
     setattr(_build_ui, _PACKAGED_UI_POLICY_MARKER, True)
     current_app._on_packaged_notebook_tab_changed = _on_packaged_notebook_tab_changed
     current_app._map_selected_knowledge_location = _map_selected_knowledge_location
+    current_app._map_selected_live_objective = _map_selected_live_objective
+    current_app._tracked_tree_selected = _tracked_tree_selected
     current_app._build_ui = _build_ui

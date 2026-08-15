@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -136,9 +137,163 @@ class ProviderZoneTravelTests(unittest.TestCase):
             [],
         )
 
+        payload = json.loads(
+            self.db.conn.execute(
+                "SELECT data_json FROM zone_travel_edges WHERE source_kind='provider_zone_relationship'"
+            ).fetchone()["data_json"]
+        )
+        self.assertEqual(payload["provider_direction"]["mode"], "forward_unclassified")
+        self.assertEqual(payload["provider_direction"]["raw"], "North")
+        self.assertFalse(payload["provider_direction"]["reversed"])
+        self.assertFalse(payload["provider_direction"]["bidirectional"])
+
         # Provider entities remain source evidence; topology points at gameplay IDs.
         self.assertNotEqual(provider_stone, client_stone)
         self.assertNotEqual(provider_blight, client_blight)
+
+    def test_both_direction_is_explicit_bidirectional_source_evidence(self):
+        client_stone = self._client_zone("Stone Hive", "400")
+        client_blight = self._client_zone("Blightfire Moors", "401")
+        provider_stone = self._provider_zone("Stone Hive", "100")
+        provider_blight = self._provider_zone("Blightfire Moors", "101")
+        page = self._page("Stone Hive", "100")
+        self._connected(
+            provider_stone,
+            provider_blight,
+            page,
+            "Blightfire Moors / Both",
+            direction="Both",
+        )
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        ProviderZoneTravelCatalog(self.db).reconcile()
+
+        edge = next(
+            edge
+            for edge in ZoneTravelCatalog(self.db).edges_from(client_stone)
+            if edge.source_kind == "provider_zone_relationship"
+        )
+        self.assertTrue(edge.bidirectional)
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_stone, client_blight),
+            [client_stone, client_blight],
+        )
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_blight, client_stone),
+            [client_blight, client_stone],
+        )
+
+        payload = json.loads(
+            self.db.conn.execute(
+                "SELECT data_json FROM zone_travel_edges WHERE id=?",
+                (edge.id,),
+            ).fetchone()["data_json"]
+        )
+        self.assertEqual(payload["provider_direction"]["mode"], "both")
+        self.assertTrue(payload["provider_direction"]["bidirectional"])
+        self.assertFalse(payload["provider_direction"]["reversed"])
+
+    def test_exit_from_exact_target_reverses_one_way_edge(self):
+        client_current = self._client_zone("Everfrost Peaks", "16")
+        client_instance = self._client_zone("The Gifty Giver", "900")
+        provider_current = self._provider_zone("Everfrost Peaks", "16-provider")
+        provider_instance = self._provider_zone("The Gifty Giver", "900-provider")
+        page = self._page("Everfrost Peaks", "16-provider")
+        self._connected(
+            provider_current,
+            provider_instance,
+            page,
+            "The Gifty Giver / Exit From The Gifty Giver",
+            direction="Exit From The Gifty Giver",
+        )
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        ProviderZoneTravelCatalog(self.db).reconcile()
+
+        row = self.db.conn.execute(
+            """
+            SELECT * FROM zone_travel_edges
+            WHERE source_kind='provider_zone_relationship'
+            """
+        ).fetchone()
+        self.assertEqual(int(row["source_zone_entity_id"]), client_instance)
+        self.assertEqual(int(row["target_zone_entity_id"]), client_current)
+        self.assertEqual(int(row["bidirectional"]), 0)
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_instance, client_current),
+            [client_instance, client_current],
+        )
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_current, client_instance),
+            [],
+        )
+
+        payload = json.loads(row["data_json"])
+        self.assertEqual(payload["provider_direction"]["mode"], "exit_from_target")
+        self.assertTrue(payload["provider_direction"]["reversed"])
+        self.assertFalse(payload["provider_direction"]["bidirectional"])
+
+    def test_entrance_to_exact_target_preserves_forward_one_way_edge(self):
+        client_sky = self._client_zone("Plane of Sky", "70")
+        client_freeport = self._client_zone("East Freeport", "10")
+        provider_sky = self._provider_zone("Plane of Sky", "70-provider")
+        provider_freeport = self._provider_zone("East Freeport", "10-provider")
+        page = self._page("Plane of Sky", "70-provider")
+        self._connected(
+            provider_sky,
+            provider_freeport,
+            page,
+            "East Freeport / Entrance To East Freeport",
+            direction="Entrance To East Freeport",
+        )
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        ProviderZoneTravelCatalog(self.db).reconcile()
+
+        row = self.db.conn.execute(
+            "SELECT * FROM zone_travel_edges WHERE source_kind='provider_zone_relationship'"
+        ).fetchone()
+        self.assertEqual(int(row["source_zone_entity_id"]), client_sky)
+        self.assertEqual(int(row["target_zone_entity_id"]), client_freeport)
+        self.assertEqual(int(row["bidirectional"]), 0)
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_sky, client_freeport),
+            [client_sky, client_freeport],
+        )
+        self.assertEqual(
+            ZoneTravelCatalog(self.db).shortest_path(client_freeport, client_sky),
+            [],
+        )
+
+        payload = json.loads(row["data_json"])
+        self.assertEqual(payload["provider_direction"]["mode"], "entrance_to_target")
+        self.assertFalse(payload["provider_direction"]["reversed"])
+
+    def test_direction_prefix_requires_exact_structured_target_name(self):
+        client_stone = self._client_zone("Stone Hive", "400")
+        client_blight = self._client_zone("Blightfire Moors", "401")
+        provider_stone = self._provider_zone("Stone Hive", "100")
+        provider_blight = self._provider_zone("Blightfire Moors", "101")
+        page = self._page("Stone Hive", "100")
+        self._connected(
+            provider_stone,
+            provider_blight,
+            page,
+            "Blightfire Moors / Exit From Somewhere Else",
+            direction="Exit From Somewhere Else",
+        )
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        ProviderZoneTravelCatalog(self.db).reconcile()
+
+        row = self.db.conn.execute(
+            "SELECT * FROM zone_travel_edges WHERE source_kind='provider_zone_relationship'"
+        ).fetchone()
+        self.assertEqual(int(row["source_zone_entity_id"]), client_stone)
+        self.assertEqual(int(row["target_zone_entity_id"]), client_blight)
+        payload = json.loads(row["data_json"])
+        self.assertEqual(payload["provider_direction"]["mode"], "forward_unclassified")
+        self.assertFalse(payload["provider_direction"]["reversed"])
 
     def test_reverse_route_requires_separate_explicit_provider_relationship(self):
         client_stone, client_blight, provider_stone, provider_blight = self._stone_blight_fixture()

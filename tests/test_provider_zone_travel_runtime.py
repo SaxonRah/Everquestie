@@ -63,8 +63,8 @@ class ProviderZoneTravelRuntimeTests(unittest.TestCase):
                     provider_blight,
                     "connected_to",
                     source_page_id=page,
-                    evidence="Blightfire Moors / North",
-                    data={"confidence": "structured", "direction": "North"},
+                    evidence="Blightfire Moors / Both",
+                    data={"confidence": "structured", "direction": "Both"},
                 )
             finally:
                 db.close()
@@ -87,7 +87,7 @@ class ProviderZoneTravelRuntimeTests(unittest.TestCase):
                     """
                     SELECT source_zone_entity_id,target_zone_entity_id,connection_kind,
                            bidirectional,status,source_name,source_kind,source_version,
-                           x,y,z
+                           data_json,x,y,z
                     FROM zone_travel_edges
                     WHERE source_kind='provider_zone_relationship'
                     """
@@ -97,16 +97,17 @@ class ProviderZoneTravelRuntimeTests(unittest.TestCase):
                 self.assertEqual(int(row["source_zone_entity_id"]), client_stone)
                 self.assertEqual(int(row["target_zone_entity_id"]), client_blight)
                 self.assertEqual(str(row["connection_kind"]), "zone_connection")
-                self.assertEqual(int(row["bidirectional"]), 0)
+                self.assertEqual(int(row["bidirectional"]), 1)
                 self.assertEqual(str(row["status"]), "linked")
                 self.assertEqual(str(row["source_name"]), "Allakhazam")
                 self.assertEqual(str(row["source_version"]), "mirror-runtime-test")
+                self.assertIn('"mode": "both"', str(row["data_json"]))
                 self.assertIsNone(row["x"])
                 self.assertIsNone(row["y"])
                 self.assertIsNone(row["z"])
 
                 meta = dict(raw.execute("SELECT key,value FROM app_meta").fetchall())
-                self.assertEqual(meta["provider_zone_travel_catalog_version"], "1")
+                self.assertEqual(meta["provider_zone_travel_catalog_version"], "2")
                 self.assertIn("provider_zone_travel_catalog_coverage", meta)
             finally:
                 raw.close()
@@ -123,7 +124,10 @@ class ProviderZoneTravelRuntimeTests(unittest.TestCase):
                     travel.shortest_path(client_stone, client_blight),
                     [client_stone, client_blight],
                 )
-                self.assertEqual(travel.shortest_path(client_blight, client_stone), [])
+                self.assertEqual(
+                    travel.shortest_path(client_blight, client_stone),
+                    [client_blight, client_stone],
+                )
 
                 # Runtime is a pure reader of the finalized graph.
                 with self.assertRaises(Exception):

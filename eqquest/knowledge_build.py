@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .allakhazam import AllakhazamImporter
+from .allakhazam_mirror_importer import AllakhazamMirrorImporter
 from .db import Database
 from .knowledge_snapshot import KnowledgeSnapshotReport, create_knowledge_snapshot
 from .map_catalog import MapCatalog
@@ -133,7 +133,7 @@ def _run_allakhazam_mirror(
 ) -> ProviderBuildResult:
     root = _required_path(config, "path")
     source_version = str(config.get("source_version") or "").strip()
-    summary = AllakhazamImporter(context.db).import_mirror(root)
+    summary = AllakhazamMirrorImporter(context.db).import_mirror(root)
 
     # AllakhazamImporter predates the source-agnostic provider coordinator and does
     # not accept a build version argument. A fresh provider build owns exactly the

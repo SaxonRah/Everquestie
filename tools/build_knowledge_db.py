@@ -216,7 +216,12 @@ def main() -> int:
             overwrite=bool(args.force),
             progress=print,
         )
-    except (ValueError, FileExistsError, FileNotFoundError) as exc:
+    except FileExistsError as exc:
+        existing = exc.args[0] if exc.args else args.working_db
+        raise SystemExit(
+            f"Output already exists: {existing}. Use --force to rebuild it."
+        ) from exc
+    except (ValueError, FileNotFoundError) as exc:
         raise SystemExit(str(exc)) from exc
 
     print()
@@ -229,6 +234,20 @@ def main() -> int:
     print(f"content version: {report.snapshot.snapshot_version}")
     print(f"schema version: {report.snapshot.schema_version}")
     print(f"integrity: {report.snapshot.diagnostics.get('integrity')}")
+    print(
+        "provider zone reconciliation: "
+        + ", ".join(
+  f"{key}={value}"
+  for key, value in sorted(report.snapshot.provider_zone_reconciliation.items())
+        )
+    )
+    print(
+        "provider zone travel: "
+        + ", ".join(
+  f"{key}={value}"
+  for key, value in sorted(report.snapshot.provider_zone_travel.items())
+        )
+    )
 
     route_summary = None
     if not args.skip_route_audit:

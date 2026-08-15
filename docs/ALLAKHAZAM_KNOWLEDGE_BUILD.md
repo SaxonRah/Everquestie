@@ -4,7 +4,7 @@ EverQuestie's packaged runtime must not scrape or reinterpret source websites. A
 
 ## One build, one acceptance report
 
-`tools/build_knowledge_db.py` can now combine the installed EverQuest client, a local Allakhazam mirror and approved map packs in one fresh build. After finalization it automatically evaluates the difficult real-route acceptance suite against the immutable snapshot.
+`tools/build_knowledge_db.py` can combine the installed EverQuest client, a local Allakhazam mirror and approved map packs in one fresh build. After finalization it automatically evaluates the difficult real-route acceptance suite against the immutable snapshot.
 
 Example on Windows PowerShell:
 
@@ -23,7 +23,9 @@ python .\tools\build_knowledge_db.py `
 
 Repeat `--map-pack NAME=PATH` for each approved independent map source.
 
-The route report currently includes the representative difficult endpoint families already established for the travel project, including The Hole → Labyrinth of Spite, Feldax Hive → The Hole/Paineel, Greater Faydark → The Hole, and The Stone Hive → North Freeport.
+The route report currently includes the representative real canonical endpoint families established for the travel project: The Hole → Labyrinth of Spite, Paineel → The Hole, Stonebrunt Mountains → Paineel, Greater Faydark → The Hole, and Stone Hive → North Freeport.
+
+The default acceptance list deliberately uses literal EQ-client zone display names. Synthetic zones used by long/gated unit tests are never treated as real release endpoints, and the audit does not add aliases or fuzzy matching merely to make a route query resolve.
 
 ## Source boundary
 

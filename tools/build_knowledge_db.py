@@ -12,7 +12,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eqquest.knowledge_build import ProviderInvocation, build_and_finalize_knowledge
+from eqquest.provider_travel_frontier import ProviderTravelFrontierAudit
 from eqquest.route_acceptance import evaluate_route_acceptance, route_acceptance_text
+
+
+_TOPOLOGY_FRONTIER_STATUSES = {
+    "disconnected",
+    "directionality_blocked",
+    "route_inconsistency",
+}
 
 
 def _assignment(value: str, *, option: str) -> tuple[str, str]:
@@ -111,13 +119,18 @@ def build_invocations(args: argparse.Namespace) -> list[ProviderInvocation]:
     return invocations
 
 
-def audit_snapshot_routes(snapshot_db: str | Path, cases=None):
-    """Evaluate route acceptance through an immutable SQLite snapshot connection."""
+def _open_immutable_snapshot(snapshot_db: str | Path) -> sqlite3.Connection:
     path = Path(snapshot_db).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
     conn = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+def audit_snapshot_routes(snapshot_db: str | Path, cases=None):
+    """Evaluate route acceptance through an immutable SQLite snapshot connection."""
+    conn = _open_immutable_snapshot(snapshot_db)
     try:
         db = SimpleNamespace(conn=conn, knowledge_writable=False)
         return evaluate_route_acceptance(db, cases)
@@ -125,14 +138,58 @@ def audit_snapshot_routes(snapshot_db: str | Path, cases=None):
         conn.close()
 
 
-def write_route_report(path: str | Path, summary) -> Path:
+def route_failure_frontier_zones(summary) -> tuple[str, ...]:
+    """Return unique resolved endpoints for failures that are actually topology-shaped.
+
+    Identity failures remain identity diagnostics. Provider travel frontier output is
+    useful only after both endpoints resolved and the route failure is about compiled
+    graph connectivity/directionality/consistency.
+    """
+    zones: list[str] = []
+    seen_entity_ids: set[int] = set()
+    for result in summary.results:
+        if result.status not in _TOPOLOGY_FRONTIER_STATUSES:
+            continue
+        for endpoint in (result.source, result.target):
+            if not endpoint.linked or endpoint.entity_id is None:
+                continue
+            entity_id = int(endpoint.entity_id)
+            if entity_id in seen_entity_ids:
+                continue
+            seen_entity_ids.add(entity_id)
+            zones.append(endpoint.canonical_name or endpoint.query)
+    return tuple(zones)
+
+
+def audit_snapshot_provider_travel_frontier(
+    snapshot_db: str | Path,
+    zones: tuple[str, ...],
+):
+    """Explain provider travel compiler state through the same immutable snapshot."""
+    conn = _open_immutable_snapshot(snapshot_db)
+    try:
+        db = SimpleNamespace(conn=conn, knowledge_writable=False)
+        return ProviderTravelFrontierAudit(db).summary(zones)
+    finally:
+        conn.close()
+
+
+def _write_json_report(path: str | Path, payload: dict) -> Path:
     output = Path(path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        json.dumps(summary.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return output
+
+
+def write_route_report(path: str | Path, summary) -> Path:
+    return _write_json_report(path, summary.as_dict())
+
+
+def write_provider_travel_frontier_report(path: str | Path, summary) -> Path:
+    return _write_json_report(path, summary.as_dict())
 
 
 def parser() -> argparse.ArgumentParser:
@@ -187,6 +244,13 @@ def parser() -> argparse.ArgumentParser:
         help="Optional path for a machine-readable route-acceptance JSON report",
     )
     p.add_argument(
+        "--provider-travel-frontier-report",
+        help=(
+            "Optional JSON path for provider-compiler frontier diagnostics covering the unique "
+            "resolved endpoints of topology-shaped route acceptance failures"
+        ),
+    )
+    p.add_argument(
         "--require-route-acceptance",
         action="store_true",
         help="Return exit code 2 when any built-in route acceptance case fails",
@@ -203,6 +267,8 @@ def main() -> int:
     args = parser().parse_args()
     if args.skip_route_audit and args.route_report:
         raise SystemExit("--route-report cannot be used with --skip-route-audit")
+    if args.skip_route_audit and args.provider_travel_frontier_report:
+        raise SystemExit("--provider-travel-frontier-report cannot be used with --skip-route-audit")
     if args.skip_route_audit and args.require_route_acceptance:
         raise SystemExit("--require-route-acceptance cannot be used with --skip-route-audit")
 
@@ -237,15 +303,15 @@ def main() -> int:
     print(
         "provider zone reconciliation: "
         + ", ".join(
-  f"{key}={value}"
-  for key, value in sorted(report.snapshot.provider_zone_reconciliation.items())
+            f"{key}={value}"
+            for key, value in sorted(report.snapshot.provider_zone_reconciliation.items())
         )
     )
     print(
         "provider zone travel: "
         + ", ".join(
-  f"{key}={value}"
-  for key, value in sorted(report.snapshot.provider_zone_travel.items())
+            f"{key}={value}"
+            for key, value in sorted(report.snapshot.provider_zone_travel.items())
         )
     )
 
@@ -258,6 +324,26 @@ def main() -> int:
             output = write_route_report(args.route_report, route_summary)
             print()
             print(f"route acceptance JSON: {output}")
+
+        if args.provider_travel_frontier_report:
+            frontier_zones = route_failure_frontier_zones(route_summary)
+            frontier_summary = audit_snapshot_provider_travel_frontier(
+                report.snapshot.path,
+                frontier_zones,
+            )
+            output = write_provider_travel_frontier_report(
+                args.provider_travel_frontier_report,
+                frontier_summary,
+            )
+            print()
+            if frontier_zones:
+                print("provider travel frontier zones: " + ", ".join(frontier_zones))
+                for zone in frontier_summary.zones:
+                    name = zone.canonical_zone_name or zone.query
+                    print(f"provider travel frontier {name}: {zone.classification}")
+            else:
+                print("provider travel frontier zones: none (no topology-shaped route failures)")
+            print(f"provider travel frontier JSON: {output}")
 
     if args.require_route_acceptance and route_summary is not None and route_summary.failed:
         return 2

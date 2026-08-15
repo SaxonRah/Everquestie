@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import sqlite3
 from typing import Callable
 
 from .db import Database
@@ -76,6 +78,72 @@ def compile_approved_travel_supplements(
     finally:
         db.close()
     return tuple(results)
+
+
+def stage_builder_with_approved_travel_supplements(
+    source_db: str | Path,
+    staged_db: str | Path,
+    supplement_dir: str | Path,
+    *,
+    overwrite: bool = False,
+    progress: ProgressCallback = None,
+) -> tuple[TravelSupplementBuildStats, ...]:
+    """Clone a builder DB safely, then compile approved supplements into the clone.
+
+    The source is opened read-only and copied with SQLite's backup API so committed WAL
+    content is included without mutating the builder database. The staged file is only
+    published after every approved manifest validates and compiles successfully.
+    """
+    source = Path(source_db).expanduser().resolve()
+    staged = Path(staged_db).expanduser().resolve()
+    if source == staged:
+        raise ValueError("staged release database must differ from source builder database")
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    if staged.exists() and not overwrite:
+        raise FileExistsError(staged)
+
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    temp = staged.with_name(staged.name + ".building")
+    temp.unlink(missing_ok=True)
+
+    source_conn: sqlite3.Connection | None = None
+    target_conn: sqlite3.Connection | None = None
+    try:
+        if progress is not None:
+            progress(f"[release-stage] cloning builder DB: {source}")
+        source_conn = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
+        target_conn = sqlite3.connect(temp)
+        source_conn.backup(target_conn)
+        target_conn.close()
+        target_conn = None
+        source_conn.close()
+        source_conn = None
+
+        results = compile_approved_travel_supplements(
+            temp,
+            supplement_dir,
+            progress=progress,
+        )
+        if staged.exists():
+            staged.unlink()
+        os.replace(temp, staged)
+        if progress is not None:
+            progress(f"[release-stage] ready: {staged}")
+        return results
+    except Exception:
+        if target_conn is not None:
+            try:
+                target_conn.close()
+            except Exception:
+                pass
+        if source_conn is not None:
+            try:
+                source_conn.close()
+            except Exception:
+                pass
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def build_and_finalize_with_approved_travel_supplements(

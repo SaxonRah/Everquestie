@@ -82,9 +82,14 @@ automatically compiles every JSON manifest in that directory, in deterministic f
 order, after the selected providers have populated the working DB and before snapshot
 finalization begins.
 
-The release build fails loudly when the approved directory is missing or empty, or when
+The Windows release coordinator also guarantees this boundary. `tools/build_release.ps1`
+first clones the selected builder DB with SQLite backup semantics, compiles every approved
+manifest into that staged clone, and only then finalizes/packages the knowledge snapshot.
+The source builder DB is never modified by release staging.
+
+Both release paths fail loudly when the approved directory is missing or empty, or when
 any manifest cannot resolve its endpoints through authoritative canonical zone identity.
-That prevents a clean rebuild from silently dropping reviewed travel knowledge.
+That prevents a clean rebuild or package from silently dropping reviewed travel knowledge.
 
 This remains builder-only infrastructure. Packaged EverQuestie does not scan the
 manifest directory and ordinary users do not need these JSON files separately from the
@@ -92,8 +97,8 @@ versioned knowledge snapshot.
 
 ## Normal release workflow
 
-A normal knowledge release should use the main builder command. No separate supplement
-application step is required:
+A fresh provider-driven knowledge build should use the main builder command. No separate
+supplement application step is required:
 
 ```powershell
 python .\tools\build_knowledge_db.py `
@@ -111,6 +116,17 @@ The builder sequence is:
 3. finalize the copied knowledge snapshot, including provider/map reconciliation;
 4. run route acceptance unless explicitly skipped.
 
+For a Windows package from an already-populated builder DB, use:
+
+```powershell
+.\tools\build_release.ps1 `
+  -Version 2026.08.15 `
+  -WorkingDb .\build\working.sqlite3
+```
+
+The release script stages the DB, compiles the same approved manifests, finalizes the
+snapshot, and requires the default current-live route suite to pass before packaging.
+
 Audit the **finalized snapshot**, not the raw working DB. Provider- and map-derived travel
 rows are reconciled during snapshot finalization, so route acceptance against the raw
 working DB can under-report the real compiled topology.
@@ -127,15 +143,25 @@ python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
   --json
 ```
 
-After a manual diagnostic application, create a fresh finalized test snapshot before
-running route acceptance:
+For release-like validation without mutating the source working DB, prefer staging the
+builder database rather than applying approved manifests in place:
 
 ```powershell
-python .\tools\finalize_knowledge_snapshot.py `
+python .\tools\stage_release_working_db.py `
   --input .\build\working.sqlite3 `
+  --output .\build\release-working.sqlite3 `
+  --force
+
+python .\tools\finalize_knowledge_snapshot.py `
+  --input .\build\release-working.sqlite3 `
   --output .\build\test-knowledge.sqlite3 `
   --version test `
   --force
+
+python .\tools\audit_route_acceptance.py `
+  .\build\test-knowledge.sqlite3 `
+  --full-paths `
+  --fail-unreachable
 ```
 
 The finalizer may rebuild map-derived and structured-provider-derived travel rows, but

@@ -75,7 +75,7 @@ class ProviderZoneReconciliationTests(unittest.TestCase):
         self._connected(provider_stone, provider_blight, page, "Blightfire Moors / North")
 
         stats = ProviderZoneReconciliationCatalog(self.db).reconcile()
-        self.assertEqual(PROVIDER_ZONE_CATALOG_VERSION, "1")
+        self.assertEqual(PROVIDER_ZONE_CATALOG_VERSION, "2")
         self.assertEqual(stats.provider_zones, 3)
         self.assertEqual(stats.linked, 2)
         self.assertEqual(stats.candidate, 1)
@@ -92,6 +92,7 @@ class ProviderZoneReconciliationTests(unittest.TestCase):
         self.assertTrue(stone.projection_safe)
         self.assertEqual(stone.gameplay_zone_entity_id, client_stone)
         self.assertEqual(stone.corroboration_count, 1)
+        self.assertEqual(stone.evidence[0]["provider_zone_match_kind"], "exact")
         self.assertEqual(stone.evidence[0]["gameplay_neighbor_entity_id"], client_blight)
 
         # The target-side provider row is independently corroborated by the same
@@ -105,6 +106,77 @@ class ProviderZoneReconciliationTests(unittest.TestCase):
         self.assertEqual(mesa.status, "candidate")
         self.assertEqual(mesa.gameplay_zone_entity_id, client_mesa)
         self.assertIn("lacks independent", mesa.reason)
+
+    def test_leading_article_variant_still_requires_structured_corroboration(self):
+        client_faydark = self._client_zone("The Greater Faydark", "54")
+        client_crushbone = self._client_zone("Crushbone", "58")
+        provider_faydark = self._provider_zone("Greater Faydark", "300")
+        provider_crushbone = self._provider_zone("Crushbone", "301")
+        page = self._allakhazam_zone_page("Greater Faydark", "300")
+        self._connected(provider_faydark, provider_crushbone, page, "Crushbone / North")
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider_faydark)
+        assert binding is not None
+        self.assertTrue(binding.projection_safe)
+        self.assertEqual(binding.gameplay_zone_entity_id, client_faydark)
+        self.assertIn("leading-article variant", binding.reason)
+        self.assertEqual(binding.evidence[0]["provider_zone_match_kind"], "article_variant")
+        self.assertEqual(binding.evidence[0]["gameplay_neighbor_entity_id"], client_crushbone)
+
+    def test_terminal_parenthetical_canonical_name_requires_structured_corroboration(self):
+        client_hole = self._client_zone("The Hole", "39")
+        client_paineel = self._client_zone("Paineel", "75")
+        provider_hole = self._provider_zone("Ruins of Old Paineel (The Hole)", "99")
+        provider_paineel = self._provider_zone("Paineel", "75")
+        page = self._allakhazam_zone_page("Ruins of Old Paineel (The Hole)", "99")
+        self._connected(provider_hole, provider_paineel, page, "Paineel / Both")
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider_hole)
+        assert binding is not None
+        self.assertTrue(binding.projection_safe)
+        self.assertEqual(binding.gameplay_zone_entity_id, client_hole)
+        self.assertIn("terminal parenthetical", binding.reason)
+        self.assertEqual(binding.evidence[0]["provider_zone_match_kind"], "parenthetical_alias")
+        self.assertEqual(binding.evidence[0]["gameplay_neighbor_entity_id"], client_paineel)
+
+    def test_name_variant_without_topology_remains_candidate(self):
+        client_hole = self._client_zone("The Hole", "39")
+        provider_hole = self._provider_zone("Ruins of Old Paineel (The Hole)", "99")
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider_hole)
+        assert binding is not None
+        self.assertFalse(binding.projection_safe)
+        self.assertEqual(binding.status, "candidate")
+        self.assertEqual(binding.gameplay_zone_entity_id, client_hole)
+        self.assertEqual(binding.corroboration_count, 0)
+        self.assertIn("lacks independent", binding.reason)
+
+    def test_allowed_name_variants_preserve_ambiguity(self):
+        first = self._client_zone("The Test Grounds", "500")
+        second = self._client_zone("Test Grounds", "501")
+        provider = self._provider_zone("Test Grounds", "900")
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider)
+        assert binding is not None
+        self.assertEqual(binding.status, "ambiguous")
+        self.assertIsNone(binding.gameplay_zone_entity_id)
+        self.assertFalse(binding.projection_safe)
+        self.assertNotEqual(first, second)
+
+    def test_arbitrary_containment_is_not_a_provider_name_variant(self):
+        self._client_zone("The Hole", "39")
+        provider = self._provider_zone("Ruins of Old Paineel - The Hole", "99")
+
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider)
+        assert binding is not None
+        self.assertEqual(binding.status, "unresolved")
+        self.assertIsNone(binding.gameplay_zone_entity_id)
+        self.assertFalse(binding.projection_safe)
 
     def test_multi_client_collision_and_provider_only_zone_never_link(self):
         self._client_zone("The Arena", "77")

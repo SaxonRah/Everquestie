@@ -187,7 +187,7 @@ class ProviderZoneProjectionTests(unittest.TestCase):
             self.assertEqual(linked[ids["provider_stone"]], ids["client_stone"])
             self.assertEqual(linked[ids["provider_blight"]], ids["client_blight"])
             meta = dict(raw.execute("SELECT key,value FROM app_meta").fetchall())
-            self.assertEqual(meta["provider_zone_catalog_version"], "1")
+            self.assertEqual(meta["provider_zone_catalog_version"], "2")
             self.assertIn("provider_zone_catalog_coverage", meta)
         finally:
             raw.close()

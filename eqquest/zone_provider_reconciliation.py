@@ -4,12 +4,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import re
 from typing import Any
 
-from .db import Database
+from .db import Database, normalize_name
 
 
-PROVIDER_ZONE_CATALOG_VERSION = "1"
+PROVIDER_ZONE_CATALOG_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,19 +49,36 @@ class ProviderZoneReconciliationStats:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _ProviderNameMatch:
+    target_ids: tuple[int, ...]
+    match_kind: str
+    match_value: str
+
+
 class ProviderZoneReconciliationCatalog:
     """Builder-owned bindings from provider zone entities to gameplay zone identity.
 
-    Provider entities are intentionally preserved.  A binding is a projection rule,
+    Provider entities are intentionally preserved. A binding is a projection rule,
     not an entity merge: provenance, provider external IDs, source pages and graph rows
     continue to point at the original provider entity.
 
-    Exact same-name matching alone is deliberately insufficient for automatic
-    projection.  The first conservative linker requires exactly one EQ-client-backed
-    zone with the same normalized canonical name *and* at least one structured
-    provider ``connected_to`` relationship whose neighboring zone independently has a
-    unique EQ-client same-name target.  This turns the provider's own topology into
-    corroborating identity evidence instead of treating a display name as proof.
+    Display-name similarity alone is deliberately insufficient for automatic
+    projection. The conservative linker requires exactly one EQ-client-backed target
+    from a small auditable set of provider display-name forms *and* at least one
+    structured provider ``connected_to`` relationship whose neighboring provider zone
+    independently resolves to exactly one EQ-client-backed target through the same
+    rules. This turns the provider's own topology into corroborating identity evidence.
+
+    Catalog v2 recognizes only two non-exact source-owned naming forms in addition to
+    exact canonical names:
+
+    - a leading ``The`` difference (``Greater Faydark`` ↔ ``The Greater Faydark``);
+    - a terminal parenthetical alternate name whose complete parenthetical text is a
+      canonical client name (``Ruins of Old Paineel (The Hole)`` ↔ ``The Hole``).
+
+    These are builder reconciliation signals only. They do not become runtime fuzzy
+    aliases and they do not weaken normal player-facing zone resolution.
     """
 
     def __init__(self, db: Database):
@@ -106,6 +124,95 @@ class ProviderZoneReconciliationCatalog:
         )
         self.db._commit()
 
+    @staticmethod
+    def _clean_display_name(value: str) -> str:
+        return " ".join((value or "").split()).strip()
+
+    @classmethod
+    def _client_name_keys(cls, value: str) -> tuple[str, ...]:
+        """Exact client display name plus only its leading-article variant."""
+        text = cls._clean_display_name(value)
+        if not text:
+            return ()
+        values = [text]
+        if text.casefold().startswith("the ") and len(text) > 4:
+            values.append(text[4:].strip())
+        return tuple(
+            dict.fromkeys(
+                key for key in (normalize_name(item) for item in values) if key
+            )
+        )
+
+    @classmethod
+    def _provider_name_variants(cls, value: str) -> tuple[tuple[str, str], ...]:
+        """Return narrowly allowed source-owned provider display-name variants.
+
+        Each tuple is ``(kind, normalized_key)``. We intentionally do not perform
+        substring, significant-word, punctuation-free containment, stemming or other
+        fuzzy matching here.
+        """
+        text = cls._clean_display_name(value)
+        if not text:
+            return ()
+
+        variants: list[tuple[str, str]] = []
+
+        def add(kind: str, candidate: str) -> None:
+            key = normalize_name(cls._clean_display_name(candidate))
+            if key and all(existing_key != key for _existing_kind, existing_key in variants):
+                variants.append((kind, key))
+
+        add("exact", text)
+        if text.casefold().startswith("the ") and len(text) > 4:
+            add("article_variant", text[4:])
+
+        # Only a complete terminal parenthetical is considered. Do not extract arbitrary
+        # interior substrings from provider titles.
+        match = re.search(r"\(([^()]*)\)\s*$", text)
+        if match:
+            inner = cls._clean_display_name(match.group(1))
+            if inner:
+                add("parenthetical_alias", inner)
+                if inner.casefold().startswith("the ") and len(inner) > 4:
+                    add("parenthetical_alias", inner[4:])
+
+        return tuple(variants)
+
+    @classmethod
+    def _provider_name_match(
+        cls,
+        provider_name: str,
+        *,
+        names: dict[int, str],
+        client_targets_by_key: dict[str, tuple[int, ...]],
+    ) -> _ProviderNameMatch:
+        matched_ids: set[int] = set()
+        matched_variants: list[tuple[str, str, tuple[int, ...]]] = []
+        for kind, key in cls._provider_name_variants(provider_name):
+            targets = client_targets_by_key.get(key, ())
+            if not targets:
+                continue
+            matched_ids.update(int(value) for value in targets)
+            matched_variants.append((kind, key, targets))
+
+        target_ids = tuple(sorted(matched_ids))
+        if len(target_ids) != 1:
+            return _ProviderNameMatch(target_ids, "none", "")
+
+        target_id = int(target_ids[0])
+        provider_exact = normalize_name(cls._clean_display_name(provider_name))
+        target_exact = normalize_name(cls._clean_display_name(names.get(target_id, "")))
+        if provider_exact and provider_exact == target_exact:
+            return _ProviderNameMatch(target_ids, "exact", provider_name)
+
+        for kind, key, targets in matched_variants:
+            if target_id not in targets:
+                continue
+            if kind == "parenthetical_alias":
+                return _ProviderNameMatch(target_ids, kind, key)
+
+        return _ProviderNameMatch(target_ids, "article_variant", provider_name)
+
     def _zone_inventory(self):
         zones = self.db.conn.execute(
             "SELECT id,name,normalized_name FROM entities WHERE kind='zone' ORDER BY id"
@@ -122,21 +229,24 @@ class ProviderZoneReconciliationCatalog:
             ).fetchall():
                 client_ids[int(row["entity_id"])].append(str(row["external_id"]))
 
-        by_name: dict[str, list[int]] = defaultdict(list)
         names: dict[int, str] = {}
         normalized: dict[int, str] = {}
         for row in zones:
             entity_id = int(row["id"])
             names[entity_id] = str(row["name"])
             normalized[entity_id] = str(row["normalized_name"])
-            by_name[normalized[entity_id]].append(entity_id)
 
-        client_targets_by_name: dict[str, tuple[int, ...]] = {}
-        for key, entity_ids in by_name.items():
-            client_targets_by_name[key] = tuple(
-                entity_id for entity_id in entity_ids if client_ids.get(entity_id)
-            )
-        return zones, client_ids, names, normalized, client_targets_by_name
+        client_targets_by_key_mut: dict[str, set[int]] = defaultdict(set)
+        for entity_id, values in client_ids.items():
+            if not values:
+                continue
+            for key in self._client_name_keys(names.get(entity_id, "")):
+                client_targets_by_key_mut[key].add(int(entity_id))
+        client_targets_by_key = {
+            key: tuple(sorted(entity_ids))
+            for key, entity_ids in client_targets_by_key_mut.items()
+        }
+        return zones, client_ids, names, normalized, client_targets_by_key
 
     @staticmethod
     def _structured_provider_relationship(row) -> bool:
@@ -150,16 +260,17 @@ class ProviderZoneReconciliationCatalog:
         if not isinstance(data, dict):
             data = {}
         # Allakhazam's Connected Zones extractor has always represented explicit table
-        # rows as connected_to relationships.  Newer rows also carry confidence=structured.
+        # rows as connected_to relationships. Newer rows also carry confidence=structured.
         return source_name.casefold() == "allakhazam" or data.get("confidence") == "structured"
 
     def _corroboration_for_provider_zone(
         self,
         provider_zone_entity_id: int,
         *,
-        normalized: dict[int, str],
-        client_targets_by_name: dict[str, tuple[int, ...]],
         names: dict[int, str],
+        client_targets_by_key: dict[str, tuple[int, ...]],
+        provider_match_kind: str,
+        provider_match_value: str,
     ) -> tuple[dict[str, Any], ...]:
         if not (
             self._relation_exists("entity_relationships")
@@ -186,17 +297,24 @@ class ProviderZoneReconciliationCatalog:
             source_id = int(row["source_entity_id"])
             target_id = int(row["target_entity_id"])
             neighbor_id = target_id if source_id == int(provider_zone_entity_id) else source_id
-            neighbor_key = normalized.get(neighbor_id, "")
-            client_targets = client_targets_by_name.get(neighbor_key, ())
-            if len(client_targets) != 1:
+            neighbor_match = self._provider_name_match(
+                names.get(neighbor_id, ""),
+                names=names,
+                client_targets_by_key=client_targets_by_key,
+            )
+            if len(neighbor_match.target_ids) != 1:
                 continue
-            client_neighbor_id = int(client_targets[0])
+            client_neighbor_id = int(neighbor_match.target_ids[0])
             evidence.append(
                 {
                     "relationship_id": int(row["id"]),
                     "direction": "outgoing" if source_id == int(provider_zone_entity_id) else "incoming",
+                    "provider_zone_match_kind": provider_match_kind,
+                    "provider_zone_match_value": provider_match_value,
                     "provider_neighbor_entity_id": neighbor_id,
                     "provider_neighbor_name": names.get(neighbor_id, ""),
+                    "provider_neighbor_match_kind": neighbor_match.match_kind,
+                    "provider_neighbor_match_value": neighbor_match.match_value,
                     "gameplay_neighbor_entity_id": client_neighbor_id,
                     "gameplay_neighbor_name": names.get(client_neighbor_id, ""),
                     "source_name": str(row["source_name"] or ""),
@@ -208,11 +326,19 @@ class ProviderZoneReconciliationCatalog:
             )
         return tuple(evidence)
 
+    @staticmethod
+    def _match_label(match_kind: str) -> str:
+        return {
+            "exact": "exact-name",
+            "article_variant": "leading-article variant",
+            "parenthetical_alias": "terminal parenthetical canonical-name variant",
+        }.get(match_kind, "conservative name variant")
+
     def reconcile(self) -> ProviderZoneReconciliationStats:
         if not getattr(self.db, "knowledge_writable", True):
             raise RuntimeError("provider zone reconciliation is builder-only")
         self.ensure_schema()
-        zones, client_ids, names, normalized, client_targets_by_name = self._zone_inventory()
+        zones, client_ids, names, _normalized, client_targets_by_key = self._zone_inventory()
         now = datetime.now().isoformat(timespec="seconds")
 
         provider_zone_ids = [int(row["id"]) for row in zones if not client_ids.get(int(row["id"]))]
@@ -222,37 +348,49 @@ class ProviderZoneReconciliationCatalog:
         with self.db.batch():
             self.db.conn.execute("DELETE FROM zone_provider_bindings")
             for provider_id in provider_zone_ids:
-                key = normalized.get(provider_id, "")
-                client_targets = client_targets_by_name.get(key, ())
+                provider_match = self._provider_name_match(
+                    names.get(provider_id, ""),
+                    names=names,
+                    client_targets_by_key=client_targets_by_key,
+                )
+                client_targets = provider_match.target_ids
                 target_id: int | None = None
                 target_name = ""
                 corroboration: tuple[dict[str, Any], ...] = ()
 
                 if not client_targets:
                     status = "unresolved"
-                    reason = "no EQ-client-backed zone has this exact canonical name"
+                    reason = (
+                        "no EQ-client-backed zone matches the provider name through exact, "
+                        "leading-article, or terminal-parenthetical canonical-name rules"
+                    )
                 elif len(client_targets) > 1:
                     status = "ambiguous"
-                    reason = "multiple EQ-client-backed zones share this exact canonical name"
+                    reason = (
+                        "multiple EQ-client-backed zones match the provider name through the "
+                        "allowed conservative name variants"
+                    )
                 else:
                     target_id = int(client_targets[0])
                     target_name = names.get(target_id, "")
                     corroboration = self._corroboration_for_provider_zone(
                         provider_id,
-                        normalized=normalized,
-                        client_targets_by_name=client_targets_by_name,
                         names=names,
+                        client_targets_by_key=client_targets_by_key,
+                        provider_match_kind=provider_match.match_kind,
+                        provider_match_value=provider_match.match_value,
                     )
+                    label = self._match_label(provider_match.match_kind)
                     if corroboration:
                         status = "linked"
                         reason = (
-                            "unique exact-name EQ-client target corroborated by structured "
+                            f"unique {label} EQ-client target corroborated by structured "
                             "provider connected-zone evidence"
                         )
                     else:
                         status = "candidate"
                         reason = (
-                            "unique exact-name EQ-client target exists but lacks independent "
+                            f"unique {label} EQ-client target exists but lacks independent "
                             "structured provider corroboration"
                         )
 

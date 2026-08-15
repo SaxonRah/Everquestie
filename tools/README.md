@@ -52,14 +52,21 @@ python .\tools\build_knowledge_db.py `
   --allakhazam-version "2026-08-15" `
   --map-pack "Brewall=C:\EQ Maps\Brewall" `
   --map-version "Brewall=2026-08" `
-  --route-report .\build\route-acceptance.json
+  --route-report .\build\route-acceptance.json `
+  --provider-travel-frontier-report .\build\provider-travel-frontier.json
 ```
 
 Add a second `--map-pack NAME=PATH` for Good or another approved map source. MCP enrichment is optional builder infrastructure: add `--mcp-repository PATH` only when that build needs it. It requires `--eq-install` because the MCP snapshot is generated from that installation.
 
 The default provider registry is `eqclient`, `allakhazam-mirror`, `mcp`, and `map-pack`. Allakhazam remains builder-only: its saved pages are normalized into EverQuestie's database and snapshot finalization strips builder-local file paths while retaining source provenance. Packaged runtime never scans the mirror or imports source HTML.
 
-After finalization, `build_knowledge_db.py` automatically runs the difficult real-route acceptance suite against the immutable snapshot. That suite currently asks for The Hole → Labyrinth of Spite, Paineel → The Hole, Stonebrunt Mountains → Paineel, Greater Faydark → The Hole, and Stone Hive → North Freeport. The literals are real canonical client zone names; synthetic stress-test zones do not belong in this release audit. Failures are diagnostics, not invented routes: unresolved identities, directionality blocks, and disconnected topology remain explicit. `--route-report PATH` writes the same result as machine-readable JSON. `--require-route-acceptance` makes any failing case return exit code 2 when the data is ready to become a release gate. `--skip-route-audit` is available for narrow builder iteration.
+After finalization, `build_knowledge_db.py` automatically runs the difficult real-route acceptance suite against the immutable snapshot. That suite currently asks for The Hole → Labyrinth of Spite, Paineel → The Hole, Stonebrunt Mountains → Paineel, Greater Faydark → The Hole, and Stone Hive → North Freeport. The literals are real canonical client zone names; synthetic stress-test zones do not belong in this release audit. Failures are diagnostics, not invented routes: unresolved identities, directionality blocks, and disconnected topology remain explicit.
+
+`--route-report PATH` writes route acceptance as machine-readable JSON. `--provider-travel-frontier-report PATH` writes a second JSON report for the unique resolved source/target zones involved in topology-shaped failures (`disconnected`, `directionality_blocked`, or `route_inconsistency`). It reuses the finalized provider-zone bindings, stored Connected Zones relationships and production provider-travel compiler semantics from the same immutable snapshot. It does not re-import source pages, rebuild topology, or guess missing edges.
+
+Together the two files form the preferred travel-completion work queue: the route report says which player journeys fail, while the provider frontier report says whether those failed endpoints are missing structured provider topology, blocked by canonical bindings, unexpectedly uncompiled, or already compiled and therefore require investigation elsewhere.
+
+`--require-route-acceptance` makes any failing case return exit code 2 when the data is ready to become a release gate. `--skip-route-audit` is available for narrow builder iteration and cannot be combined with either report option or the release gate.
 
 ## Build or refresh the global map catalog
 

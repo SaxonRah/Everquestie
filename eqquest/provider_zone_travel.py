@@ -9,7 +9,7 @@ from .db import Database
 from .zone_travel import ZoneTravelCatalog
 
 
-PROVIDER_ZONE_TRAVEL_CATALOG_VERSION = "1"
+PROVIDER_ZONE_TRAVEL_CATALOG_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,16 @@ class ProviderZoneTravelStats:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderTravelDirection:
+    """Canonical orientation derived only from structured provider direction text."""
+
+    reverse: bool
+    bidirectional: bool
+    mode: str
+    raw: str
+
+
 class ProviderZoneTravelCatalog:
     """Compile structured provider zone relationships into canonical travel edges.
 
@@ -40,9 +50,13 @@ class ProviderZoneTravelCatalog:
     or have a projection-safe ``zone_provider_bindings`` row. No provider relationship
     is used to break an ambiguous/unresolved gameplay identity here.
 
-    ``connected_to`` is compiled in its stored source→target direction only. A reverse
-    edge requires a second explicit relationship; this compiler never infers reciprocal
-    travel and never manufactures coordinates that the provider did not supply.
+    ``connected_to`` is compiled according to source-owned structured direction data.
+    Allakhazam's Connected Zones table currently uses values such as ``Both``,
+    ``Entrance To <zone>`` and ``Exit From <zone>``. ``Both`` is explicit evidence for
+    reciprocal travel. ``Exit From <exact target>`` reverses the canonical edge because
+    the saved page is naming a route that exits the target into the page's current zone.
+    Unknown or descriptive direction strings retain the historical source→target
+    orientation and are never promoted to reciprocal travel by inference.
     """
 
     SOURCE_KIND = "provider_zone_relationship"
@@ -125,6 +139,41 @@ class ProviderZoneTravelCatalog:
         return str(data.get("confidence") or "").casefold() == "structured"
 
     @staticmethod
+    def _direction_name_key(value: str) -> str:
+        return " ".join((value or "").casefold().split())
+
+    @classmethod
+    def _direction_semantics(cls, row) -> ProviderTravelDirection:
+        """Interpret only direction spellings whose topology meaning is explicit.
+
+        The Allakhazam Connected Zones table is source-owned structured data, but the
+        contents of its Direction column are not all topology operators. Compass text
+        and any future unknown value therefore stay forward-only. Prefix forms are
+        accepted only when the embedded zone name exactly matches the relationship's
+        structured target name; this prevents prose that merely starts with ``Exit
+        From`` or ``Entrance To`` from silently changing graph orientation.
+        """
+        data = cls._relationship_data(row)
+        raw = " ".join(str(data.get("direction") or "").split())
+        folded = raw.casefold()
+        if folded == "both":
+            return ProviderTravelDirection(False, True, "both", raw)
+
+        target_name = str(row["target_name"] or "")
+        target_key = cls._direction_name_key(target_name)
+        for prefix, reverse, mode in (
+            ("exit from ", True, "exit_from_target"),
+            ("entrance to ", False, "entrance_to_target"),
+        ):
+            if not folded.startswith(prefix):
+                continue
+            named_target = raw[len(prefix):].strip()
+            if target_key and cls._direction_name_key(named_target) == target_key:
+                return ProviderTravelDirection(reverse, False, mode, raw)
+
+        return ProviderTravelDirection(False, False, "forward_unclassified", raw)
+
+    @staticmethod
     def _source_key(row) -> str:
         page_key = str(row["source_key"] or row["source_url"] or "provider-zone")
         target_key = str(row["target_external_id"] or "").strip()
@@ -133,8 +182,13 @@ class ProviderZoneTravelCatalog:
         return f"{page_key}#connected_to:{target_key}"
 
     @classmethod
-    def _relationship_payload(cls, row) -> dict[str, Any]:
-        return {
+    def _relationship_payload(
+        cls,
+        row,
+        *,
+        direction: ProviderTravelDirection | None = None,
+    ) -> dict[str, Any]:
+        payload = {
             "provider_relationship_id": int(row["relationship_id"]),
             "provider_source_zone_entity_id": int(row["source_entity_id"]),
             "provider_target_zone_entity_id": int(row["target_entity_id"]),
@@ -144,6 +198,14 @@ class ProviderZoneTravelCatalog:
             "provider_target_external_id": str(row["target_external_id"] or ""),
             "relationship_data": cls._relationship_data(row),
         }
+        if direction is not None:
+            payload["provider_direction"] = {
+                "raw": direction.raw,
+                "mode": direction.mode,
+                "reversed": direction.reverse,
+                "bidirectional": direction.bidirectional,
+            }
+        return payload
 
     def reconcile(self, *, source_name: str | None = None) -> ProviderZoneTravelStats:
         if not getattr(self.db, "knowledge_writable", True):
@@ -218,9 +280,13 @@ class ProviderZoneTravelCatalog:
                     self_edges += 1
                     continue
 
+                direction = self._direction_semantics(row)
+                edge_source = canonical_target if direction.reverse else canonical_source
+                edge_target = canonical_source if direction.reverse else canonical_target
+
                 provider_name = str(row["source_name"] or "Provider knowledge")
                 source_key = self._source_key(row)
-                payload = self._relationship_payload(row)
+                payload = self._relationship_payload(row, direction=direction)
                 self.db.conn.execute(
                     """
                     INSERT INTO zone_travel_edges(
@@ -233,7 +299,7 @@ class ProviderZoneTravelCatalog:
                     DO UPDATE SET
                         source_zone_entity_id=excluded.source_zone_entity_id,
                         target_zone_entity_id=excluded.target_zone_entity_id,
-                        bidirectional=0,
+                        bidirectional=excluded.bidirectional,
                         status='linked',
                         reason=excluded.reason,
                         evidence=excluded.evidence,
@@ -244,10 +310,10 @@ class ProviderZoneTravelCatalog:
                         updated_at=excluded.updated_at
                     """,
                     (
-                        canonical_source,
-                        canonical_target,
+                        edge_source,
+                        edge_target,
                         "zone_connection",
-                        0,
+                        int(direction.bidirectional),
                         "linked",
                         "provider connected-zone relationship mapped through projection-safe zone bindings",
                         str(row["evidence"] or ""),

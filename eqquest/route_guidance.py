@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .db import Database
 from .travel import TravelRouteResult, build_route_result
+from .travel_connectivity import travel_connectivity_text
 from .zone_authority import resolve_authoritative_zone
 
 
@@ -161,7 +162,18 @@ def next_hop_for_zone(
 
 def route_guidance_text(db: Database, guidance: RouteGuidanceResult) -> str:
     if not guidance.route.ok or not guidance.hops:
-        return guidance.route.text
+        text = guidance.route.text
+        if (
+            not guidance.route.ok
+            and guidance.route.source_entity_id is not None
+            and guidance.route.target_entity_id is not None
+        ):
+            text += "\n\nTravel graph diagnostic:\n" + travel_connectivity_text(
+                db,
+                guidance.route.source_entity_id,
+                guidance.route.target_entity_id,
+            )
+        return text
 
     first = guidance.hops[0]
     last = guidance.hops[-1]

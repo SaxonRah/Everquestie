@@ -31,3 +31,5 @@ third_party/everquest1-mcp/dist/
 .idea/
 .DS_Store
 Thumbs.db
+/third_party/everquest1-mcp
+/release

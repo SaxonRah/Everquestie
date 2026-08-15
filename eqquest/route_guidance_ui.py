@@ -132,6 +132,28 @@ class RouteGuidanceFrame(TravelFrame):
             else "No confirmed canonical route is currently available."
         )
 
+    def route_to_zone(self, target_zone: str) -> bool:
+        """Accept one canonical destination from another UI owner and route to it.
+
+        Callers hand Travel only a destination token. Travel remains the owner of the
+        live start zone, canonical route computation, route text, cached guidance and
+        next-hop map behavior.
+        """
+        target = " ".join(str(target_zone or "").split()).strip()
+        source = self._live_current_zone()
+        if not source:
+            self._route_guidance = None
+            self.status_var.set("Current zone is unknown; route guidance needs the live zone.")
+            return False
+        if not target:
+            self._route_guidance = None
+            self.status_var.set("Route destination is empty.")
+            return False
+        self.from_var.set(source)
+        self.to_var.set(target)
+        self.find_route()
+        return bool(self._route_guidance is not None and self._route_guidance.ok)
+
     def map_next_hop(self) -> None:
         guidance = self._route_guidance
         if guidance is None or not guidance.ok:

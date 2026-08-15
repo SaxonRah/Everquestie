@@ -7,6 +7,10 @@ import sqlite3
 from .db import Database
 from .eqmap import map_to_game
 from .locations import LocationEvidence
+from .provider_zone_metadata import (
+    ProviderZoneMetadata,
+    provider_zone_metadata_for_gameplay_zone,
+)
 from .zone_catalog import ZoneMapBinding, ZoneMapCatalog
 from .zone_authority import resolve_authoritative_zone
 from .zone_identity import ZoneIdentity
@@ -80,6 +84,7 @@ class ZoneContext:
     connections: tuple[ZoneConnection, ...]
     locations: tuple[ZoneLocatedEntity, ...]
     related_entities: tuple[ZoneRelatedEntity, ...]
+    provider_metadata: tuple[ProviderZoneMetadata, ...]
     provider_bindings: tuple[ProviderZoneBinding, ...] = ()
 
     @property
@@ -396,6 +401,7 @@ def build_zone_context(
         linked_only=True,
     )
     projected_zone_ids = provider_catalog.projected_zone_entity_ids(identity.entity_id)
+    provider_metadata = provider_zone_metadata_for_gameplay_zone(db, identity.entity_id)
 
     maps = tuple(ZoneMapCatalog(db).maps_for_zone(identity.entity_id))
     connections = tuple(_connections_for_zone(db, identity.entity_id))
@@ -433,6 +439,7 @@ def build_zone_context(
             connections=connections,
             locations=locations,
             related_entities=related_entities,
+            provider_metadata=provider_metadata,
             provider_bindings=provider_bindings,
         ),
         "linked",
@@ -456,6 +463,30 @@ def _append_related_section(
         if row.source_field:
             details.append(row.source_field)
         lines.append(f"  • {row.name} | " + " | ".join(details))
+
+
+def _append_provider_metadata(lines: list[str], rows: tuple[ProviderZoneMetadata, ...]) -> None:
+    if not rows:
+        return
+    lines += ["", "Provider zone facts (source-specific):"]
+    for row in rows:
+        details: list[str] = []
+        if row.level_range_text:
+            details.append(f"level {row.level_range_text}")
+        if row.expansion:
+            details.append(row.expansion)
+        if row.zone_type:
+            details.append(f"type: {row.zone_type}")
+        if row.instanced:
+            details.append(f"instanced: {row.instanced}")
+        if row.keyed:
+            details.append(f"keyed: {row.keyed}")
+        if row.hot_zone is not None:
+            details.append(f"hot zone: {'yes' if row.hot_zone else 'no'}")
+        facts = " | ".join(details) if details else "metadata present"
+        lines.append(
+            f"  • {row.provider_zone_name} | {row.source_label} | {facts}"
+        )
 
 
 def zone_context_text(
@@ -500,6 +531,8 @@ def zone_context_text(
                 f"  • {binding.provider_zone_name} | "
                 f"{binding.corroboration_count} structured zone-link corroboration(s)"
             )
+
+    _append_provider_metadata(lines, context.provider_metadata)
 
     if context.maps:
         lines += ["", "Map bindings:"]

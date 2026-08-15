@@ -40,21 +40,26 @@ Use `-OneFile` only when a single executable is specifically desired. In that mo
 
 ## Build a release knowledge database from providers
 
-The source-agnostic coordinator creates a fresh working database from the providers explicitly selected for that build, then finalizes a separate distributable snapshot:
+The source-agnostic coordinator creates a fresh working database from the providers explicitly selected for that build, then finalizes a separate distributable snapshot. The local Allakhazam HTTrack mirror is now a first-class builder provider, so the same build can combine exact client zone identity, Allakhazam world/quest relationships, and approved map packs before finalization:
 
 ```powershell
 python .\tools\build_knowledge_db.py `
   --working-db .\build\working.sqlite3 `
   --snapshot-db .\dist\everquestie-knowledge.sqlite3 `
-  --version 2026.08.14 `
+  --version 2026.08.15 `
   --eq-install "C:\EverQuest" `
+  --allakhazam-mirror "D:\AllakhazamMirror\everquest.allakhazam.com" `
+  --allakhazam-version "2026-08-15" `
   --map-pack "Brewall=C:\EQ Maps\Brewall" `
-  --map-version "Brewall=2026-08"
+  --map-version "Brewall=2026-08" `
+  --route-report .\build\route-acceptance.json
 ```
 
 Add a second `--map-pack NAME=PATH` for Good or another approved map source. MCP enrichment is optional builder infrastructure: add `--mcp-repository PATH` only when that build needs it. It requires `--eq-install` because the MCP snapshot is generated from that installation.
 
-The coordinator itself has a provider registry. Today the default providers are `eqclient`, `mcp`, and `map-pack`. A future Allakhazam DB/Wiki mirror can register new providers against the same normalized EverQuestie DB without turning those mirrors into runtime dependencies or requiring the coordinator to be redesigned.
+The default provider registry is `eqclient`, `allakhazam-mirror`, `mcp`, and `map-pack`. Allakhazam remains builder-only: its saved pages are normalized into EverQuestie's database and snapshot finalization strips builder-local file paths while retaining source provenance. Packaged runtime never scans the mirror or imports source HTML.
+
+After finalization, `build_knowledge_db.py` automatically runs the difficult real-route acceptance suite against the immutable snapshot. That suite currently asks for routes including The Hole → Labyrinth of Spite, Feldax Hive → The Hole/Paineel, Greater Faydark → The Hole, and The Stone Hive → North Freeport. Failures are diagnostics, not invented routes: unresolved identities, directionality blocks, and disconnected topology remain explicit. `--route-report PATH` writes the same result as machine-readable JSON. `--require-route-acceptance` makes any failing case return exit code 2 when the data is ready to become a release gate. `--skip-route-audit` is available for narrow builder iteration.
 
 ## Build or refresh the global map catalog
 
@@ -78,7 +83,7 @@ python .\tools\finalize_knowledge_snapshot.py --input .\build\working.sqlite3 --
 
 The finalizer leaves the input database untouched. The output has player/session rows and builder-local paths removed, canonical mechanics/map/zone/travel knowledge reconciled, FTS rebuilt, separate knowledge schema/content versions recorded, SQLite integrity checked, WAL sidecars eliminated, and the file vacuumed/optimized. A non-portable legacy map path is a release-blocking error rather than something the tool silently packages.
 
-Allakhazam DB/Wiki mirrors are not prerequisites for this process. If those providers are available in a future build, their normalized records and provenance can be present before finalization just like any other source.
+Allakhazam is optional rather than a runtime prerequisite. When an Allakhazam mirror is selected in a provider build, its normalized records and provenance are compiled before this finalization boundary just like the client and map sources.
 
 ## MCP setup
 

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import sqlite3
 import sys
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eqquest.knowledge_build import ProviderInvocation, build_and_finalize_knowledge
+from eqquest.route_acceptance import evaluate_route_acceptance, route_acceptance_text
 
 
 def _assignment(value: str, *, option: str) -> tuple[str, str]:
@@ -38,6 +42,22 @@ def build_invocations(args: argparse.Namespace) -> list[ProviderInvocation]:
                 "eqclient",
                 {"path": eq_install},
                 label="installed EverQuest client",
+            )
+        )
+
+    allakhazam_mirror = str(args.allakhazam_mirror or "").strip()
+    allakhazam_version = str(args.allakhazam_version or "").strip()
+    if allakhazam_version and not allakhazam_mirror:
+        raise ValueError("--allakhazam-version requires --allakhazam-mirror")
+    if allakhazam_mirror:
+        invocations.append(
+            ProviderInvocation(
+                "allakhazam-mirror",
+                {
+                    "path": allakhazam_mirror,
+                    "source_version": allakhazam_version,
+                },
+                label="Allakhazam local mirror",
             )
         )
 
@@ -85,22 +105,55 @@ def build_invocations(args: argparse.Namespace) -> list[ProviderInvocation]:
         )
     if not invocations:
         raise ValueError(
-            "No knowledge providers selected. Supply --eq-install, --map-pack, or another registered builder provider."
+            "No knowledge providers selected. Supply --eq-install, --allakhazam-mirror, "
+            "--map-pack, or another registered builder provider."
         )
     return invocations
+
+
+def audit_snapshot_routes(snapshot_db: str | Path, cases=None):
+    """Evaluate route acceptance through an immutable SQLite snapshot connection."""
+    path = Path(snapshot_db).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        db = SimpleNamespace(conn=conn, knowledge_writable=False)
+        return evaluate_route_acceptance(db, cases)
+    finally:
+        conn.close()
+
+
+def write_route_report(path: str | Path, summary) -> Path:
+    output = Path(path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(summary.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return output
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Build an EverQuestie working knowledge DB from explicitly selected providers, "
-            "then finalize a distributable snapshot. Allakhazam DB/Wiki are not required."
+            "finalize a distributable snapshot, then audit difficult real zone-to-zone routes."
         )
     )
     p.add_argument("--working-db", required=True, help="Fresh builder/working SQLite database")
     p.add_argument("--snapshot-db", required=True, help="Distributable knowledge snapshot")
     p.add_argument("--version", required=True, help="Knowledge content/snapshot version")
     p.add_argument("--eq-install", help="EverQuest installation to import directly")
+    p.add_argument(
+        "--allakhazam-mirror",
+        help="Local HTTrack mirror of everquest.allakhazam.com to compile builder-side",
+    )
+    p.add_argument(
+        "--allakhazam-version",
+        help="Optional mirror capture/version label retained as source provenance",
+    )
     p.add_argument(
         "--mcp-repository",
         help="Optional everquest1-mcp checkout for builder-only inventory/detail enrichment",
@@ -125,6 +178,20 @@ def parser() -> argparse.ArgumentParser:
         help="Optional version/date for a named --map-pack",
     )
     p.add_argument(
+        "--skip-route-audit",
+        action="store_true",
+        help="Do not run the built-in difficult real-route acceptance suite after finalization",
+    )
+    p.add_argument(
+        "--route-report",
+        help="Optional path for a machine-readable route-acceptance JSON report",
+    )
+    p.add_argument(
+        "--require-route-acceptance",
+        action="store_true",
+        help="Return exit code 2 when any built-in route acceptance case fails",
+    )
+    p.add_argument(
         "--force",
         action="store_true",
         help="Replace existing builder/snapshot outputs; never overwrites a user runtime DB implicitly",
@@ -134,6 +201,11 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    if args.skip_route_audit and args.route_report:
+        raise SystemExit("--route-report cannot be used with --skip-route-audit")
+    if args.skip_route_audit and args.require_route_acceptance:
+        raise SystemExit("--require-route-acceptance cannot be used with --skip-route-audit")
+
     try:
         invocations = build_invocations(args)
         report = build_and_finalize_knowledge(
@@ -157,6 +229,19 @@ def main() -> int:
     print(f"content version: {report.snapshot.snapshot_version}")
     print(f"schema version: {report.snapshot.schema_version}")
     print(f"integrity: {report.snapshot.diagnostics.get('integrity')}")
+
+    route_summary = None
+    if not args.skip_route_audit:
+        route_summary = audit_snapshot_routes(report.snapshot.path)
+        print()
+        print(route_acceptance_text(route_summary))
+        if args.route_report:
+            output = write_route_report(args.route_report, route_summary)
+            print()
+            print(f"route acceptance JSON: {output}")
+
+    if args.require_route_acceptance and route_summary is not None and route_summary.failed:
+        return 2
     return 0
 
 

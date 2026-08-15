@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -52,11 +53,177 @@ class KnowledgeBuildTests(unittest.TestCase):
             counts={"zones": 1},
         )
 
-    def test_default_build_has_no_allakhazam_dependency(self):
+    @staticmethod
+    def _canonical_zone_fixture_provider(context, _config):
+        context.db.upsert_entity(
+            kind="zone",
+            name="The Stone Hive",
+            external_id="400",
+            external_namespace="eqclient:zone",
+            merge_by_name=False,
+        )
+        context.db.upsert_entity(
+            kind="zone",
+            name="Blightfire Moors",
+            external_id="401",
+            external_namespace="eqclient:zone",
+            merge_by_name=False,
+        )
+        return ProviderBuildResult(
+            provider="canonical-zone-fixture",
+            label="canonical EQ client zone fixture",
+            counts={"zones": 2},
+        )
+
+    def _write_allakhazam_zone_page(self, folder: Path) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "stone-hive.html"
+        path.write_text(
+            """
+            <html>
+              <head>
+                <title>The Stone Hive :: Zones :: EverQuest :: ZAM</title>
+                <link rel="canonical" href="https://everquest.allakhazam.com/db/zone.html?zstrat=100">
+              </head>
+              <body>
+                <h1>The Stone Hive</h1>
+                <div class="db-infobox">
+                  Type: Outdoor Expansion: The Serpent's Spine Instanced: No Keyed: No Level Range: 35 - 45
+                </div>
+                <div id="Connected_Zones_t">
+                  <table>
+                    <tr><th>Name</th><th>Direction</th></tr>
+                    <tr>
+                      <td><a href="https://everquest.allakhazam.com/db/zone.html?zstrat=101">Blightfire Moors</a></td>
+                      <td>Both</td>
+                    </tr>
+                  </table>
+                </div>
+              </body>
+            </html>
+            """,
+            encoding="utf-8",
+        )
+        return path
+
+    def test_default_build_includes_optional_allakhazam_mirror_provider(self):
         self.assertEqual(
             set(default_provider_registry().names()),
-            {"eqclient", "mcp", "map-pack"},
+            {"allakhazam-mirror", "eqclient", "mcp", "map-pack"},
         )
+
+    def test_allakhazam_mirror_provider_imports_structured_pages_and_provenance(self):
+        mirror = self.root / "mirror"
+        page = self._write_allakhazam_zone_page(mirror)
+
+        report = build_working_knowledge_db(
+            self.working,
+            [
+                ProviderInvocation(
+                    "allakhazam-mirror",
+                    {"path": str(mirror), "source_version": "mirror-2026-08-15"},
+                    label="test mirror",
+                )
+            ],
+        )
+        self.assertEqual(len(report.providers), 1)
+        result = report.providers[0]
+        self.assertEqual(result.provider, "allakhazam-mirror")
+        self.assertEqual(result.counts["pages_changed"], 1)
+        self.assertEqual(result.counts["zones"], 1)
+        self.assertEqual(result.counts["relationships"], 1)
+        self.assertEqual(result.counts["read_errors"], 0)
+        self.assertEqual(result.details["source_version"], "mirror-2026-08-15")
+
+        db = sqlite3.connect(self.working)
+        db.row_factory = sqlite3.Row
+        try:
+            source = db.execute(
+                """
+                SELECT source_name,source_kind,source_version,local_path
+                FROM source_pages
+                WHERE source_name='Allakhazam'
+                """
+            ).fetchone()
+            self.assertIsNotNone(source)
+            self.assertEqual(source["source_kind"], "local_mirror")
+            self.assertEqual(source["source_version"], "mirror-2026-08-15")
+            self.assertEqual(Path(source["local_path"]), page.resolve())
+
+            relationship = db.execute(
+                """
+                SELECT r.data_json,se.name AS source_name,te.name AS target_name
+                FROM entity_relationships r
+                JOIN entities se ON se.id=r.source_entity_id
+                JOIN entities te ON te.id=r.target_entity_id
+                WHERE r.relation='connected_to'
+                """
+            ).fetchone()
+            self.assertIsNotNone(relationship)
+            self.assertEqual(relationship["source_name"], "The Stone Hive")
+            self.assertEqual(relationship["target_name"], "Blightfire Moors")
+            self.assertEqual(json.loads(relationship["data_json"])["direction"], "Both")
+        finally:
+            db.close()
+
+    def test_allakhazam_provider_finalizes_into_canonical_bidirectional_travel(self):
+        mirror = self.root / "mirror-finalized"
+        self._write_allakhazam_zone_page(mirror)
+        registry = default_provider_registry()
+        registry.register("canonical-zone-fixture", self._canonical_zone_fixture_provider)
+
+        report = build_and_finalize_knowledge(
+            self.working,
+            self.snapshot,
+            [
+                ProviderInvocation("canonical-zone-fixture"),
+                ProviderInvocation(
+                    "allakhazam-mirror",
+                    {"path": str(mirror), "source_version": "mirror-finalized-test"},
+                ),
+            ],
+            snapshot_version="allakhazam-provider-finalized-test",
+            registry=registry,
+        )
+        self.assertIsNotNone(report.snapshot)
+        self.assertEqual(report.snapshot.provider_zone_reconciliation["linked"], 2)
+        self.assertEqual(report.snapshot.provider_zone_travel["linked"], 1)
+
+        db = sqlite3.connect(self.snapshot)
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute(
+                """
+                SELECT se.name AS source_name,te.name AS target_name,
+                       zte.bidirectional,zte.source_kind,zte.data_json
+                FROM zone_travel_edges zte
+                JOIN entities se ON se.id=zte.source_zone_entity_id
+                JOIN entities te ON te.id=zte.target_zone_entity_id
+                WHERE zte.source_kind='provider_zone_relationship'
+                """
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["source_name"], "The Stone Hive")
+            self.assertEqual(row["target_name"], "Blightfire Moors")
+            self.assertEqual(int(row["bidirectional"]), 1)
+            payload = json.loads(row["data_json"])
+            self.assertEqual(payload["provider_direction"]["mode"], "both")
+            self.assertTrue(payload["provider_direction"]["bidirectional"])
+
+            source = db.execute(
+                """
+                SELECT source_version,local_path
+                FROM source_pages
+                WHERE source_name='Allakhazam'
+                """
+            ).fetchone()
+            self.assertEqual(source["source_version"], "mirror-finalized-test")
+            self.assertEqual(source["local_path"], "")
+
+            meta = dict(db.execute("SELECT key,value FROM app_meta").fetchall())
+            self.assertEqual(meta["provider_zone_travel_catalog_version"], "2")
+        finally:
+            db.close()
 
     def test_future_provider_registers_without_coordinator_changes(self):
         registry = default_provider_registry()

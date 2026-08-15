@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .allakhazam import AllakhazamImporter
 from .db import Database
 from .knowledge_snapshot import KnowledgeSnapshotReport, create_knowledge_snapshot
 from .map_catalog import MapCatalog
@@ -54,8 +55,8 @@ class KnowledgeProviderRegistry:
     """Registry of explicit builder-side knowledge providers.
 
     The build coordinator knows only provider names/configuration and EverQuestie's
-    normalized database.  Allakhazam DB/Wiki, or any other future mirror, can register
-    a provider later without becoming a required import or changing the coordinator.
+    normalized database. Allakhazam mirrors and future sources are builder inputs;
+    packaged runtime remains source-agnostic and consumes only finalized knowledge.
     """
 
     def __init__(self) -> None:
@@ -123,6 +124,59 @@ def _run_eqclient(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
         label="EverQuest client files",
         counts=counts,
         details={"path": str(root)},
+    )
+
+
+def _run_allakhazam_mirror(
+    context: KnowledgeBuildContext,
+    config: ProviderConfig,
+) -> ProviderBuildResult:
+    root = _required_path(config, "path")
+    source_version = str(config.get("source_version") or "").strip()
+    summary = AllakhazamImporter(context.db).import_mirror(root)
+
+    # AllakhazamImporter predates the source-agnostic provider coordinator and does
+    # not accept a build version argument. A fresh provider build owns exactly the
+    # pages returned as changed, so attach the optional mirror version to those source
+    # records without changing importer/runtime semantics. Snapshot finalization later
+    # strips local_path while retaining this provenance.
+    imported_page_ids = [int(result.source_page_id) for result in summary.imported]
+    if source_version and imported_page_ids:
+        with context.db.batch():
+            context.db.conn.executemany(
+                "UPDATE source_pages SET source_version=? WHERE id=?",
+                [(source_version, page_id) for page_id in imported_page_ids],
+            )
+
+    kinds = {"quest": 0, "npc": 0, "item": 0, "zone": 0}
+    relationships = discovered = quest_steps = locations = 0
+    for result in summary.imported:
+        if result.kind in kinds:
+            kinds[result.kind] += 1
+        relationships += int(result.relationships)
+        discovered += int(result.discovered_entities)
+        quest_steps += int(result.quest_steps)
+        locations += int(result.locations)
+
+    counts = {
+        "pages_changed": int(summary.changed),
+        "pages_unchanged": int(summary.unchanged),
+        "pages_ignored": int(summary.ignored),
+        "read_errors": int(summary.read_errors),
+        "quests": kinds["quest"],
+        "npcs": kinds["npc"],
+        "items": kinds["item"],
+        "zones": kinds["zone"],
+        "relationships": relationships,
+        "discovered_entities": discovered,
+        "quest_steps": quest_steps,
+        "locations": locations,
+    }
+    return ProviderBuildResult(
+        provider="allakhazam-mirror",
+        label="Allakhazam local mirror",
+        counts=counts,
+        details={"path": str(root), "source_version": source_version},
     )
 
 
@@ -200,6 +254,7 @@ def _run_map_pack(context: KnowledgeBuildContext, config: ProviderConfig) -> Pro
 def default_provider_registry() -> KnowledgeProviderRegistry:
     registry = KnowledgeProviderRegistry()
     registry.register("eqclient", _run_eqclient)
+    registry.register("allakhazam-mirror", _run_allakhazam_mirror)
     registry.register("mcp", _run_mcp)
     registry.register("map-pack", _run_map_pack)
     return registry

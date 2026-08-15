@@ -14,11 +14,13 @@ The audit is read-only. It does not scan Good's/Brewall folders, mirrors, EverQu
 
 It reports:
 
-- current explicit travel labels already understood by the compiler;
+- current explicit travel labels already understood by the compiler, including `ZL`, `Zone Line`, `Portal`, `Teleport`, `Teleporter`, `Exit`, `Entrance`, and `To` forms;
 - current candidates whose stored `zone_travel_edges` row is missing or stale;
-- additional explicit spellings such as `ZL to <zone>` and punctuation variants that are suitable candidates for future parser expansion;
+- additional explicit spellings still outside the production parser, currently narrow forms such as `Zone Connection: <zone>` and `Zone Boundary: <zone>`;
 - whether those frontier destinations currently resolve to a unique canonical zone;
 - bare labels that exactly name another canonical zone, kept audit-only because a bare zone name may be a landmark rather than an exit;
 - source and unresolved-destination breakdowns plus representative examples.
+
+When a spelling graduates into the production compiler it must be removed from the audit-only frontier patterns. The audit should describe backlog, not double-count supported routes.
 
 The audit intentionally does not promote frontier evidence into routes. Parser expansion should be driven by real-corpus results and preserve EverQuestie's rule that ambiguous or weak evidence is not guessed.

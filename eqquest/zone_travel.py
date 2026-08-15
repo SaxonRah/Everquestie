@@ -406,9 +406,14 @@ class ZoneTravelCatalog:
         source_zone_entity_id: int,
         target_zone_entity_id: int,
         *,
-        max_hops: int = 64,
+        max_hops: int | None = None,
     ) -> list[int]:
-        """Return a conservative route using only linked directed/bidirectional evidence."""
+        """Return the shortest confirmed route through the finite linked graph.
+
+        By default there is no arbitrary route-length ceiling: the visited set makes
+        the breadth-first search finite even with cycles. ``max_hops`` remains an
+        optional explicit bound for diagnostics/tests that intentionally want one.
+        """
         source = int(source_zone_entity_id)
         target = int(target_zone_entity_id)
         if source == target:
@@ -428,11 +433,12 @@ class ZoneTravelCatalog:
             if bool(row["bidirectional"]):
                 adjacency.setdefault(b, set()).add(a)
 
+        hop_limit = None if max_hops is None else max(0, int(max_hops))
         queue: deque[tuple[int, list[int]]] = deque([(source, [source])])
         visited = {source}
         while queue:
             current, path = queue.popleft()
-            if len(path) - 1 >= max_hops:
+            if hop_limit is not None and len(path) - 1 >= hop_limit:
                 continue
             for nxt in sorted(adjacency.get(current, set())):
                 if nxt in visited:

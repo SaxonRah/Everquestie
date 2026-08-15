@@ -13,6 +13,7 @@ from .db_audit import identity_audit_text
 from .map_catalog import MapCatalog
 from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
+from .npc_expansion_reconciliation import NPCExpansionReconciliationCatalog
 from .provider_zone_travel import ProviderZoneTravelCatalog
 from .quest_faction_reconciliation import QuestFactionReconciliationCatalog
 from .zone_catalog import ZoneMapCatalog
@@ -75,6 +76,7 @@ class KnowledgeSnapshotReport:
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
     quest_faction_reconciliation: dict[str, int]
+    npc_expansion_reconciliation: dict[str, int]
     provider_zone_reconciliation: dict[str, int]
     provider_zone_travel: dict[str, int]
     zone_coverage: dict[str, Any]
@@ -239,6 +241,11 @@ def finalize_knowledge_snapshot(
     # ambiguous names; runtime consumes only the finalized ordinary relationships.
     quest_faction = QuestFactionReconciliationCatalog(db).reconcile()
 
+    # Allakhazam NPC pages explicitly name an expansion. Compile that structured text
+    # only when one exact client dbstr-backed expansion identity exists. The NPC's raw
+    # provider metadata remains intact when the name is ambiguous or unresolved.
+    npc_expansion = NPCExpansionReconciliationCatalog(db).reconcile()
+
     # Reconcile provider-owned zone identities into a separate, non-destructive
     # gameplay projection before any downstream catalogs are finalized. The provider
     # entities and their provenance remain untouched; runtime consumes only rows that
@@ -331,6 +338,7 @@ def finalize_knowledge_snapshot(
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
         quest_faction_reconciliation=quest_faction.as_dict(),
+        npc_expansion_reconciliation=npc_expansion.as_dict(),
         provider_zone_reconciliation=provider_zone.as_dict(),
         provider_zone_travel=provider_travel.as_dict(),
         zone_coverage=zone_coverage.as_dict(),

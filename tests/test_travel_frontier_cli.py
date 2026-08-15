@@ -19,10 +19,10 @@ class TravelFrontierCliTests(unittest.TestCase):
         self.path = self.root / "travel-frontier.sqlite3"
         maps = self.root / "maps"
         maps.mkdir()
-        # Zone Connection is deliberately explicit enough for the audit but is not
+        # Connection to is deliberately explicit enough for the audit but is not
         # currently production travel syntax. ZL/Portal/Exit forms graduated in v2.
         (maps / "stonehive.txt").write_text(
-            "P 10,20,3,255,0,0,2,Zone_Connection:_Blightfire_Moors\n",
+            "P 10,20,3,255,0,0,2,Connection_to_Blightfire_Moors\n",
             encoding="utf-8",
         )
 
@@ -77,7 +77,7 @@ class TravelFrontierCliTests(unittest.TestCase):
         text = stdout.getvalue()
         self.assertIn("EverQuestie travel frontier audit", text)
         self.assertIn("additional explicit travel spellings: 1", text)
-        self.assertIn("Zone Connection: Blightfire Moors", text)
+        self.assertIn("Connection to Blightfire Moors", text)
         self.assertIn("Good's Maps", text)
 
 

@@ -141,6 +141,182 @@ class ProviderZoneTravelRuntimeTests(unittest.TestCase):
             self.assertFalse(Path(str(snapshot) + "-wal").exists())
             self.assertFalse(Path(str(snapshot) + "-shm").exists())
 
+    def test_snapshot_name_variants_unblock_canonical_provider_travel(self):
+        """Real provider/client display-name differences must not strand source topology."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            working = root / "working.sqlite3"
+            db = Database(working)
+            try:
+                client_hole = db.upsert_entity(
+                    kind="zone",
+                    name="The Hole",
+                    external_id="39",
+                    external_namespace="eqclient:zone",
+                    merge_by_name=False,
+                )
+                client_paineel = db.upsert_entity(
+                    kind="zone",
+                    name="Paineel",
+                    external_id="75",
+                    external_namespace="eqclient:zone",
+                    merge_by_name=False,
+                )
+                client_faydark = db.upsert_entity(
+                    kind="zone",
+                    name="The Greater Faydark",
+                    external_id="54",
+                    external_namespace="eqclient:zone",
+                    merge_by_name=False,
+                )
+                client_crushbone = db.upsert_entity(
+                    kind="zone",
+                    name="Crushbone",
+                    external_id="58",
+                    external_namespace="eqclient:zone",
+                    merge_by_name=False,
+                )
+
+                provider_hole = db.upsert_entity(
+                    kind="zone",
+                    name="Ruins of Old Paineel (The Hole)",
+                    external_id="zone:99",
+                    external_namespace="allakhazam:zone",
+                    merge_by_name=False,
+                )
+                provider_paineel = db.upsert_entity(
+                    kind="zone",
+                    name="Paineel",
+                    external_id="zone:75",
+                    external_namespace="allakhazam:zone",
+                    merge_by_name=False,
+                )
+                provider_faydark = db.upsert_entity(
+                    kind="zone",
+                    name="Greater Faydark",
+                    external_id="zone:300",
+                    external_namespace="allakhazam:zone",
+                    merge_by_name=False,
+                )
+                provider_crushbone = db.upsert_entity(
+                    kind="zone",
+                    name="Crushbone",
+                    external_id="zone:301",
+                    external_namespace="allakhazam:zone",
+                    merge_by_name=False,
+                )
+
+                hole_page = db.upsert_source_page(
+                    url="https://everquest.allakhazam.com/db/zone.html?zstrat=99",
+                    title="Ruins of Old Paineel (The Hole) :: EverQuest",
+                    entity_type="zone",
+                    sha256="provider-hole-name-variant",
+                    plain_text="Connected Zones: Paineel",
+                    raw_html="",
+                    source_name="Allakhazam",
+                    source_kind="local_mirror",
+                    source_key="zone:99",
+                    source_version="mirror-name-variant-test",
+                )
+                faydark_page = db.upsert_source_page(
+                    url="https://everquest.allakhazam.com/db/zone.html?zstrat=300",
+                    title="Greater Faydark :: EverQuest",
+                    entity_type="zone",
+                    sha256="provider-faydark-name-variant",
+                    plain_text="Connected Zones: Crushbone",
+                    raw_html="",
+                    source_name="Allakhazam",
+                    source_kind="local_mirror",
+                    source_key="zone:300",
+                    source_version="mirror-name-variant-test",
+                )
+                db.upsert_relationship(
+                    provider_hole,
+                    provider_paineel,
+                    "connected_to",
+                    source_page_id=hole_page,
+                    evidence="Paineel / Both",
+                    data={"confidence": "structured", "direction": "Both"},
+                )
+                db.upsert_relationship(
+                    provider_faydark,
+                    provider_crushbone,
+                    "connected_to",
+                    source_page_id=faydark_page,
+                    evidence="Crushbone / Both",
+                    data={"confidence": "structured", "direction": "Both"},
+                )
+            finally:
+                db.close()
+
+            snapshot = root / "everquestie-knowledge.sqlite3"
+            report = create_knowledge_snapshot(
+                working,
+                snapshot,
+                snapshot_version="provider-zone-name-variant-runtime-test",
+            )
+            self.assertEqual(report.provider_zone_reconciliation["linked"], 4)
+            self.assertEqual(report.provider_zone_reconciliation["unresolved"], 0)
+            self.assertEqual(report.provider_zone_travel["relationships_scanned"], 2)
+            self.assertEqual(report.provider_zone_travel["linked"], 2)
+            self.assertEqual(report.provider_zone_travel["blocked_source"], 0)
+            self.assertEqual(report.provider_zone_travel["blocked_target"], 0)
+
+            raw = sqlite3.connect(snapshot)
+            raw.row_factory = sqlite3.Row
+            try:
+                bindings = raw.execute(
+                    """
+                    SELECT provider_zone_name,gameplay_zone_name,status,reason,evidence_json,catalog_version
+                    FROM zone_provider_bindings
+                    WHERE provider_zone_entity_id IN (?,?)
+                    ORDER BY provider_zone_name
+                    """,
+                    (provider_hole, provider_faydark),
+                ).fetchall()
+                self.assertEqual(len(bindings), 2)
+                by_provider = {str(row["provider_zone_name"]): row for row in bindings}
+                hole_binding = by_provider["Ruins of Old Paineel (The Hole)"]
+                faydark_binding = by_provider["Greater Faydark"]
+                self.assertEqual(str(hole_binding["gameplay_zone_name"]), "The Hole")
+                self.assertEqual(str(faydark_binding["gameplay_zone_name"]), "The Greater Faydark")
+                self.assertEqual(str(hole_binding["status"]), "linked")
+                self.assertEqual(str(faydark_binding["status"]), "linked")
+                self.assertIn("terminal parenthetical", str(hole_binding["reason"]))
+                self.assertIn("leading-article variant", str(faydark_binding["reason"]))
+                self.assertEqual(str(hole_binding["catalog_version"]), "2")
+                self.assertEqual(str(faydark_binding["catalog_version"]), "2")
+                self.assertIn('"provider_zone_match_kind": "parenthetical_alias"', str(hole_binding["evidence_json"]))
+                self.assertIn('"provider_zone_match_kind": "article_variant"', str(faydark_binding["evidence_json"]))
+            finally:
+                raw.close()
+
+            runtime = RuntimeDatabase(
+                snapshot,
+                root / "everquestie-user.sqlite3",
+                migrate_legacy=False,
+            )
+            try:
+                travel = ZoneTravelCatalog(runtime)
+                self.assertEqual(
+                    travel.shortest_path(client_hole, client_paineel),
+                    [client_hole, client_paineel],
+                )
+                self.assertEqual(
+                    travel.shortest_path(client_paineel, client_hole),
+                    [client_paineel, client_hole],
+                )
+                self.assertEqual(
+                    travel.shortest_path(client_faydark, client_crushbone),
+                    [client_faydark, client_crushbone],
+                )
+                self.assertEqual(
+                    travel.shortest_path(client_crushbone, client_faydark),
+                    [client_crushbone, client_faydark],
+                )
+            finally:
+                runtime.close()
+
 
 if __name__ == "__main__":
     unittest.main()

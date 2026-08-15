@@ -63,6 +63,24 @@ class KnowledgeMapChoice:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeRouteChoice:
+    selected_entity_id: int
+    selected_entity_name: str
+    zone_entity_id: int
+    zone_name: str
+    target_labels: tuple[str, ...]
+    source_labels: tuple[str, ...]
+    location_choice_count: int
+    evidence_count: int
+
+    @property
+    def route_label(self) -> str:
+        if len(self.target_labels) == 1:
+            return self.target_labels[0]
+        return f"{self.selected_entity_name} ({len(self.target_labels)} related locations)"
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeMapChoiceSet:
     status: str
     reason: str
@@ -72,32 +90,56 @@ class KnowledgeMapChoiceSet:
     current_zone_name: str
     choices: tuple[KnowledgeMapChoice, ...] = ()
     other_zone_choice_count: int = 0
+    other_zone_choices: tuple[KnowledgeMapChoice, ...] = ()
 
     @property
     def ready(self) -> bool:
         return self.status == "ready" and bool(self.choices)
+
+    @property
+    def routeable(self) -> bool:
+        return bool(self.other_zone_choices)
 
 
 def _source_tuple(values) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value) for value in values if value))
 
 
+def _choice_sort_key(row: KnowledgeMapChoice):
+    return (
+        0 if row.origin == "entity" else 1 if row.origin == "quest_actor" else 2,
+        row.zone_name.casefold(),
+        row.relation_label.casefold(),
+        row.location_entity_name.casefold(),
+        row.y,
+        row.x,
+        row.z if row.z is not None else 0.0,
+    )
+
+
+def _split_choices(
+    choices: list[KnowledgeMapChoice],
+    zone_id: int,
+) -> tuple[list[KnowledgeMapChoice], list[KnowledgeMapChoice]]:
+    current = [choice for choice in choices if int(choice.zone_entity_id) == int(zone_id)]
+    elsewhere = [choice for choice in choices if int(choice.zone_entity_id) != int(zone_id)]
+    current.sort(key=_choice_sort_key)
+    elsewhere.sort(key=_choice_sort_key)
+    return current, elsewhere
+
+
 def _group_direct_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
     rows = location_evidence_for_entity(db, entity_id)
-    current = [
-        row
-        for row in rows
-        if row.navigable and int(row.zone_entity_id) == int(zone_id)
-    ]
-    elsewhere = [
-        row
-        for row in rows
-        if row.navigable and int(row.zone_entity_id) != int(zone_id)
-    ]
-    grouped: dict[tuple[float, float, float | None], list] = {}
-    for row in current:
-        assert row.x is not None and row.y is not None
+    navigable = [row for row in rows if row.navigable]
+    grouped: dict[tuple[int, str, float, float, float | None], list] = {}
+    for row in navigable:
+        assert row.zone_entity_id is not None and row.x is not None and row.y is not None
+        row_zone_name = str(row.zone_name or "")
+        if int(row.zone_entity_id) == int(zone_id) and not row_zone_name:
+            row_zone_name = zone_name
         key = (
+            int(row.zone_entity_id),
+            row_zone_name,
             float(row.x),
             float(row.y),
             float(row.z) if row.z is not None else None,
@@ -106,9 +148,9 @@ def _group_direct_choices(db: Database, entity_id: int, zone_id: int, zone_name:
 
     entity = db.entity(entity_id)
     entity_name = str(entity["name"] or "") if entity is not None else ""
-    choices: list[KnowledgeMapChoice] = []
-    for (x, y, z), evidence_rows in grouped.items():
-        choices.append(
+    all_choices: list[KnowledgeMapChoice] = []
+    for (choice_zone_id, choice_zone_name, x, y, z), evidence_rows in grouped.items():
+        all_choices.append(
             KnowledgeMapChoice(
                 selected_entity_id=int(entity_id),
                 location_entity_id=int(entity_id),
@@ -116,8 +158,8 @@ def _group_direct_choices(db: Database, entity_id: int, zone_id: int, zone_name:
                 origin="entity",
                 relation="",
                 relation_label="",
-                zone_entity_id=int(zone_id),
-                zone_name=zone_name,
+                zone_entity_id=choice_zone_id,
+                zone_name=choice_zone_name,
                 x=x,
                 y=y,
                 z=z,
@@ -125,7 +167,8 @@ def _group_direct_choices(db: Database, entity_id: int, zone_id: int, zone_name:
                 source_labels=_source_tuple(row.source_label for row in evidence_rows),
             )
         )
-    return choices, elsewhere, rows
+    current, elsewhere = _split_choices(all_choices, zone_id)
+    return current, elsewhere, rows
 
 
 def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
@@ -133,20 +176,20 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
     if context is None or context.kind != "quest":
         return [], [], []
 
-    current = [
-        row
-        for row in context.related_locations
-        if row.navigable and int(row.gameplay_zone_entity_id) == int(zone_id)
-    ]
-    elsewhere = [
-        row
-        for row in context.related_locations
-        if row.navigable and int(row.gameplay_zone_entity_id) != int(zone_id)
-    ]
-    grouped: dict[tuple[int, str, float, float, float | None], list] = {}
-    for row in current:
-        assert row.x is not None and row.y is not None
+    navigable = [row for row in context.related_locations if row.navigable]
+    grouped: dict[tuple[int, str, int, str, float, float, float | None], list] = {}
+    for row in navigable:
+        assert (
+            row.gameplay_zone_entity_id is not None
+            and row.x is not None
+            and row.y is not None
+        )
+        row_zone_name = str(row.gameplay_zone_name or "")
+        if int(row.gameplay_zone_entity_id) == int(zone_id) and not row_zone_name:
+            row_zone_name = zone_name
         key = (
+            int(row.gameplay_zone_entity_id),
+            row_zone_name,
             int(row.entity_id),
             str(row.relation or ""),
             float(row.x),
@@ -155,10 +198,18 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
         )
         grouped.setdefault(key, []).append(row)
 
-    choices: list[KnowledgeMapChoice] = []
-    for (actor_id, relation, x, y, z), evidence_rows in grouped.items():
+    all_choices: list[KnowledgeMapChoice] = []
+    for (
+        choice_zone_id,
+        choice_zone_name,
+        actor_id,
+        relation,
+        x,
+        y,
+        z,
+    ), evidence_rows in grouped.items():
         actor_name = evidence_rows[0].entity_name
-        choices.append(
+        all_choices.append(
             KnowledgeMapChoice(
                 selected_entity_id=int(entity_id),
                 location_entity_id=actor_id,
@@ -169,8 +220,8 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
                     relation,
                     relation.replace("_", " "),
                 ),
-                zone_entity_id=int(zone_id),
-                zone_name=zone_name,
+                zone_entity_id=choice_zone_id,
+                zone_name=choice_zone_name,
                 x=x,
                 y=y,
                 z=z,
@@ -178,7 +229,8 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
                 source_labels=_source_tuple(row.source_label for row in evidence_rows),
             )
         )
-    return choices, elsewhere, list(context.related_locations)
+    current, elsewhere = _split_choices(all_choices, zone_id)
+    return current, elsewhere, list(context.related_locations)
 
 
 def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
@@ -195,8 +247,7 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
     if not allowed:
         return [], [], []
 
-    choices: list[KnowledgeMapChoice] = []
-    elsewhere: list = []
+    all_choices: list[KnowledgeMapChoice] = []
     all_locations: list = []
     for fact in context.relationships:
         relation_label = allowed.get((fact.direction, fact.relation))
@@ -204,27 +255,23 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
             continue
         locations = location_evidence_for_entity(db, fact.other_entity_id)
         all_locations.extend(locations)
-        current = [
-            row
-            for row in locations
-            if row.navigable and int(row.zone_entity_id) == int(zone_id)
-        ]
-        elsewhere.extend(
-            row
-            for row in locations
-            if row.navigable and int(row.zone_entity_id) != int(zone_id)
-        )
-        grouped: dict[tuple[float, float, float | None], list] = {}
-        for row in current:
-            assert row.x is not None and row.y is not None
+        navigable = [row for row in locations if row.navigable]
+        grouped: dict[tuple[int, str, float, float, float | None], list] = {}
+        for row in navigable:
+            assert row.zone_entity_id is not None and row.x is not None and row.y is not None
+            row_zone_name = str(row.zone_name or "")
+            if int(row.zone_entity_id) == int(zone_id) and not row_zone_name:
+                row_zone_name = zone_name
             key = (
+                int(row.zone_entity_id),
+                row_zone_name,
                 float(row.x),
                 float(row.y),
                 float(row.z) if row.z is not None else None,
             )
             grouped.setdefault(key, []).append(row)
-        for (x, y, z), evidence_rows in grouped.items():
-            choices.append(
+        for (choice_zone_id, choice_zone_name, x, y, z), evidence_rows in grouped.items():
+            all_choices.append(
                 KnowledgeMapChoice(
                     selected_entity_id=int(entity_id),
                     location_entity_id=int(fact.other_entity_id),
@@ -232,8 +279,8 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
                     origin="related_entity",
                     relation=str(fact.relation),
                     relation_label=relation_label,
-                    zone_entity_id=int(zone_id),
-                    zone_name=zone_name,
+                    zone_entity_id=choice_zone_id,
+                    zone_name=choice_zone_name,
                     x=x,
                     y=y,
                     z=z,
@@ -243,7 +290,53 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
                     ),
                 )
             )
-    return choices, elsewhere, all_locations
+    current, elsewhere = _split_choices(all_choices, zone_id)
+    return current, elsewhere, all_locations
+
+
+def knowledge_route_choices(
+    choice_set: KnowledgeMapChoiceSet,
+) -> tuple[KnowledgeRouteChoice, ...]:
+    """Collapse safe remote map choices into explicit cross-zone route destinations.
+
+    Route selection is about the destination canonical zone, not which spawn point in
+    that zone will eventually be mapped. Multiple coordinate choices in one remote zone
+    therefore collapse into one route choice while retaining their semantic labels and
+    provenance. Candidate/ambiguous provider zones can never enter this function because
+    ``other_zone_choices`` contains only already-navigable canonical locations.
+    """
+    grouped: dict[int, list[KnowledgeMapChoice]] = {}
+    for choice in choice_set.other_zone_choices:
+        grouped.setdefault(int(choice.zone_entity_id), []).append(choice)
+
+    result: list[KnowledgeRouteChoice] = []
+    for zone_id, choices in grouped.items():
+        first = choices[0]
+        result.append(
+            KnowledgeRouteChoice(
+                selected_entity_id=int(choice_set.selected_entity_id),
+                selected_entity_name=str(choice_set.selected_entity_name),
+                zone_entity_id=zone_id,
+                zone_name=str(first.zone_name),
+                target_labels=_source_tuple(choice.map_label for choice in choices),
+                source_labels=_source_tuple(
+                    source
+                    for choice in choices
+                    for source in choice.source_labels
+                ),
+                location_choice_count=len(choices),
+                evidence_count=sum(int(choice.evidence_count) for choice in choices),
+            )
+        )
+    return tuple(
+        sorted(
+            result,
+            key=lambda choice: (
+                choice.zone_name.casefold(),
+                choice.target_labels,
+            ),
+        )
+    )
 
 
 def knowledge_map_choices(
@@ -251,12 +344,13 @@ def knowledge_map_choices(
     entity_id: int,
     current_zone: str | None,
 ) -> KnowledgeMapChoiceSet:
-    """Return only safe, canonical current-zone choices for a Knowledge selection.
+    """Return safe canonical current-zone and remote choices for Knowledge.
 
     Direct locations, explicit quest-actor locations, and supported related-NPC
     locations are eligible. Relationships select relevant entities but never invent
-    coordinates. The function never chooses among distinct coordinates and never
-    exposes provider candidate/unresolved coordinates as choices.
+    coordinates. Current-zone choices may be handed to Map. Remote choices may only be
+    collapsed into explicit route destinations; they are never mapped as if they were
+    in the live zone. Provider candidate/unresolved coordinates remain evidence-only.
     """
     entity = db.entity(int(entity_id))
     if entity is None:
@@ -313,18 +407,10 @@ def knowledge_map_choices(
         db, int(entity_id), zone_id, zone_name
     )
     choices = direct + actor + related
-    choices.sort(
-        key=lambda row: (
-            0 if row.origin == "entity" else 1 if row.origin == "quest_actor" else 2,
-            row.relation_label.casefold(),
-            row.location_entity_name.casefold(),
-            row.y,
-            row.x,
-            row.z if row.z is not None else 0.0,
-        )
-    )
+    choices.sort(key=_choice_sort_key)
+    other_choices = direct_elsewhere + actor_elsewhere + related_elsewhere
+    other_choices.sort(key=_choice_sort_key)
 
-    elsewhere = direct_elsewhere + actor_elsewhere + related_elsewhere
     all_locations = direct_all + actor_all + related_all
     if choices:
         return KnowledgeMapChoiceSet(
@@ -337,19 +423,26 @@ def knowledge_map_choices(
             zone_id,
             zone_name,
             tuple(choices),
-            len(elsewhere),
+            len(other_choices),
+            tuple(other_choices),
         )
 
-    if elsewhere:
+    if other_choices:
+        remote_zones = len({choice.zone_entity_id for choice in other_choices})
+        zone_word = "zone" if remote_zones == 1 else "zones"
         return KnowledgeMapChoiceSet(
             "not_in_current_zone",
-            f"{entity_name} has safe mapped location evidence, but none is in the current zone {zone_name}.",
+            (
+                f"{entity_name} has {len(other_choices)} safe mapped location choice(s) in "
+                f"{remote_zones} other canonical {zone_word}, but none is in the current zone {zone_name}."
+            ),
             int(entity_id),
             entity_name,
             zone_id,
             zone_name,
             (),
-            len(elsewhere),
+            len(other_choices),
+            tuple(other_choices),
         )
     if all_locations:
         return KnowledgeMapChoiceSet(

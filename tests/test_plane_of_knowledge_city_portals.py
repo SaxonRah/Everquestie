@@ -55,15 +55,20 @@ class PlaneOfKnowledgeCityPortalManifestTests(unittest.TestCase):
 
         rows = self.db.conn.execute(
             """
-            SELECT source_key,source_name,source_version,evidence
+            SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,
+                   source_key,source_name,source_version,evidence
             FROM zone_travel_edges
             WHERE source_name='EverQuest official Plane of Knowledge city portal evidence'
-            ORDER BY source_entity_id,target_entity_id
+            ORDER BY source_zone_entity_id,target_zone_entity_id
             """
         ).fetchall()
-        self.assertEqual(len(rows), 2)
-        self.assertTrue(all(row["source_key"] == "pok-west-freeport-city-book" for row in rows))
-        self.assertTrue(all("West Freeport" in row["evidence"] for row in rows))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(int(row["source_zone_entity_id"]), pok)
+        self.assertEqual(int(row["target_zone_entity_id"]), west_freeport)
+        self.assertEqual(int(row["bidirectional"]), 1)
+        self.assertEqual(row["source_key"], "pok-west-freeport-city-book")
+        self.assertIn("West Freeport", row["evidence"])
 
 
 if __name__ == "__main__":

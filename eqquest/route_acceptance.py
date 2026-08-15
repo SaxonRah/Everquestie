@@ -11,16 +11,18 @@ from .zone_travel import ZoneTravelCatalog
 
 
 # Deliberately difficult cross-world queries that are useful when auditing a real
-# finalized knowledge snapshot. They are acceptance questions, not hard-coded travel
-# facts: unresolved endpoints or missing topology are reported rather than invented.
-# Keep these as literal real EverQuest client zone display names. Synthetic zones used
-# by route stress tests belong in tests only and must never leak into this real-data audit.
+# finalized knowledge snapshot. The defaults represent current-live player journeys;
+# historical/retired zones remain queryable when callers pass explicit route pairs.
+# They are acceptance questions, not hard-coded travel facts: unresolved endpoints or
+# missing topology are reported rather than invented. Keep these as literal real
+# EverQuest client zone display names. Synthetic zones used by route stress tests belong
+# in tests only and must never leak into this real-data audit.
 DEFAULT_ROUTE_ACCEPTANCE_CASES: tuple[tuple[str, str], ...] = (
     ("The Hole", "Labyrinth of Spite"),
     ("Paineel", "The Hole"),
     ("Stonebrunt Mountains", "Paineel"),
     ("Greater Faydark", "The Hole"),
-    ("Stone Hive", "North Freeport"),
+    ("Stone Hive", "West Freeport"),
 )
 
 _ACCEPTED_STATUSES = {"reachable", "same_zone"}

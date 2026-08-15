@@ -14,6 +14,8 @@ from ..mcp_client import MCPError, MCPStdioClient, mcp_status
 
 MCP_SNAPSHOT_TOOL = "save_data_snapshot"
 MCP_SNAPSHOT_NAME = ".eq-mcp-snapshot.json"
+MCP_DETAIL_SOURCE_URL = "eqclient+mcp://structured-local-details"
+MCP_DETAIL_SOURCE_KEY = "structured-local-details-v1"
 
 SYSTEM_KIND_MAP: dict[str, str] = {
     "spells": "spell",
@@ -65,6 +67,10 @@ class MCPCompileResult:
     def written_entities(self) -> int:
         return sum(self.imported_by_kind.values())
 
+    @property
+    def total_details(self) -> int:
+        return sum(self.detail_imported_by_kind.values())
+
     def summary_lines(self) -> list[str]:
         state = (
             "unchanged; entity rewrite skipped"
@@ -90,7 +96,7 @@ class MCPCompileResult:
                 if self.details_unchanged
                 else "rich local details compiled"
             )
-            lines.append(f"MCP detail layer: {detail_state}")
+            lines.append(f"MCP detail layer: {detail_state} ({self.total_details} records)")
             for kind, count in sorted(
                 self.detail_imported_by_kind.items(), key=lambda item: (-item[1], item[0])
             ):
@@ -145,13 +151,43 @@ def _same_path(left: str | Path, right: str | Path) -> bool:
         return str(left) == str(right)
 
 
-class MCPLocalSnapshotCompiler:
-    """Compile everquest1-mcp's offline local inventory into EverQuestie's DB.
+def _detail_search_text(value: Any, *, max_chars: int = 12000) -> str:
+    """Flatten useful structured fields for FTS without duplicating unbounded JSON."""
+    parts: list[str] = []
+    chars = 0
 
-    The MCP snapshot file is temporary from EverQuestie's point of view. If an MCP
-    snapshot already existed in the selected EQ install, its bytes and timestamps are
-    restored after capture; otherwise the generated file is removed.
-    """
+    def walk(item: Any, prefix: str = "") -> None:
+        nonlocal chars
+        if chars >= max_chars:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if str(key).startswith("_"):
+                    continue
+                walk(child, f"{prefix}.{key}" if prefix else str(key))
+            return
+        if isinstance(item, (list, tuple)):
+            for index, child in enumerate(item[:128]):
+                walk(child, f"{prefix}[{index}]" if prefix else str(index))
+            return
+        if item in (None, ""):
+            return
+        text = " ".join(str(item).split())
+        if not text:
+            return
+        line = f"{prefix}: {text}" if prefix else text
+        if chars + len(line) + 1 > max_chars:
+            line = line[: max(0, max_chars - chars - 1)]
+        if line:
+            parts.append(line)
+            chars += len(line) + 1
+
+    walk(value)
+    return "\n".join(parts)
+
+
+class MCPLocalSnapshotCompiler:
+    """Compile everquest1-mcp's offline local inventory and rich records into EverQuestie."""
 
     def __init__(self, db: Database):
         self.db = db
@@ -349,6 +385,18 @@ class MCPLocalSnapshotCompiler:
 
         return result
 
+    def _detail_entity_id(self, system: str, external_id: str) -> int | None:
+        row = self.db.conn.execute(
+            """
+            SELECT e.id
+            FROM entity_external_ids x
+            JOIN entities e ON e.id=x.entity_id
+            WHERE x.namespace=? AND x.external_id=?
+            """,
+            (f"eqmcp:{system}", str(external_id)),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
     def import_details(
         self,
         capture: MCPSnapshotCapture,
@@ -356,26 +404,69 @@ class MCPLocalSnapshotCompiler:
         *,
         progress: Callable[[str], None] | None = None,
     ) -> None:
-        """Run the optional rich-detail layer when its bridge is installed.
-
-        The public repo bootstrap previously omitted the bridge. Until that helper is
-        restored, inventory compilation remains fully functional and the UI reports
-        that rich details were skipped rather than crashing the entire compile.
-        """
+        """Compile complete structured local records through everquest1-mcp's parsers."""
         bridge = Path(__file__).resolve().parents[2] / "tools" / "mcp_local_detail_bridge.mjs"
         if not bridge.is_file():
             result.detail_bridge_missing_systems = list(SYSTEM_KIND_MAP)
-            if progress:
-                progress("Rich-detail bridge is not installed; inventory compile completed.")
-            return
+            raise MCPError(
+                f"Rich-detail compiler is required but missing: {bridge}. "
+                "Use --skip-mcp-details only for an intentional inventory-only build."
+            )
 
-        # The bridge emits one JSON object per line. Keep this implementation small
-        # and conservative: ingest records only when the corresponding identity from
-        # the snapshot is already present in EverQuestie's owned DB.
+        bridge_hash = hashlib.sha256(bridge.read_bytes()).hexdigest()
+        detail_digest = hashlib.sha256(
+            (
+                hashlib.sha256(capture.raw_json.encode("utf-8")).hexdigest()
+                + "|"
+                + capture.mcp_commit
+                + "|"
+                + bridge_hash
+            ).encode("utf-8")
+        ).hexdigest()
+
+        previous = self.db.conn.execute(
+            "SELECT id, sha256 FROM source_pages WHERE url=?",
+            (MCP_DETAIL_SOURCE_URL,),
+        ).fetchone()
+        if previous is not None and str(previous["sha256"]) == detail_digest:
+            source_id = int(previous["id"])
+            rows = self.db.conn.execute(
+                """
+                SELECT e.kind, COUNT(*) AS n
+                FROM entity_details d
+                JOIN entities e ON e.id=d.entity_id
+                WHERE d.source_page_id=?
+                GROUP BY e.kind
+                """,
+                (source_id,),
+            ).fetchall()
+            if rows:
+                result.detail_source_page_id = source_id
+                result.details_unchanged = True
+                result.detail_imported_by_kind = {
+                    str(row["kind"]): int(row["n"]) for row in rows
+                }
+                return
+
+        version_parts = [
+            part for part in (capture.mcp_version, capture.mcp_commit[:12]) if part
+        ]
+        source_version = " @ ".join(version_parts)
+        manifest = {
+            "snapshot_timestamp": result.snapshot_timestamp,
+            "mcp_version": capture.mcp_version,
+            "mcp_commit": capture.mcp_commit,
+            "bridge_sha256": bridge_hash,
+            "systems": sorted(SYSTEM_KIND_MAP),
+        }
+
+        status = mcp_status(capture.mcp_path)
+        if not status.ready:
+            raise MCPError(status.summary())
         env = os.environ.copy()
         env["EQ_GAME_PATH"] = str(capture.eq_path)
         proc = subprocess.Popen(
-            ["node", str(bridge), str(capture.mcp_path), "-"],
+            [status.node or "node", str(bridge), str(capture.mcp_path), "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -383,28 +474,120 @@ class MCPLocalSnapshotCompiler:
             encoding="utf-8",
             errors="replace",
             env=env,
+            bufsize=1,
         )
         assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(json.dumps(capture.snapshot, ensure_ascii=False))
         proc.stdin.close()
-        for raw_line in proc.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if message.get("type") == "system_missing":
+
+        with self.db.batch():
+            detail_source_id = self.db.upsert_source_page(
+                url=MCP_DETAIL_SOURCE_URL,
+                title="EverQuest structured local records via everquest1-mcp",
+                entity_type="multi",
+                sha256=detail_digest,
+                plain_text=json.dumps(manifest, ensure_ascii=False, indent=2),
+                raw_html="",
+                source_name="EverQuest Client via everquest1-mcp",
+                source_kind="mcp_local_details",
+                source_key=MCP_DETAIL_SOURCE_KEY,
+                source_version=source_version,
+                local_path=str(capture.eq_path),
+                fetched_at=result.snapshot_timestamp or None,
+            )
+            result.detail_source_page_id = detail_source_id
+
+            for raw_line in proc.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = str(message.get("type") or "")
                 system = str(message.get("system") or "")
-                if system:
-                    result.detail_bridge_missing_systems.append(system)
-            elif message.get("type") == "record_error":
-                kind = str(message.get("kind") or "unknown")
-                result.detail_errors_by_kind[kind] = result.detail_errors_by_kind.get(kind, 0) + 1
-        return_code = proc.wait()
-        if return_code != 0 and progress:
-            progress("Rich-detail bridge reported an error; inventory data remains available.")
+                kind = str(message.get("kind") or SYSTEM_KIND_MAP.get(system) or "unknown")
+
+                if msg_type == "system_start":
+                    if progress:
+                        progress(
+                            f"MCP rich details: {kind} "
+                            f"({int(message.get('total') or 0):,} records)…"
+                        )
+                    continue
+                if msg_type == "system_done":
+                    if progress:
+                        progress(
+                            f"MCP rich details: {kind} complete "
+                            f"({int(message.get('imported') or 0):,} imported, "
+                            f"{int(message.get('errors') or 0):,} getter errors)"
+                        )
+                    continue
+                if msg_type == "system_missing":
+                    if system and system not in result.detail_bridge_missing_systems:
+                        result.detail_bridge_missing_systems.append(system)
+                    continue
+                if msg_type == "record_error":
+                    result.detail_errors_by_kind[kind] = (
+                        result.detail_errors_by_kind.get(kind, 0) + 1
+                    )
+                    continue
+                if msg_type != "record":
+                    continue
+
+                expected_kind = SYSTEM_KIND_MAP.get(system)
+                external_id = str(message.get("external_id") or "")
+                record = message.get("record")
+                if not expected_kind or kind != expected_kind or not external_id:
+                    result.detail_errors_by_kind[kind] = (
+                        result.detail_errors_by_kind.get(kind, 0) + 1
+                    )
+                    continue
+
+                entity_id = self._detail_entity_id(system, external_id)
+                if entity_id is None:
+                    result.detail_errors_by_kind[kind] = (
+                        result.detail_errors_by_kind.get(kind, 0) + 1
+                    )
+                    continue
+
+                self.db.upsert_entity_detail(
+                    entity_id,
+                    source_page_id=detail_source_id,
+                    detail_format="mcp-json",
+                    detail_text=_detail_search_text(record),
+                    detail_json=record,
+                )
+                result.detail_imported_by_kind[kind] = (
+                    result.detail_imported_by_kind.get(kind, 0) + 1
+                )
+
+            return_code = proc.wait()
+            if return_code != 0:
+                stderr = proc.stderr.read().strip() if proc.stderr is not None else ""
+                raise MCPError(
+                    "Rich-detail compiler failed"
+                    + (f":\n{stderr}" if stderr else f" with exit code {return_code}.")
+                )
+
+            self.db.set_meta("eq_mcp_detail_last_compile", result.snapshot_timestamp)
+            self.db.set_meta(
+                "eq_mcp_detail_counts",
+                json.dumps(result.detail_imported_by_kind, sort_keys=True),
+            )
+            self.db.set_meta(
+                "eq_mcp_detail_errors",
+                json.dumps(result.detail_errors_by_kind, sort_keys=True),
+            )
+            self.db.set_meta(
+                "eq_mcp_detail_missing_systems",
+                json.dumps(sorted(result.detail_bridge_missing_systems)),
+            )
+
+        if progress:
+            progress(f"MCP rich details compiled: {result.total_details:,} records.")
 
     def compile_installation(
         self,

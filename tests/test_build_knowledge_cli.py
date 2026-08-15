@@ -88,13 +88,18 @@ class BuildKnowledgeCliTests(unittest.TestCase):
             db.close()
 
         before = path.read_bytes()
+        wal = Path(str(path) + "-wal")
+        shm = Path(str(path) + "-shm")
+        wal_before = wal.read_bytes() if wal.exists() else None
+        shm_before = shm.read_bytes() if shm.exists() else None
+
         summary = audit_snapshot_routes(path, (("Alpha", "Beta"), ("Beta", "Alpha")))
         self.assertEqual(summary.total, 2)
         self.assertEqual(summary.accepted, 2)
         self.assertEqual(summary.failed, 0)
         self.assertEqual(path.read_bytes(), before)
-        self.assertFalse(Path(str(path) + "-wal").exists())
-        self.assertFalse(Path(str(path) + "-shm").exists())
+        self.assertEqual(wal.read_bytes() if wal.exists() else None, wal_before)
+        self.assertEqual(shm.read_bytes() if shm.exists() else None, shm_before)
 
     def test_route_report_is_machine_readable(self):
         path = self.root / "knowledge.sqlite3"

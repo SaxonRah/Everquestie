@@ -71,33 +71,42 @@ transition; they do not silently remove the edge from pathfinding.
 
 ## Manual builder workflow
 
-Apply a manifest to an existing working knowledge database:
+Apply a manifest to the existing writable builder database used by the current release
+workspace:
 
 ```powershell
-python .\tools\apply_travel_supplement.py .\build\everquestie-working.sqlite3 `
-  .\builder-data\travel-supplement.json
+python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
+  .\builder-data\travel-supplements\example.json
 ```
 
 Machine-readable statistics:
 
 ```powershell
-python .\tools\apply_travel_supplement.py .\build\everquestie-working.sqlite3 `
-  .\builder-data\travel-supplement.json --json
+python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
+  .\builder-data\travel-supplements\example.json --json
 ```
 
-Then create a fresh finalized snapshot through the existing release path:
+Then create a fresh finalized test or release snapshot through the existing release path:
 
 ```powershell
 python .\tools\finalize_knowledge_snapshot.py `
-  --input .\build\everquestie-working.sqlite3 `
+  --input .\build\working.sqlite3 `
   --output .\dist\everquestie-knowledge.sqlite3 `
   --version 2026-08-15 `
   --force
 ```
 
+Audit the **finalized snapshot**, not the raw working DB. Provider- and map-derived travel
+rows are reconciled during snapshot finalization, so route acceptance against the raw
+working DB can under-report the real compiled topology.
+
 The finalizer may rebuild map-derived and structured-provider-derived travel rows, but
 the supplement uses its own `curated_travel_manifest` source kind and remains ordinary
 linked travel evidence in the finalized snapshot.
+
+Do not apply supplements to `dist\everquestie-knowledge.sqlite3`, versioned files under
+`build\release`, or packaged release copies. Those are finalized knowledge snapshots and
+`TravelSupplementImporter` intentionally rejects them.
 
 ## Frontier-audit use
 
@@ -105,11 +114,11 @@ The provider frontier audit is still the first diagnostic. Use a supplement only
 the audit establishes that the missing transition is a genuine source-coverage frontier,
 not an identity, direction, or compiler defect.
 
-For example, the current Labyrinth of Spite audit shows structured Allakhazam rows only
-for the base zone versus an instance. Those rows should not be reinterpreted as the
-missing base-world ingress. Once the actual base-world transition is confirmed from an
-approved source, that evidence can be represented explicitly here without weakening
-provider-zone reconciliation.
+For example, the Labyrinth of Spite audit showed structured Allakhazam rows only for the
+base zone versus an instance. Those rows should not be reinterpreted as the missing
+base-world ingress. Once the actual base-world transition is confirmed from an approved
+source, that evidence can be represented explicitly here without weakening provider-zone
+reconciliation.
 
 Historical/retired zones are a different concern. They should not receive invented
 current-live edges merely because an old EQ-client identity remains present in the

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from .db import Database
 from .travel import TravelRouteResult, build_route_result
+from .travel_connectivity import travel_connectivity_text
+from .travel_requirements import TravelRequirement, travel_requirements_for_hop
 from .zone_authority import resolve_authoritative_zone
 
 
@@ -23,6 +25,7 @@ class RouteHopGuidance:
     stored_x: float | None
     stored_y: float | None
     stored_z: float | None
+    requirements: tuple[TravelRequirement, ...] = ()
 
     @property
     def source_coordinate(self) -> tuple[float, float, float | None] | None:
@@ -37,6 +40,10 @@ class RouteHopGuidance:
         kind = self.connection_kind.replace("_", " ").strip() or "travel"
         return f"{kind} to {self.target_name}"
 
+    @property
+    def gated(self) -> bool:
+        return bool(self.requirements)
+
 
 @dataclass(frozen=True, slots=True)
 class RouteGuidanceResult:
@@ -47,6 +54,14 @@ class RouteGuidanceResult:
     def ok(self) -> bool:
         return self.route.ok
 
+    @property
+    def gated_hop_count(self) -> int:
+        return sum(1 for hop in self.hops if hop.gated)
+
+    @property
+    def requirement_count(self) -> int:
+        return sum(len(hop.requirements) for hop in self.hops)
+
 
 def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
     """Choose deterministic hop evidence without hiding an actionable direct coordinate.
@@ -55,6 +70,10 @@ def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
     outranks reverse use of a bidirectional target→source row. Within the same
     direction rank, prefer a row with X/Y so route guidance agrees with release
     coverage's definition of a mappable source-side direction.
+
+    Travel requirements are deliberately aggregated separately from *all* eligible
+    evidence rows, so choosing a coordinate-rich map row here cannot hide a gate or
+    interaction requirement supplied by another confirmed source.
     """
     return db.conn.execute(
         """
@@ -80,6 +99,7 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
     source = db.entity(source_id)
     target = db.entity(target_id)
     edge = _best_guidance_edge_for_hop(db, source_id, target_id)
+    requirements = travel_requirements_for_hop(db, source_id, target_id)
     source_name = str(source["name"]) if source is not None else f"zone {source_id}"
     target_name = str(target["name"]) if target is not None else f"zone {target_id}"
     if edge is None:
@@ -98,6 +118,7 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
             stored_x=None,
             stored_y=None,
             stored_z=None,
+            requirements=requirements,
         )
 
     owner_id = int(edge["source_zone_entity_id"])
@@ -119,6 +140,7 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
         stored_x=(float(edge["x"]) if edge["x"] is not None else None),
         stored_y=(float(edge["y"]) if edge["y"] is not None else None),
         stored_z=(float(edge["z"]) if edge["z"] is not None else None),
+        requirements=requirements,
     )
 
 
@@ -159,17 +181,41 @@ def next_hop_for_zone(
     return None, "off_route"
 
 
+def _requirement_line(requirement: TravelRequirement) -> str:
+    source = f" | source: {requirement.source_label}" if requirement.source_label else ""
+    return f"     - {requirement.kind_label}: {requirement.text}{source}"
+
+
 def route_guidance_text(db: Database, guidance: RouteGuidanceResult) -> str:
     if not guidance.route.ok or not guidance.hops:
-        return guidance.route.text
+        text = guidance.route.text
+        if (
+            not guidance.route.ok
+            and guidance.route.source_entity_id is not None
+            and guidance.route.target_entity_id is not None
+        ):
+            text += "\n\nTravel graph diagnostic:\n" + travel_connectivity_text(
+                db,
+                guidance.route.source_entity_id,
+                guidance.route.target_entity_id,
+            )
+        return text
 
     first = guidance.hops[0]
     last = guidance.hops[-1]
     lines = [
         f"Route: {first.source_name} → {last.target_name}",
         f"Confirmed hops: {len(guidance.hops)}",
-        "",
     ]
+    if guidance.gated_hop_count:
+        lines.extend(
+            [
+                f"Transitions with requirements: {guidance.gated_hop_count}",
+                f"Known requirements/interactions: {guidance.requirement_count}",
+            ]
+        )
+    lines.append("")
+
     for index, hop in enumerate(guidance.hops, start=1):
         direction = "two-way evidence" if hop.bidirectional else "directed evidence"
         lines.append(f"{index}. {hop.source_name} → {hop.target_name}")
@@ -178,6 +224,9 @@ def route_guidance_text(db: Database, guidance: RouteGuidanceResult) -> str:
         )
         if hop.evidence:
             lines.append(f"   evidence: {hop.evidence}")
+        if hop.requirements:
+            lines.append("   requirements / interactions:")
+            lines.extend(_requirement_line(requirement) for requirement in hop.requirements)
         if hop.stored_x is not None and hop.stored_y is not None:
             z = float(hop.stored_z or 0.0)
             if hop.coordinate_owner_entity_id == hop.source_entity_id:

@@ -15,6 +15,7 @@ from tools.build_knowledge_db import (
     build_invocations,
     parser,
     route_failure_frontier_zones,
+    validate_audit_options,
     write_provider_travel_frontier_report,
     write_route_report,
 )
@@ -62,6 +63,47 @@ class BuildKnowledgeCliTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "requires --allakhazam-mirror"):
             build_invocations(args)
+
+    def test_audit_report_paths_cannot_overwrite_database_outputs_or_each_other(self):
+        working = self.root / "working.sqlite3"
+        snapshot = self.root / "snapshot.sqlite3"
+        shared_report = self.root / "report.json"
+
+        args = parser().parse_args(
+            self._base_args() + ["--route-report", str(snapshot)]
+        )
+        with self.assertRaisesRegex(ValueError, "must not overwrite --snapshot-db"):
+            validate_audit_options(args)
+
+        args = parser().parse_args(
+            self._base_args()
+            + ["--provider-travel-frontier-report", str(working)]
+        )
+        with self.assertRaisesRegex(ValueError, "must not overwrite --working-db"):
+            validate_audit_options(args)
+
+        args = parser().parse_args(
+            self._base_args()
+            + [
+                "--route-report",
+                str(shared_report),
+                "--provider-travel-frontier-report",
+                str(shared_report),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "must use different paths"):
+            validate_audit_options(args)
+
+        args = parser().parse_args(
+            self._base_args()
+            + [
+                "--skip-route-audit",
+                "--provider-travel-frontier-report",
+                str(self.root / "frontier.json"),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be used with --skip-route-audit"):
+            validate_audit_options(args)
 
     def test_route_audit_reads_existing_graph_without_mutating_database(self):
         path = self.root / "knowledge.sqlite3"

@@ -56,7 +56,7 @@ class TravelFrontierAuditTests(unittest.TestCase):
                 "Portal:_Crescent_Reach",
                 "ZL_to_Not_A_Zone",
                 # Explicit but still audit-only backlog.
-                "Zone_Connection:_Crescent_Reach",
+                "Connection_to_Crescent_Reach",
                 # Exact zone name alone stays audit-only because it may be a landmark.
                 "Blightfire_Moors",
                 "Bank",

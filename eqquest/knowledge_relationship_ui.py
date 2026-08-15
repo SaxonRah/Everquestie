@@ -147,6 +147,14 @@ def install_knowledge_relationship_navigation_ui() -> None:
         def _build_ui(self) -> None:
             super()._build_ui()
             self._knowledge_relationship_history: list[int] = []
+
+            # Runtime policy constructs Travel inside super(). The outer composed app
+            # already owns the exact-ID opener, so connect that callback here instead
+            # of teaching runtime policy or Travel how Knowledge tree selection works.
+            travel = getattr(self, "travel_tab", None)
+            if travel is not None:
+                travel.on_knowledge_entity = self._open_knowledge_entity_exact
+
             if not _packaged_runtime(self):
                 return
 

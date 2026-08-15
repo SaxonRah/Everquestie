@@ -54,6 +54,15 @@ class TravelSupplementImporter:
     def __init__(self, db):
         if not getattr(db, "knowledge_writable", True):
             raise RuntimeError("travel supplement import is builder-only")
+        role = ""
+        get_meta = getattr(db, "get_meta", None)
+        if callable(get_meta):
+            role = _clean(get_meta("database_role", ""))
+        if role == "knowledge_snapshot":
+            raise RuntimeError(
+                "travel supplement import refuses finalized knowledge snapshots; "
+                "apply it to the builder/working database and finalize a new copy"
+            )
         self.db = db
 
     @staticmethod

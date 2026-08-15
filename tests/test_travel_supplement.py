@@ -302,6 +302,11 @@ class TravelSupplementTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "builder-only"):
             TravelSupplementImporter(runtime_like)
 
+    def test_finalized_snapshot_role_is_rejected_even_through_writable_database_handle(self):
+        self.db.set_meta("database_role", "knowledge_snapshot")
+        with self.assertRaisesRegex(RuntimeError, "refuses finalized knowledge snapshots"):
+            TravelSupplementImporter(self.db)
+
 
 if __name__ == "__main__":
     unittest.main()

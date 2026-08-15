@@ -59,12 +59,50 @@ class RouteAcceptanceTests(unittest.TestCase):
             DEFAULT_ROUTE_ACCEPTANCE_CASES,
             (
                 ("The Hole", "Labyrinth of Spite"),
-                ("Feldax Hive", "The Hole"),
-                ("Feldax Hive", "Paineel"),
+                ("Paineel", "The Hole"),
+                ("Stonebrunt Mountains", "Paineel"),
                 ("Greater Faydark", "The Hole"),
-                ("The Stone Hive", "North Freeport"),
+                ("Stone Hive", "North Freeport"),
             ),
         )
+        flattened = {name for pair in DEFAULT_ROUTE_ACCEPTANCE_CASES for name in pair}
+        self.assertNotIn("Feldax Hive", flattened)
+        self.assertNotIn("The Stone Hive", flattened)
+
+    def test_default_suite_literals_resolve_when_exact_client_names_exist(self):
+        # This catches a regression where a synthetic stress-test zone or a display-name
+        # typo leaks into the real snapshot acceptance suite. No fuzzy aliases are added.
+        real_client_names = (
+            "The Hole",
+            "Labyrinth of Spite",
+            "Paineel",
+            "Stonebrunt Mountains",
+            "Greater Faydark",
+            "Stone Hive",
+            "North Freeport",
+        )
+        for number, name in enumerate(real_client_names, start=100):
+            self._zone(name, number)
+
+        summary = evaluate_route_acceptance(self.db)
+        self.assertEqual(summary.total, len(DEFAULT_ROUTE_ACCEPTANCE_CASES))
+        for result in summary.results:
+            self.assertTrue(result.source.linked, result.source.as_dict())
+            self.assertTrue(result.target.linked, result.target.as_dict())
+            self.assertNotIn(result.status, {"source_unresolved", "target_unresolved"})
+            self.assertNotIn(result.status, {"source_ambiguous", "target_ambiguous"})
+
+    def test_stone_hive_query_does_not_weaken_exact_identity_policy(self):
+        self._zone("Stone Hive", 396)
+        self._zone("North Freeport", 8)
+
+        canonical = evaluate_route_acceptance(self.db, [("Stone Hive", "North Freeport")])
+        self.assertTrue(canonical.results[0].source.linked)
+        self.assertEqual(canonical.results[0].source.canonical_name, "Stone Hive")
+
+        noncanonical = evaluate_route_acceptance(self.db, [("The Stone Hive", "North Freeport")])
+        self.assertEqual(noncanonical.results[0].status, "source_unresolved")
+        self.assertFalse(noncanonical.results[0].source.linked)
 
     def test_reachable_acceptance_has_no_64_hop_ceiling(self):
         source = self._zone("The Hole", 39)
@@ -162,7 +200,7 @@ class RouteAcceptanceTests(unittest.TestCase):
         self.assertEqual(result.path_entity_ids, (qeynos,))
 
     def test_read_only_snapshot_adapter_does_not_require_schema_mutation(self):
-        source = self._zone("Feldax Hive", 500)
+        source = self._zone("Paineel", 75)
         target = self._zone("The Hole", 39)
         self._edge(source, target, 1)
 
@@ -170,9 +208,9 @@ class RouteAcceptanceTests(unittest.TestCase):
         ro.row_factory = sqlite3.Row
         try:
             runtime_like = SimpleNamespace(conn=ro, knowledge_writable=False)
-            summary = evaluate_route_acceptance(runtime_like, [("Feldax Hive", "The Hole")])
+            summary = evaluate_route_acceptance(runtime_like, [("Paineel", "The Hole")])
             self.assertTrue(summary.results[0].ok)
-            self.assertEqual(summary.results[0].path_zone_names, ("Feldax Hive", "The Hole"))
+            self.assertEqual(summary.results[0].path_zone_names, ("Paineel", "The Hole"))
         finally:
             ro.close()
 

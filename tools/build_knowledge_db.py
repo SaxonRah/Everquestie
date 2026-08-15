@@ -112,11 +112,11 @@ def build_invocations(args: argparse.Namespace) -> list[ProviderInvocation]:
 
 
 def audit_snapshot_routes(snapshot_db: str | Path, cases=None):
-    """Evaluate route acceptance through a SQLite read-only connection."""
+    """Evaluate route acceptance through an immutable SQLite snapshot connection."""
     path = Path(snapshot_db).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
-    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         db = SimpleNamespace(conn=conn, knowledge_writable=False)

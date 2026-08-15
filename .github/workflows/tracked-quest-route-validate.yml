@@ -1,0 +1,24 @@
+name: Tracked quest route validation
+
+on:
+  push:
+    branches: [agent/tracked-quest-route-guidance]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python source
+        run: python -m compileall -q eqquest tests EverQuestie.py
+      - name: Focused objective and long-route tests
+        run: python -m unittest tests.test_quest_objective_navigation tests.test_long_route_guidance tests.test_knowledge_route_location tests.test_route_guidance tests.test_route_guidance_ui tests.test_packaged_ui_policy -v
+      - name: Full regression suite
+        run: python -m unittest discover -s tests -v

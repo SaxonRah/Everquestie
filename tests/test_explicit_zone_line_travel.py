@@ -76,6 +76,7 @@ class ExplicitZoneLineTravelTests(unittest.TestCase):
 
                 # Simulate a builder DB that had already been considered clean by
                 # navigation catalog v2 before these explicit spellings were supported.
+                ZoneTravelCatalog(db)  # ensure the historic derivative table exists
                 db.set_meta("navigation_catalog_version", "2")
                 db.set_meta("navigation_catalog_dirty", "0")
                 db.conn.execute("DELETE FROM zone_travel_edges WHERE source_kind='map_label'")

@@ -22,7 +22,7 @@ _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "portal",
         re.compile(
-            r"^(?:portal|teleport|teleporter)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            r"^(?:teleporter|teleport|portal)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
             re.I,
         ),
     ),

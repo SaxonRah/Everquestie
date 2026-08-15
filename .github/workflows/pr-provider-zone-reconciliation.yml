@@ -1,0 +1,22 @@
+name: PR provider zone reconciliation
+
+on:
+  push:
+    branches:
+      - agent/provider-zone-reconciliation
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile source
+        run: python -m compileall -q eqquest tests tools EverQuestie.py
+      - name: Run provider zone reconciliation regressions
+        run: python -m unittest tests.test_provider_zone_reconciliation tests.test_zone_identity_audit tests.test_authoritative_zone_joins -v

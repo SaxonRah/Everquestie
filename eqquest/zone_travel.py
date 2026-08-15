@@ -13,14 +13,38 @@ from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
-ZONE_TRAVEL_CATALOG_VERSION = "1"
+ZONE_TRAVEL_CATALOG_VERSION = "2"
 
+# Keep map-derived travel parsing deliberately explicit. These spellings all contain
+# a direction/zone-line/portal/exit marker supplied by the map author; a bare zone
+# name is still not promoted into topology because it may only be a landmark label.
 _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("portal", re.compile(r"^(?:portal|teleport|teleporter)\s+(?:to\s+)?(.+)$", re.I)),
-    ("zone_line", re.compile(r"^(?:zone\s*line|zoneline|zone)\s*(?:to|:)\s*(.+)$", re.I)),
-    ("exit", re.compile(r"^(?:exit|entrance)\s+(?:to\s+)?(.+)$", re.I)),
-    ("travel", re.compile(r"^to\s+(.+)$", re.I)),
-    ("zone_line", re.compile(r"^(.+?)\s+(?:zone\s*line|zoneline)$", re.I)),
+    (
+        "portal",
+        re.compile(
+            r"^(?:portal|teleport|teleporter)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            re.I,
+        ),
+    ),
+    (
+        "zone_line",
+        re.compile(
+            r"^(?:zone\s*line|zoneline|zone|zl|z/l)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            re.I,
+        ),
+    ),
+    (
+        "exit",
+        re.compile(
+            r"^(?:exit|entrance)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            re.I,
+        ),
+    ),
+    ("travel", re.compile(r"^to\s*(?::|-|=)?\s*(.+)$", re.I)),
+    (
+        "zone_line",
+        re.compile(r"^(.+?)\s+(?:zone\s*line|zoneline|zl|z/l)$", re.I),
+    ),
 )
 
 

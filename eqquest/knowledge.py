@@ -4,7 +4,8 @@ import json
 from .db import Database
 from .detail_renderers import render_structured_local_detail
 from .map_catalog import map_evidence_lines
-from .vendor import VENDOR_RELATIONS, vendor_section_lines
+from .vendor import vendor_section_lines
+from .world_entity_detail import knowledge_world_detail_lines
 
 
 RELATION_LABELS = {
@@ -32,7 +33,6 @@ RELATION_LABELS = {
 
 def relation_label(relation: str) -> str:
     return RELATION_LABELS.get(relation, relation.replace("_", " ").title())
-
 
 
 def _first(data: dict, *keys):
@@ -112,7 +112,11 @@ def _render_spell_detail(data: dict) -> list[str]:
                 if label:
                     lines.append(f"    • Slot {slot}: {label}")
                 else:
-                    compact = ", ".join(f"{k}={v}" for k, v in effect.items() if v not in (None, "", 0, []))
+                    compact = ", ".join(
+                        f"{k}={v}"
+                        for k, v in effect.items()
+                        if v not in (None, "", 0, [])
+                    )
                     lines.append(f"    • Slot {slot}: {compact or effect}")
             else:
                 lines.append(f"    • Slot {slot}: {effect}")
@@ -178,6 +182,12 @@ def _render_local_detail(db: Database, entity_id: int, kind: str) -> list[str]:
 
 
 def entity_detail_text(db: Database, entity_id: int, *, include_source_text: bool = False) -> str:
+    """Render one selected knowledge entity without mixing in writable player state.
+
+    World relationships, provider-zone projection, locations and quest steps are
+    delegated to the entity-ID-based world projection. Live/tracked quest surfaces
+    continue to own user progress and completion state.
+    """
     r = db.entity(entity_id)
     if not r:
         return "Entity not found."
@@ -189,7 +199,10 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
     if r["kind"] != "zone":
         lines.append(f"Zone: {r['zone'] or 'unknown/not parsed'}")
     if r["level_min"] is not None or r["level_max"] is not None:
-        lines.append(f"Level: {r['level_min'] if r['level_min'] is not None else '?'} - {r['level_max'] if r['level_max'] is not None else '?'}")
+        lines.append(
+            f"Level: {r['level_min'] if r['level_min'] is not None else '?'} - "
+            f"{r['level_max'] if r['level_max'] is not None else '?'}"
+        )
     lines += [
         f"Primary source: {r['source_url'] or 'none'}",
         f"External ID: {r['external_id'] or 'none'}",
@@ -197,7 +210,10 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
 
     ext_ids = db.external_ids_for_entity(entity_id)
     if ext_ids:
-        lines.append("External identities: " + ", ".join(f"{x['namespace']}={x['external_id']}" for x in ext_ids))
+        lines.append(
+            "External identities: "
+            + ", ".join(f"{x['namespace']}={x['external_id']}" for x in ext_ids)
+        )
 
     sources = db.sources_for_entity(entity_id)
     if sources:
@@ -211,7 +227,11 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
             location = src["local_path"] or src["url"]
             lines.append(f"  • {src['source_name']} [{src['role']}] — {location}")
 
-    aliases = [a["alias"] for a in db.aliases_for_entity(entity_id) if a["alias"] != r["name"]]
+    aliases = [
+        a["alias"]
+        for a in db.aliases_for_entity(entity_id)
+        if a["alias"] != r["name"]
+    ]
     if aliases:
         lines.append("Aliases: " + ", ".join(dict.fromkeys(aliases)))
 
@@ -247,17 +267,32 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
             ("Expansion", data.get("expansion")),
             ("Instanced", data.get("instanced")),
             ("Keyed", data.get("keyed")),
-            ("Hot zone", "Yes" if data.get("hot_zone") else "No" if "hot_zone" in data else None),
+            (
+                "Hot zone",
+                "Yes"
+                if data.get("hot_zone")
+                else "No"
+                if "hot_zone" in data
+                else None,
+            ),
         ]
     for label, value in useful:
         if value is not None and value != "":
             lines.append(f"{label}: {value}")
     if r["kind"] == "item":
-        for label, key in (("Slots", "slots"), ("Classes", "classes"), ("Races", "races"), ("Flags", "flags")):
+        for label, key in (
+            ("Slots", "slots"),
+            ("Classes", "classes"),
+            ("Races", "races"),
+            ("Flags", "flags"),
+        ):
             values = data.get(key) or []
             if values:
                 lines.append(f"{label}: " + ", ".join(str(v) for v in values))
-    for label, key in (("Factions raised", "factions_raised"), ("Factions lowered", "factions_lowered")):
+    for label, key in (
+        ("Factions raised", "factions_raised"),
+        ("Factions lowered", "factions_lowered"),
+    ):
         values = data.get(key) or []
         if values:
             lines.append(f"{label}: " + ", ".join(values))
@@ -265,49 +300,7 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
     lines.extend(_render_local_detail(db, entity_id, str(r["kind"])))
     lines.extend(vendor_section_lines(db, entity_id))
     lines.extend(map_evidence_lines(db, entity_id))
-
-    locs = db.locations_for_entity(entity_id)
-    if locs:
-        lines += ["", "Locations:"]
-        for loc in locs:
-            coords = []
-            if loc["y"] is not None:
-                coords.append(f"Y {loc['y']:g}")
-            if loc["x"] is not None:
-                coords.append(f"X {loc['x']:g}")
-            if loc["z"] is not None:
-                coords.append(f"Z {loc['z']:g}")
-            where = loc["zone_name"] or "unknown zone"
-            suffix = f" ({loc['label']})" if loc["label"] else ""
-            lines.append(f"  • {where}: {', '.join(coords) if coords else 'coordinates unknown'}{suffix}")
-
-    rels = [rel for rel in db.relationships_for_entity(entity_id) if str(rel["relation"]) not in VENDOR_RELATIONS]
-    if rels:
-        lines += ["", "Relationships:"]
-        for rel in rels:
-            if rel["direction"] == "out":
-                other = f"[{rel['target_kind']}] {rel['target_name']}"
-                arrow = "→"
-            else:
-                other = f"[{rel['source_kind']}] {rel['source_name']}"
-                arrow = "←"
-            qty = f" x{rel['quantity']}" if rel["quantity"] is not None else ""
-            lines.append(f"  • {relation_label(rel['relation'])}{qty} {arrow} {other}")
-
-    if r["kind"] == "quest":
-        steps = db.quest_steps(entity_id)
-        if steps:
-            lines += ["", "Steps:"]
-            for s in steps:
-                mark = "✓" if int(s["complete"]) else "•"
-                try:
-                    rule = json.loads(s["match_json"] or "{}")
-                except json.JSONDecodeError:
-                    rule = {}
-                count = max(1, int(rule.get("count", 1)))
-                progress = int(s["progress_count"])
-                progress_text = f" [{progress}/{count}]" if count > 1 else (" [done]" if int(s["complete"]) else "")
-                lines.append(f"  {mark} {s['step_order']}. {s['description']}{progress_text}")
+    lines.extend(knowledge_world_detail_lines(db, entity_id))
 
     if include_source_text and r["source_text"]:
         lines += ["", "--- Primary source text snapshot ---", r["source_text"][:20000]]
@@ -346,7 +339,8 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
         if loc["z"] is not None:
             coords.append(f"Z={loc['z']:g}")
         lines.append(
-            f"{loc['zone_name'] or 'unknown zone'} | {' '.join(coords) if coords else 'location known'}"
+            f"{loc['zone_name'] or 'unknown zone'} | "
+            f"{' '.join(coords) if coords else 'location known'}"
             + (f" | {loc['label']}" if loc["label"] else "")
         )
 
@@ -368,7 +362,8 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
                             coords.append(f"X={loc['x']:g}")
                         coord_text = f" | {' '.join(coords)}" if coords else ""
                         lines.append(
-                            f"{label}: {target['name']} | {loc['zone_name'] or 'unknown zone'}{coord_text}"
+                            f"{label}: {target['name']} | "
+                            f"{loc['zone_name'] or 'unknown zone'}{coord_text}"
                         )
                 else:
                     try:
@@ -376,16 +371,22 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
                     except json.JSONDecodeError:
                         rel_data = {}
                     zone = rel_data.get("zone")
-                    lines.append(f"{label}: {target['name']}" + (f" | {zone}" if zone else ""))
+                    lines.append(
+                        f"{label}: {target['name']}" + (f" | {zone}" if zone else "")
+                    )
 
-        direct_zones = [z["name"] for z in db.relationship_targets(entity_id, "found_in")]
+        direct_zones = [
+            z["name"] for z in db.relationship_targets(entity_id, "found_in")
+        ]
         if direct_zones:
             lines.append("Found in zones: " + ", ".join(dict.fromkeys(direct_zones)))
 
     if r["kind"] == "quest":
         for starter in db.relationship_targets(entity_id, "started_by"):
             starter_locs = list(db.locations_for_entity(int(starter["id"])))
-            preferred = [loc for loc in starter_locs if loc["label"] == "quest starter"]
+            preferred = [
+                loc for loc in starter_locs if loc["label"] == "quest starter"
+            ]
             if preferred:
                 starter_locs = preferred
             for loc in starter_locs:
@@ -395,7 +396,8 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
                 if loc["x"] is not None:
                     coords.append(f"X={loc['x']:g}")
                 lines.append(
-                    f"Starter: {starter['name']} | {loc['zone_name'] or 'unknown zone'} | {' '.join(coords)}"
+                    f"Starter: {starter['name']} | "
+                    f"{loc['zone_name'] or 'unknown zone'} | {' '.join(coords)}"
                 )
 
     if len(lines) == 1:
@@ -403,7 +405,11 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
         zones: list[str] = []
         for rel in rels:
             if rel["relation"] == "occurs_in":
-                zone_name = rel["target_name"] if rel["direction"] == "out" else rel["source_name"]
+                zone_name = (
+                    rel["target_name"]
+                    if rel["direction"] == "out"
+                    else rel["source_name"]
+                )
                 zones.append(zone_name)
         if zones:
             lines.append("Related zone: " + ", ".join(dict.fromkeys(zones)))

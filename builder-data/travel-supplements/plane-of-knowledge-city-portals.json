@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "source_name": "EverQuest official Plane of Knowledge city portal evidence",
+  "source_version": "2007-11-30-reviewed-2026-08-15",
+  "edges": [
+    {
+      "source_key": "pok-west-freeport-city-book",
+      "source": "The Plane of Knowledge",
+      "target": "West Freeport",
+      "connection_kind": "portal",
+      "bidirectional": true,
+      "source_url": "https://www.everquest.com/news/imported-eq-enus-50703",
+      "evidence": "EverQuest's official teleportation guide states that Plane of Knowledge book statues in cities teleport players to the Plane of Knowledge and that Plane of Knowledge city stones teleport players back to the named city's book statue. The official Plane of Knowledge portal list explicitly includes West Freeport, supporting travel in both directions."
+    }
+  ]
+}

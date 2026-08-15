@@ -40,7 +40,7 @@ Use `-OneFile` only when a single executable is specifically desired. In that mo
 
 ## Build a release knowledge database from providers
 
-The source-agnostic coordinator creates a fresh working database from the providers explicitly selected for that build, then finalizes a separate distributable snapshot. The local Allakhazam HTTrack mirror is now a first-class builder provider, so the same build can combine exact client zone identity, Allakhazam world/quest relationships, and approved map packs before finalization:
+The source-agnostic coordinator creates a fresh working database from the providers explicitly selected for that build, then finalizes a separate distributable snapshot. The local Allakhazam HTTrack mirror is a first-class builder provider, so the same build can combine exact client zone identity, Allakhazam world/quest relationships, and approved map packs before finalization:
 
 ```powershell
 python .\tools\build_knowledge_db.py `
@@ -59,7 +59,7 @@ Add a second `--map-pack NAME=PATH` for Good or another approved map source. MCP
 
 The default provider registry is `eqclient`, `allakhazam-mirror`, `mcp`, and `map-pack`. Allakhazam remains builder-only: its saved pages are normalized into EverQuestie's database and snapshot finalization strips builder-local file paths while retaining source provenance. Packaged runtime never scans the mirror or imports source HTML.
 
-After finalization, `build_knowledge_db.py` automatically runs the difficult real-route acceptance suite against the immutable snapshot. That suite currently asks for routes including The Hole → Labyrinth of Spite, Feldax Hive → The Hole/Paineel, Greater Faydark → The Hole, and The Stone Hive → North Freeport. Failures are diagnostics, not invented routes: unresolved identities, directionality blocks, and disconnected topology remain explicit. `--route-report PATH` writes the same result as machine-readable JSON. `--require-route-acceptance` makes any failing case return exit code 2 when the data is ready to become a release gate. `--skip-route-audit` is available for narrow builder iteration.
+After finalization, `build_knowledge_db.py` automatically runs the difficult real-route acceptance suite against the immutable snapshot. That suite currently asks for The Hole → Labyrinth of Spite, Paineel → The Hole, Stonebrunt Mountains → Paineel, Greater Faydark → The Hole, and Stone Hive → North Freeport. The literals are real canonical client zone names; synthetic stress-test zones do not belong in this release audit. Failures are diagnostics, not invented routes: unresolved identities, directionality blocks, and disconnected topology remain explicit. `--route-report PATH` writes the same result as machine-readable JSON. `--require-route-acceptance` makes any failing case return exit code 2 when the data is ready to become a release gate. `--skip-route-audit` is available for narrow builder iteration.
 
 ## Build or refresh the global map catalog
 

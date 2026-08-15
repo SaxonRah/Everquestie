@@ -74,6 +74,20 @@ class CurrentZoneExitSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class CurrentZoneDashboardChoice:
+    entity_id: int
+    name: str
+    kind: str
+    category: str
+    role_text: str
+    source_text: str
+    location_count: int = 0
+    preview_fact_count: int = 0
+    usable_exit: bool = False
+    mappable_exit: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CurrentZoneDashboard:
     context: ZoneContext
     entities: tuple[CurrentZoneEntitySummary, ...]
@@ -106,6 +120,45 @@ class CurrentZoneDashboard:
     @property
     def located_entity_count(self) -> int:
         return sum(1 for row in self.entities if row.located)
+
+    @property
+    def choices(self) -> tuple[CurrentZoneDashboardChoice, ...]:
+        rows: list[CurrentZoneDashboardChoice] = []
+        for entity in self.entities:
+            rows.append(
+                CurrentZoneDashboardChoice(
+                    entity_id=entity.entity_id,
+                    name=entity.name,
+                    kind=entity.kind,
+                    category=(
+                        "Quest"
+                        if entity.kind == "quest"
+                        else "NPC"
+                        if entity.kind == "npc"
+                        else "Item"
+                        if entity.kind == "item"
+                        else entity.kind.replace("_", " ").title() or "Entity"
+                    ),
+                    role_text=entity.role_text or "Known here",
+                    source_text=entity.source_text or "EverQuestie knowledge",
+                    location_count=entity.location_count,
+                    preview_fact_count=entity.preview_fact_count,
+                )
+            )
+        for exit_row in self.exits:
+            rows.append(
+                CurrentZoneDashboardChoice(
+                    entity_id=exit_row.zone_entity_id,
+                    name=exit_row.zone_name,
+                    kind="zone",
+                    category="Travel",
+                    role_text=exit_row.role_text,
+                    source_text=exit_row.source_label,
+                    usable_exit=exit_row.usable,
+                    mappable_exit=exit_row.source_owned_coordinate,
+                )
+            )
+        return tuple(rows)
 
 
 def _unique(values) -> tuple:

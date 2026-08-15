@@ -18,9 +18,15 @@ const GETTERS = {
   mercenaries: { getter: 'getMercenary', kind: 'mercenary' },
   tributes: { getter: 'getTribute', kind: 'tribute' },
   lore: { getter: 'getLore', kind: 'lore' },
-  // EQ combat abilities are spell records flagged/used as disciplines. The
-  // snapshot IDs therefore resolve through the same authoritative spell parser.
-  combatAbilities: { getter: 'getLocalSpell', kind: 'combat_ability' },
+  // Combat-ability identities come from the client db-string system and are NOT
+  // spell IDs. Upstream itself correlates them to spell mechanics by exact name.
+  // getLocalSpellByName has a fuzzy fallback, so resolveCombatAbility verifies the
+  // returned spell name before accepting the enrichment.
+  combatAbilities: {
+    getter: 'getLocalSpellByName',
+    kind: 'combat_ability',
+    resolver: 'combat_ability_exact_name',
+  },
 };
 
 function emit(message) {
@@ -35,6 +41,49 @@ async function readSnapshot(source) {
     return JSON.parse(input);
   }
   return JSON.parse(await fs.readFile(source, 'utf8'));
+}
+
+function exactName(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+async function resolveRecord(local, spec, externalId, name) {
+  const getter = local[spec.getter];
+  if (typeof getter !== 'function') {
+    return { missingGetter: true };
+  }
+
+  if (spec.resolver === 'combat_ability_exact_name') {
+    const spell = await getter(name);
+    if (spell === null || spell === undefined) return { record: null, reason: 'not_found' };
+    const spellName = spell && typeof spell === 'object' ? spell.name : '';
+    if (!spellName || exactName(spellName) !== exactName(name)) {
+      return { record: null, reason: 'non_exact_spell_name_match_rejected' };
+    }
+    const spellId = spell && typeof spell === 'object' ? spell.id : null;
+    return {
+      record: {
+        ...spell,
+        // Preserve the combat-ability namespace as the record identity. The spell
+        // ID remains explicit enrichment evidence rather than replacing that ID.
+        id: String(externalId),
+        abilityId: String(externalId),
+        name,
+        spellId: spellId === null || spellId === undefined ? null : String(spellId),
+        spellName,
+        identityJoin: {
+          method: 'exact_case_insensitive_name',
+          combatAbilityId: String(externalId),
+          combatAbilityName: name,
+          matchedSpellId: spellId === null || spellId === undefined ? null : String(spellId),
+          matchedSpellName: spellName,
+        },
+      },
+    };
+  }
+
+  const record = await getter(String(externalId));
+  return { record, reason: record === null || record === undefined ? 'not_found' : null };
 }
 
 async function main() {
@@ -61,8 +110,7 @@ async function main() {
     const names = payload && typeof payload === 'object' ? payload.names : null;
     if (!names || typeof names !== 'object' || Array.isArray(names)) continue;
 
-    const getter = local[spec.getter];
-    if (typeof getter !== 'function') {
+    if (typeof local[spec.getter] !== 'function') {
       emit({ type: 'system_missing', system, kind: spec.kind, getter: spec.getter });
       continue;
     }
@@ -75,7 +123,20 @@ async function main() {
     for (const [externalId, rawName] of entries) {
       const name = String(rawName ?? '').trim();
       try {
-        const record = await getter(String(externalId));
+        const resolved = await resolveRecord(local, spec, String(externalId), name);
+        if (resolved.missingGetter) {
+          errors += 1;
+          emit({
+            type: 'record_error',
+            system,
+            kind: spec.kind,
+            external_id: String(externalId),
+            name,
+            reason: 'getter_missing',
+          });
+          continue;
+        }
+        const record = resolved.record;
         if (record === null || record === undefined) {
           errors += 1;
           emit({
@@ -84,7 +145,7 @@ async function main() {
             kind: spec.kind,
             external_id: String(externalId),
             name,
-            reason: 'not_found',
+            reason: resolved.reason || 'not_found',
           });
           continue;
         }

@@ -6,7 +6,6 @@ import json
 from typing import Any
 
 from .db import Database
-from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 from .zone_travel import ZoneTravelCatalog
 
 
@@ -17,6 +16,7 @@ PROVIDER_ZONE_TRAVEL_CATALOG_VERSION = "1"
 class ProviderZoneTravelStats:
     relationships_scanned: int
     linked: int
+    ignored_unstructured: int
     blocked_source: int
     blocked_target: int
     self_edges: int
@@ -25,6 +25,7 @@ class ProviderZoneTravelStats:
         return {
             "relationships_scanned": self.relationships_scanned,
             "linked": self.linked,
+            "ignored_unstructured": self.ignored_unstructured,
             "blocked_source": self.blocked_source,
             "blocked_target": self.blocked_target,
             "self_edges": self.self_edges,
@@ -36,10 +37,10 @@ class ProviderZoneTravelCatalog:
 
     The provider graph remains source evidence. Runtime routes operate only on canonical
     gameplay zone IDs, so each endpoint must either already be an EQ-client-backed zone
-    or have a projection-safe `zone_provider_bindings` row. No provider relationship is
-    used to break an ambiguous/unresolved gameplay identity here.
+    or have a projection-safe ``zone_provider_bindings`` row. No provider relationship
+    is used to break an ambiguous/unresolved gameplay identity here.
 
-    `connected_to` is compiled in its stored source→target direction only. A reverse
+    ``connected_to`` is compiled in its stored source→target direction only. A reverse
     edge requires a second explicit relationship; this compiler never infers reciprocal
     travel and never manufactures coordinates that the provider did not supply.
     """
@@ -72,13 +73,12 @@ class ProviderZoneTravelCatalog:
             ).fetchall()
         }
 
-    @staticmethod
-    def _binding_map(catalog: ProviderZoneReconciliationCatalog) -> dict[int, int]:
-        if not catalog._relation_exists("zone_provider_bindings"):
+    def _binding_map(self) -> dict[int, int]:
+        if not self._relation_exists("zone_provider_bindings"):
             return {}
         return {
             int(row["provider_zone_entity_id"]): int(row["gameplay_zone_entity_id"])
-            for row in catalog.db.conn.execute(
+            for row in self.db.conn.execute(
                 """
                 SELECT provider_zone_entity_id,gameplay_zone_entity_id
                 FROM zone_provider_bindings
@@ -100,6 +100,31 @@ class ProviderZoneTravelCatalog:
         return provider_bindings.get(entity_id)
 
     @staticmethod
+    def _relationship_data(row) -> dict[str, Any]:
+        try:
+            value = json.loads(row["relationship_data_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _structured_provider_relationship(cls, row) -> bool:
+        """Return true only for source-owned structured topology evidence.
+
+        Allakhazam's Connected Zones extractor is itself a structured table parser and
+        older rows may predate the explicit confidence marker. Other/future providers
+        must mark the relationship ``confidence=structured`` before it is routeable.
+        Rows without source provenance are never accepted.
+        """
+        source_name = str(row["source_name"] or "").strip()
+        if not source_name:
+            return False
+        data = cls._relationship_data(row)
+        if source_name.casefold() == "allakhazam":
+            return True
+        return str(data.get("confidence") or "").casefold() == "structured"
+
+    @staticmethod
     def _source_key(row) -> str:
         page_key = str(row["source_key"] or row["source_url"] or "provider-zone")
         target_key = str(row["target_external_id"] or "").strip()
@@ -107,14 +132,8 @@ class ProviderZoneTravelCatalog:
             target_key = str(row["target_normalized_name"] or row["target_name"] or "target")
         return f"{page_key}#connected_to:{target_key}"
 
-    @staticmethod
-    def _relationship_payload(row) -> dict[str, Any]:
-        try:
-            relationship_data = json.loads(row["relationship_data_json"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            relationship_data = {}
-        if not isinstance(relationship_data, dict):
-            relationship_data = {}
+    @classmethod
+    def _relationship_payload(cls, row) -> dict[str, Any]:
         return {
             "provider_relationship_id": int(row["relationship_id"]),
             "provider_source_zone_entity_id": int(row["source_entity_id"]),
@@ -123,7 +142,7 @@ class ProviderZoneTravelCatalog:
             "provider_target_zone_name": str(row["target_name"] or ""),
             "provider_source_external_id": str(row["source_external_id"] or ""),
             "provider_target_external_id": str(row["target_external_id"] or ""),
-            "relationship_data": relationship_data,
+            "relationship_data": cls._relationship_data(row),
         }
 
     def reconcile(self, *, source_name: str | None = None) -> ProviderZoneTravelStats:
@@ -131,9 +150,8 @@ class ProviderZoneTravelCatalog:
             raise RuntimeError("provider zone travel compilation is builder-only")
 
         ZoneTravelCatalog(self.db).ensure_schema()
-        provider_catalog = ProviderZoneReconciliationCatalog(self.db)
         client_zone_ids = self._client_zone_ids()
-        provider_bindings = self._binding_map(provider_catalog)
+        provider_bindings = self._binding_map()
 
         delete_sql = "DELETE FROM zone_travel_edges WHERE source_kind=?"
         delete_args: list[object] = [self.SOURCE_KIND]
@@ -144,7 +162,7 @@ class ProviderZoneTravelCatalog:
         if not self._relation_exists("entity_relationships"):
             with self.db.batch():
                 self.db.conn.execute(delete_sql, delete_args)
-            return ProviderZoneTravelStats(0, 0, 0, 0, 0)
+            return ProviderZoneTravelStats(0, 0, 0, 0, 0, 0)
 
         where = "WHERE r.relation='connected_to' AND se.kind='zone' AND te.kind='zone'"
         args: list[object] = []
@@ -171,11 +189,15 @@ class ProviderZoneTravelCatalog:
             args,
         ).fetchall()
 
-        linked = blocked_source = blocked_target = self_edges = 0
+        linked = ignored_unstructured = blocked_source = blocked_target = self_edges = 0
         now = datetime.now().isoformat(timespec="seconds")
         with self.db.batch():
             self.db.conn.execute(delete_sql, delete_args)
             for row in rows:
+                if not self._structured_provider_relationship(row):
+                    ignored_unstructured += 1
+                    continue
+
                 canonical_source = self._canonical_endpoint(
                     int(row["source_entity_id"]),
                     client_zone_ids=client_zone_ids,
@@ -244,6 +266,7 @@ class ProviderZoneTravelCatalog:
             stats = ProviderZoneTravelStats(
                 relationships_scanned=len(rows),
                 linked=linked,
+                ignored_unstructured=ignored_unstructured,
                 blocked_source=blocked_source,
                 blocked_target=blocked_target,
                 self_edges=self_edges,

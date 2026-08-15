@@ -1,0 +1,24 @@
+name: PR explicit zone-line travel
+
+on:
+  push:
+    branches:
+      - agent/explicit-zone-line-travel-syntax
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile source
+        run: python -m compileall -q eqquest tests tools EverQuestie.py
+      - name: Run explicit travel regressions
+        run: python -m unittest tests.test_explicit_zone_line_travel tests.test_zone_travel tests.test_zone_coverage tests.test_travel tests.test_route_guidance -v
+      - name: Run full regression suite
+        run: python -m unittest discover -s tests -v

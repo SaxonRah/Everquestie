@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -52,11 +53,96 @@ class KnowledgeBuildTests(unittest.TestCase):
             counts={"zones": 1},
         )
 
-    def test_default_build_has_no_allakhazam_dependency(self):
+    def _write_allakhazam_zone_page(self, folder: Path) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "stone-hive.html"
+        path.write_text(
+            """
+            <html>
+              <head>
+                <title>The Stone Hive :: Zones :: EverQuest :: ZAM</title>
+                <link rel="canonical" href="https://everquest.allakhazam.com/db/zone.html?zstrat=100">
+              </head>
+              <body>
+                <h1>The Stone Hive</h1>
+                <div class="db-infobox">
+                  Type: Outdoor Expansion: The Serpent's Spine Instanced: No Keyed: No Level Range: 35 - 45
+                </div>
+                <div id="Connected_Zones_t">
+                  <table>
+                    <tr><th>Name</th><th>Direction</th></tr>
+                    <tr>
+                      <td><a href="https://everquest.allakhazam.com/db/zone.html?zstrat=101">Blightfire Moors</a></td>
+                      <td>Both</td>
+                    </tr>
+                  </table>
+                </div>
+              </body>
+            </html>
+            """,
+            encoding="utf-8",
+        )
+        return path
+
+    def test_default_build_includes_optional_allakhazam_mirror_provider(self):
         self.assertEqual(
             set(default_provider_registry().names()),
-            {"eqclient", "mcp", "map-pack"},
+            {"allakhazam-mirror", "eqclient", "mcp", "map-pack"},
         )
+
+    def test_allakhazam_mirror_provider_imports_structured_pages_and_provenance(self):
+        mirror = self.root / "mirror"
+        page = self._write_allakhazam_zone_page(mirror)
+
+        report = build_working_knowledge_db(
+            self.working,
+            [
+                ProviderInvocation(
+                    "allakhazam-mirror",
+                    {"path": str(mirror), "source_version": "mirror-2026-08-15"},
+                    label="test mirror",
+                )
+            ],
+        )
+        self.assertEqual(len(report.providers), 1)
+        result = report.providers[0]
+        self.assertEqual(result.provider, "allakhazam-mirror")
+        self.assertEqual(result.counts["pages_changed"], 1)
+        self.assertEqual(result.counts["zones"], 1)
+        self.assertEqual(result.counts["relationships"], 1)
+        self.assertEqual(result.counts["read_errors"], 0)
+        self.assertEqual(result.details["source_version"], "mirror-2026-08-15")
+
+        db = sqlite3.connect(self.working)
+        db.row_factory = sqlite3.Row
+        try:
+            source = db.execute(
+                """
+                SELECT source_name,source_kind,source_version,local_path
+                FROM source_pages
+                WHERE source_name='Allakhazam'
+                """
+            ).fetchone()
+            self.assertIsNotNone(source)
+            self.assertEqual(source["source_kind"], "local_mirror")
+            self.assertEqual(source["source_version"], "mirror-2026-08-15")
+            self.assertEqual(Path(source["local_path"]), page.resolve())
+
+            relationship = db.execute(
+                """
+                SELECT r.data_json,se.name AS source_name,te.name AS target_name
+                FROM entity_relationships r
+                JOIN entities se ON se.id=r.source_entity_id
+                JOIN entities te ON te.id=r.target_entity_id
+                WHERE r.relation='connected_to'
+                """
+            ).fetchone()
+            self.assertIsNotNone(relationship)
+            self.assertEqual(relationship["source_name"], "The Stone Hive")
+            self.assertEqual(relationship["target_name"], "Blightfire Moors")
+            self.assertEqual(json.loads(relationship["data_json"])["direction"], "Both")
+        finally:
+            db.close()
 
     def test_future_provider_registers_without_coordinator_changes(self):
         registry = default_provider_registry()

@@ -12,8 +12,11 @@ from eqquest.knowledge_location_ui import (
     knowledge_map_choice_labels,
 )
 from eqquest.knowledge_map_choices import knowledge_map_choices
+from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.packaged_ui_policy import install_packaged_ui_policy
+from eqquest.runtime import RuntimeDatabase
 from eqquest.runtime_policy import install_runtime_policy
+from eqquest.zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 
 
 class _Status:
@@ -177,6 +180,65 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
         self.assertEqual(result.status, "not_in_current_zone")
         self.assertEqual(result.other_zone_choice_count, 1)
 
+    def test_candidate_provider_quest_actor_is_not_offered_as_gameplay_target(self):
+        mesa = self.db.upsert_entity(
+            kind="zone",
+            name="Goru'kar Mesa",
+            external_id="397",
+            external_namespace="eqclient:zone",
+        )
+        provider_page = self._page("zone:397", "Goru'kar Mesa", "zone")
+        provider_mesa = self.db.upsert_entity(
+            kind="zone",
+            name="Goru'kar Mesa",
+            external_id="zone:397",
+            source_page_id=provider_page,
+            source_url="https://everquest.allakhazam.com/db/zone.html?zstrat=397",
+        )
+        actor_page = self._page("npc:3251", "Mesa Scout", "npc")
+        actor = self.db.upsert_entity(
+            kind="npc",
+            name="Mesa Scout",
+            external_id="npc:3251",
+            source_page_id=actor_page,
+        )
+        self.db.add_location(
+            actor,
+            zone_entity_id=provider_mesa,
+            y=11.0,
+            x=22.0,
+            z=3.0,
+            label="reported spawn",
+            source_page_id=actor_page,
+            evidence="provider Mesa spawn",
+        )
+        quest_page = self._page("quest:6251", "Mesa Inquiry", "quest")
+        quest = self.db.upsert_entity(
+            kind="quest",
+            name="Mesa Inquiry",
+            external_id="quest:6251",
+            source_page_id=quest_page,
+        )
+        self.db.upsert_relationship(
+            quest,
+            actor,
+            "started_by",
+            source_page_id=quest_page,
+            evidence="Mesa Scout starts the quest",
+            data={"confidence": "structured"},
+        )
+        ProviderZoneReconciliationCatalog(self.db).reconcile()
+        binding = ProviderZoneReconciliationCatalog(self.db).binding_for_provider_zone(provider_mesa)
+        self.assertIsNotNone(binding)
+        assert binding is not None
+        self.assertEqual(binding.status, "candidate")
+
+        result = knowledge_map_choices(self.db, quest, "Goru'kar Mesa")
+        self.assertFalse(result.ready)
+        self.assertEqual(result.status, "no_navigable_location")
+        self.assertEqual(result.choices, ())
+        self.assertEqual(result.current_zone_entity_id, mesa)
+
     def test_choice_labels_show_relation_loc_source_and_evidence_count(self):
         starter = self._npc("Scout Fana", "npc:3301", 100.0, -50.0)
         page = self._page("quest:6301", "Label Quest", "quest")
@@ -202,6 +264,46 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
         self.assertIn("Allakhazam mirror-2026-08-14", labels[0])
         self.assertIn("1 evidence row", labels[0])
         self.assertIs(ask_knowledge_map_choice(None, "Label Quest", "The Stone Hive", result.choices), result.choices[0])
+
+    def test_finalized_runtime_exposes_same_quest_actor_choices_read_only(self):
+        starter = self._npc("Runtime Scout", "npc:3351", 77.0, -33.0)
+        page = self._page("quest:6351", "Runtime Inquiry", "quest")
+        quest = self.db.upsert_entity(
+            kind="quest",
+            name="Runtime Inquiry",
+            external_id="quest:6351",
+            source_page_id=page,
+        )
+        self.db.upsert_relationship(
+            quest,
+            starter,
+            "started_by",
+            source_page_id=page,
+            evidence="runtime starter",
+            data={"confidence": "structured"},
+        )
+        builder = knowledge_map_choices(self.db, quest, "The Stone Hive")
+        self.assertTrue(builder.ready)
+        snapshot = self.root / "everquestie-knowledge.sqlite3"
+        create_knowledge_snapshot(
+            self.root / "working.sqlite3",
+            snapshot,
+            snapshot_version="knowledge-location-chooser-test",
+        )
+        runtime = RuntimeDatabase(
+            snapshot,
+            self.root / "everquestie-user.sqlite3",
+            migrate_legacy=False,
+        )
+        try:
+            packaged = knowledge_map_choices(runtime, quest, "The Stone Hive")
+            self.assertEqual(packaged.status, builder.status)
+            self.assertEqual(packaged.choices, builder.choices)
+            self.assertEqual(packaged.choices[0].relation_label, "quest starter")
+            with self.assertRaises(Exception):
+                runtime.conn.execute("UPDATE entity_locations SET x=999")
+        finally:
+            runtime.close()
 
     def test_packaged_action_uses_explicit_choice_for_multiple_safe_points(self):
         npc = self._npc("Wandering Scout", "npc:3401", 10.0, 20.0)

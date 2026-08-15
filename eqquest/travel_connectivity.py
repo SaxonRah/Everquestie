@@ -116,9 +116,10 @@ def travel_connectivity_text(
 
     if diagnostic.target_in_directed_reachable_set:
         return (
-            f"{target_name} is reachable somewhere in the confirmed directed travel graph from {source_name}, "
-            "but the normal route search did not return it. This usually means the path exceeded the route-search "
-            "hop ceiling rather than a missing topology edge."
+            f"{target_name} is reachable in the confirmed directed travel graph from {source_name}, "
+            "but the normal shortest-path query did not return it. Because normal routing has no default hop "
+            "ceiling, this indicates that the catalog changed between reads or that an internal route/catalog "
+            "consistency problem needs investigation."
         )
 
     if diagnostic.target_in_weak_component:

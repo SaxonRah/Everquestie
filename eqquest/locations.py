@@ -15,10 +15,10 @@ class LocationEvidence:
     Coordinates are always exposed in EverQuestie's normalized game coordinate
     system (X, Y, Z). EverQuest prints those as `/loc Y, X, Z`.
 
-    The underlying evidence is deliberately not duplicated between tables:
-    provider/importer facts stay in ``entity_locations`` and reconciled Good/Brewall
-    POIs stay in ``map_labels``. This projection lets callers consume both without
-    caring which source produced the coordinate.
+    ``zone_entity_id`` is a canonical gameplay-zone ID only when the stored source
+    zone can be projected safely. ``source_zone_entity_id`` preserves the original
+    provider-zone ID for provenance/debugging. A provider location can therefore
+    remain visible evidence without becoming a map/navigation target.
     """
 
     entity_id: int
@@ -38,6 +38,9 @@ class LocationEvidence:
     map_stem: str = ""
     layer: int | None = None
     source_line: int | None = None
+    source_zone_entity_id: int | None = None
+    source_zone_name: str = ""
+    zone_projection_status: str = ""
 
     @property
     def source_label(self) -> str:
@@ -59,6 +62,10 @@ class LocationEvidence:
             parts.append(f"Z={self.z:g}")
         return " ".join(parts)
 
+    @property
+    def navigable(self) -> bool:
+        return self.zone_entity_id is not None and self.x is not None and self.y is not None
+
 
 def _relation_exists(db: Database, name: str) -> bool:
     """Probe both builder main tables and RuntimeDatabase TEMP knowledge views."""
@@ -73,6 +80,61 @@ def _relation_exists(db: Database, name: str) -> bool:
         """,
         (name, name),
     ).fetchone() is not None
+
+
+def _project_source_zone(
+    db: Database,
+    zone_entity_id: int | None,
+    source_zone_name: str,
+) -> tuple[int | None, str, str, int | None]:
+    """Project one stored zone into gameplay identity without guessing.
+
+    Returns ``(gameplay_zone_id, display_zone_name, status, source_zone_id)``.
+    ``source_zone_id`` is set only when the stored zone is a non-canonical provider
+    entity, including candidate/unresolved cases.
+    """
+    if zone_entity_id is None:
+        return None, source_zone_name, "unknown_zone", None
+
+    zone_id = int(zone_entity_id)
+    zone = db.entity(zone_id)
+    zone_name = str(zone["name"] or source_zone_name) if zone is not None else source_zone_name
+
+    if _relation_exists(db, "entity_external_ids"):
+        client = db.conn.execute(
+            """
+            SELECT 1 FROM entity_external_ids
+            WHERE entity_id=? AND namespace='eqclient:zone'
+            LIMIT 1
+            """,
+            (zone_id,),
+        ).fetchone()
+        if client is not None:
+            return zone_id, zone_name, "canonical", None
+
+    if _relation_exists(db, "zone_provider_bindings"):
+        binding = db.conn.execute(
+            """
+            SELECT status,gameplay_zone_entity_id,gameplay_zone_name
+            FROM zone_provider_bindings
+            WHERE provider_zone_entity_id=?
+            """,
+            (zone_id,),
+        ).fetchone()
+        if binding is not None:
+            status = str(binding["status"] or "unresolved")
+            if status == "linked" and binding["gameplay_zone_entity_id"] is not None:
+                return (
+                    int(binding["gameplay_zone_entity_id"]),
+                    str(binding["gameplay_zone_name"] or zone_name),
+                    "linked_provider",
+                    zone_id,
+                )
+            return None, zone_name, f"provider_{status}", zone_id
+
+    # A zone without client identity and without a finalized provider binding is still
+    # valid source evidence, but it is not safe gameplay identity.
+    return None, zone_name, "provider_unmapped", zone_id
 
 
 def _provider_locations(db: Database, entity_id: int) -> list[LocationEvidence]:
@@ -93,16 +155,23 @@ def _provider_locations(db: Database, entity_id: int) -> list[LocationEvidence]:
     ).fetchall()
     result: list[LocationEvidence] = []
     for row in rows:
+        stored_zone_id = (
+            int(row["zone_entity_id"])
+            if row["zone_entity_id"] is not None
+            else None
+        )
+        stored_zone_name = str(row["zone_name"] or "")
+        gameplay_zone_id, display_zone_name, status, source_zone_id = _project_source_zone(
+            db,
+            stored_zone_id,
+            stored_zone_name,
+        )
         source_key = str(row["source_key"] or row["url"] or "")
         result.append(
             LocationEvidence(
                 entity_id=int(row["entity_id"]),
-                zone_entity_id=(
-                    int(row["zone_entity_id"])
-                    if row["zone_entity_id"] is not None
-                    else None
-                ),
-                zone_name=str(row["zone_name"] or ""),
+                zone_entity_id=gameplay_zone_id,
+                zone_name=display_zone_name,
                 x=(float(row["x"]) if row["x"] is not None else None),
                 y=(float(row["y"]) if row["y"] is not None else None),
                 z=(float(row["z"]) if row["z"] is not None else None),
@@ -117,6 +186,9 @@ def _provider_locations(db: Database, entity_id: int) -> list[LocationEvidence]:
                     else None
                 ),
                 evidence=str(row["evidence"] or ""),
+                source_zone_entity_id=source_zone_id,
+                source_zone_name=(stored_zone_name if source_zone_id is not None else ""),
+                zone_projection_status=status,
             )
         )
     return result
@@ -170,15 +242,16 @@ def _map_locations(db: Database, entity_id: int) -> list[LocationEvidence]:
         game_x, game_y, game_z = map_to_game(
             float(row["x"]), float(row["y"]), float(row["z"])
         )
+        canonical_zone_id = (
+            int(row["canonical_zone_entity_id"])
+            if row["canonical_zone_entity_id"] is not None
+            else None
+        )
         zone_name = str(row["canonical_zone_name"] or row["zone_name"] or row["map_stem"])
         result.append(
             LocationEvidence(
                 entity_id=int(row["linked_entity_id"]),
-                zone_entity_id=(
-                    int(row["canonical_zone_entity_id"])
-                    if row["canonical_zone_entity_id"] is not None
-                    else None
-                ),
+                zone_entity_id=canonical_zone_id,
                 zone_name=zone_name,
                 x=game_x,
                 y=game_y,
@@ -193,6 +266,7 @@ def _map_locations(db: Database, entity_id: int) -> list[LocationEvidence]:
                 map_stem=str(row["map_stem"] or ""),
                 layer=int(row["layer"]),
                 source_line=int(row["source_line"]),
+                zone_projection_status=("canonical_map" if canonical_zone_id is not None else "map_unresolved"),
             )
         )
     return result
@@ -207,8 +281,9 @@ def location_evidence_for_entity(
 ) -> list[LocationEvidence]:
     """Return all confirmed location evidence for one canonical entity.
 
-    Ambiguous/unresolved map labels are intentionally excluded. Callers therefore do
-    not accidentally promote a fuzzy map candidate into a factual NPC/item location.
+    Ambiguous/unresolved map labels are intentionally excluded. Provider/importer
+    locations remain visible even when their zone cannot be projected, but only
+    safely canonicalized locations expose ``zone_entity_id`` / ``navigable=True``.
     """
     result: list[LocationEvidence] = []
     if include_provider:
@@ -258,15 +333,23 @@ def _location_line(location: LocationEvidence, *, prefix: str = "") -> str:
         details.append(label)
     if location.source_label:
         details.append(location.source_label)
+    if not location.navigable and location.zone_projection_status in {
+        "provider_candidate",
+        "provider_ambiguous",
+        "provider_unresolved",
+        "provider_unmapped",
+        "map_unresolved",
+    }:
+        details.append(f"{location.zone_projection_status}; not map-targetable")
     return prefix + " | ".join(details)
 
 
 def where_text(db: Database, entity_id: int, current_zone: str | None = None) -> str:
     """Render WHERE using every confirmed location source through one API.
 
-    This is the player-facing migration path from the old provider-only
-    ``Database.locations_for_entity`` calls. It preserves source provenance and includes
-    only map labels whose canonical entity link was confirmed by reconciliation.
+    Provider locations are projected into canonical gameplay zones only through
+    finalized linked provider-zone bindings. Candidate/unresolved provider facts remain
+    visible and sourced but cannot masquerade as map/navigation targets.
     """
     entity = db.entity(entity_id)
     if not entity:

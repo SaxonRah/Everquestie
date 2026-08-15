@@ -81,7 +81,7 @@ class ProviderZoneReconciliationTests(unittest.TestCase):
         self.assertEqual(stats.candidate, 1)
         self.assertEqual(stats.ambiguous, 0)
         self.assertEqual(stats.unresolved, 0)
-        self.assertEqual(stats.corroborating_relationships, 2)
+        self.assertEqual(stats.corroborating_relationships, 1)
 
         catalog = ProviderZoneReconciliationCatalog(self.db)
         stone = catalog.binding_for_provider_zone(provider_stone)

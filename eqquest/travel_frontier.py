@@ -18,7 +18,7 @@ _FRONTIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "zone_line",
         re.compile(
-            r"^(?:zone\s*connection|zone\s*boundary)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            r"^(?:connection|boundary)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
             re.I,
         ),
     ),
@@ -112,7 +112,7 @@ class TravelFrontierAudit:
     * current explicit syntax that the compiler already understands, including whether
       the stored ``zone_travel_edges`` row is missing/stale;
     * additional explicit travel spellings that are safe-looking candidates for a
-      future parser expansion (currently ``Zone Connection`` / ``Zone Boundary``);
+      future parser expansion (currently ``Connection`` / ``Boundary`` forms);
     * bare labels that exactly resolve to another canonical zone. Bare names are never
       auto-promoted here because they may be landmarks rather than exits.
 
@@ -267,8 +267,8 @@ class TravelFrontierAudit:
             source_zone_id = int(row["source_zone_entity_id"])
             compiled_candidate = ZoneTravelCatalog._travel_candidate(label)
             if compiled_candidate is not None:
-                kind, destination = compiled_candidate
-                target_id, status, target_name, reason = self._resolve(
+                _kind, destination = compiled_candidate
+                target_id, status, _target_name, _reason = self._resolve(
                     destination, source_zone_id, identities
                 )
                 current["total"] += 1

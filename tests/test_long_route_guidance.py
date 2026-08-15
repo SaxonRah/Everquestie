@@ -6,7 +6,7 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.route_guidance import build_route_guidance, route_guidance_text
-from eqquest.travel_connectivity import travel_connectivity_diagnostic, travel_connectivity_text
+from eqquest.travel_connectivity import travel_connectivity_diagnostic
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -41,26 +41,33 @@ class LongRouteGuidanceTests(unittest.TestCase):
             evidence=f"confirmed regression edge {index}",
         )
 
-    def test_stone_hive_to_north_freeport_can_span_many_confirmed_hops(self):
+    def test_stone_hive_to_north_freeport_is_not_capped_at_64_hops(self):
         stone = self._zone("The Stone Hive", 351)
-        transit = [self._zone(f"Transit Zone {index:02d}", 1000 + index) for index in range(1, 25)]
+        transit = [
+            self._zone(f"Transit Zone {index:02d}", 1000 + index)
+            for index in range(1, 81)
+        ]
         freeport = self._zone("North Freeport", 8)
         path = [stone, *transit, freeport]
         for index, (source, target) in enumerate(zip(path, path[1:]), start=1):
             self._edge(source, target, index)
 
-        shortest = ZoneTravelCatalog(self.db).shortest_path(stone, freeport)
+        catalog = ZoneTravelCatalog(self.db)
+        # The optional explicit bound still works when a caller intentionally asks
+        # for it, but normal routing has no arbitrary distance ceiling anymore.
+        self.assertEqual(catalog.shortest_path(stone, freeport, max_hops=64), [])
+        shortest = catalog.shortest_path(stone, freeport)
         self.assertEqual(shortest, path)
-        self.assertEqual(len(shortest) - 1, 25)
+        self.assertEqual(len(shortest) - 1, 81)
 
         guidance = build_route_guidance(self.db, "The Stone Hive", "North Freeport")
         self.assertTrue(guidance.ok)
-        self.assertEqual(len(guidance.hops), 25)
+        self.assertEqual(len(guidance.hops), 81)
         self.assertEqual(guidance.route.path, tuple(path))
         text = route_guidance_text(self.db, guidance)
         self.assertIn("Route: The Stone Hive → North Freeport", text)
-        self.assertIn("Confirmed hops: 25", text)
-        self.assertIn("25. Transit Zone 24 → North Freeport", text)
+        self.assertIn("Confirmed hops: 81", text)
+        self.assertIn("81. Transit Zone 80 → North Freeport", text)
 
     def test_long_route_uses_shortest_confirmed_chain_not_first_discovered_chain(self):
         stone = self._zone("The Stone Hive", 351)

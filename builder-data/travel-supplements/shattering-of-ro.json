@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "source_name": "EverQuestie approved Shattering of Ro travel evidence",
+  "source_version": "2026-08-15",
+  "edges": [
+    {
+      "source_key": "sor-west-freeport-to-arcstone",
+      "source": "West Freeport",
+      "target": "Arcstone, Shattered Isles",
+      "connection_kind": "portal",
+      "bidirectional": false,
+      "source_url": "https://everquest.fanra.info/wiki/Shattering_of_Ro",
+      "evidence": "Fanra's Shattering of Ro travel section states that Arcstone, Shattered Isles may be entered from West Freeport and requires completion of Partisan of Candlemaker's Workshop.",
+      "travel_requirements": [
+        {
+          "kind": "achievement",
+          "text": "Requires completion of Partisan of Candlemaker's Workshop",
+          "direction": "forward"
+        }
+      ]
+    },
+    {
+      "source_key": "sor-arcstone-to-ruined-relic",
+      "source": "Arcstone, Shattered Isles",
+      "target": "Ruined Relic",
+      "connection_kind": "zone_line",
+      "bidirectional": false,
+      "source_url": "https://www.everquest.com/update-notes/eq-update-notes-1-21-26",
+      "evidence": "EverQuest's January 21, 2026 update notes refer to the Ruined Relic zone-in from Arcstone, Shattered Isles, corroborating this directed transition."
+    },
+    {
+      "source_key": "sor-ruined-relic-to-vortex",
+      "source": "Ruined Relic",
+      "target": "The Vortex",
+      "connection_kind": "zone_line",
+      "bidirectional": false,
+      "source_url": "https://www.redguides.com/community/threads/sor-arcstone.95428/",
+      "evidence": "A current Shattering of Ro travel discussion explicitly identifies a zoneline from Relic to Vortex."
+    },
+    {
+      "source_key": "sor-vortex-to-labyrinth-of-spite",
+      "source": "The Vortex",
+      "target": "Labyrinth of Spite",
+      "connection_kind": "zone_line",
+      "bidirectional": false,
+      "source_url": "https://www.redguides.com/community/threads/sor-arcstone.95428/",
+      "evidence": "A current Shattering of Ro travel discussion explicitly identifies a zoneline from Vortex to Labyrinth of Spite."
+    }
+  ]
+}

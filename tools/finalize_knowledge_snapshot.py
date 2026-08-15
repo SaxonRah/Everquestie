@@ -55,6 +55,20 @@ def main() -> int:
         )
     )
     print(
+        "provider zone reconciliation: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.provider_zone_reconciliation.items()
+        )
+    )
+    print(
+        "provider zone travel: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.provider_zone_travel.items()
+        )
+    )
+    print(
         "zone coverage: "
         + ", ".join(
             f"{name}={value}"

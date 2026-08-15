@@ -41,6 +41,11 @@ class _Tree:
     def exists(self, iid):
         return iid in self.items
 
+    def insert(self, _parent, _index, *, iid, text=""):
+        _ = text
+        self.items.add(iid)
+        return iid
+
     def selection(self):
         return self.selected
 
@@ -212,6 +217,7 @@ class KnowledgeRelationshipNavigationTests(unittest.TestCase):
         app.notebook = _Notebook()
         app.knowledge_tab = "knowledge"
         app._knowledge_kind_nodes = {}
+        app._knowledge_entity_by_item = {}
         app._knowledge_relationship_history = []
         app.shown = []
 
@@ -231,6 +237,9 @@ class KnowledgeRelationshipNavigationTests(unittest.TestCase):
                 (name, kind),
             ).fetchall()
             app.entity_tree.items = {f"entity:{int(row['id'])}" for row in rows}
+            app._knowledge_entity_by_item = {
+                f"entity:{int(row['id'])}": int(row["id"]) for row in rows
+            }
 
         app._search_knowledge = search
         app._populate_knowledge_kind = lambda _kind, _node: None
@@ -277,6 +286,23 @@ class KnowledgeRelationshipNavigationTests(unittest.TestCase):
         self.assertEqual(app._selected_entity_id(), self.quest)
         self.assertEqual(app._knowledge_relationship_history, [])
         self.assertEqual(app.shown[-1], self.quest)
+
+    def test_exact_id_is_injected_when_lazy_child_limit_omits_target(self):
+        app = self._fake_app(self.quest)
+
+        def limited_search():
+            app.entity_tree.items = {"kind:npc", f"entity:{self.npc1}"}
+            app._knowledge_kind_nodes = {"npc": "kind:npc"}
+            app._knowledge_entity_by_item = {f"entity:{self.npc1}": self.npc1}
+
+        app._search_knowledge = limited_search
+        app._populate_knowledge_kind = lambda _kind, _node: None
+
+        self.assertTrue(open_knowledge_entity_id(app, self.npc2))
+        self.assertTrue(app.entity_tree.exists(f"entity:{self.npc2}"))
+        self.assertEqual(app._knowledge_entity_by_item[f"entity:{self.npc2}"], self.npc2)
+        self.assertEqual(app._selected_entity_id(), self.npc2)
+        self.assertEqual(app._knowledge_relationship_history, [self.quest])
 
     def test_finalized_runtime_projects_same_relationship_choices_read_only(self):
         snapshot = self.root / "everquestie-knowledge.sqlite3"

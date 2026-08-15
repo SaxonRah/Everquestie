@@ -15,6 +15,7 @@ from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
 from .provider_zone_travel import ProviderZoneTravelCatalog
 from .quest_faction_reconciliation import QuestFactionReconciliationCatalog
+from .search_index import rebuild_compact_search_index
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
 from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
@@ -56,6 +57,10 @@ KNOWLEDGE_META_KEYS = {
     "eq_mcp_version",
     "eq_mcp_commit",
     "eq_mcp_system_counts",
+    "eq_mcp_detail_last_compile",
+    "eq_mcp_detail_counts",
+    "eq_mcp_detail_errors",
+    "eq_mcp_detail_missing_systems",
 }
 KNOWLEDGE_META_PREFIXES = (
     "map_catalog_source_version::",
@@ -289,7 +294,7 @@ def finalize_knowledge_snapshot(
     db.set_meta("knowledge_snapshot_version", version)
     db.set_meta("knowledge_snapshot_built_at", built)
 
-    fts_rows = db.rebuild_search_index()
+    fts_rows = rebuild_compact_search_index(db)
     identity = identity_audit_text(db)
 
     errors = snapshot_portability_errors(db)

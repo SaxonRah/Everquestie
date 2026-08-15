@@ -62,6 +62,13 @@ def main() -> int:
         )
     )
     print(
+        "NPC expansion reconciliation: "
+        + ", ".join(
+            f"{name}={value}"
+            for name, value in report.npc_expansion_reconciliation.items()
+        )
+    )
+    print(
         "provider zone reconciliation: "
         + ", ".join(
             f"{name}={value}"

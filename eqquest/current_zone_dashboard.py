@@ -53,24 +53,22 @@ class CurrentZoneEntitySummary:
 
 @dataclass(frozen=True, slots=True)
 class CurrentZoneExitSummary:
-    edge_id: int
+    edge_ids: tuple[int, ...]
     zone_entity_id: int
     zone_name: str
-    connection_kind: str
-    direction: str
+    role_labels: tuple[str, ...]
+    source_labels: tuple[str, ...]
+    evidences: tuple[str, ...]
     usable: bool
     source_owned_coordinate: bool
-    source_label: str
-    evidence: str
 
     @property
     def role_text(self) -> str:
-        kind = self.connection_kind.replace("_", " ").strip() or "travel"
-        if self.direction == "bidirectional":
-            return f"Two-way {kind}"
-        if self.usable:
-            return f"Exit via {kind}"
-        return f"Incoming-only {kind}"
+        return ", ".join(self.role_labels)
+
+    @property
+    def source_text(self) -> str:
+        return ", ".join(self.source_labels)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +151,7 @@ class CurrentZoneDashboard:
                     kind="zone",
                     category="Travel",
                     role_text=exit_row.role_text,
-                    source_text=exit_row.source_label,
+                    source_text=exit_row.source_text or "EverQuestie knowledge",
                     usable_exit=exit_row.usable,
                     mappable_exit=exit_row.source_owned_coordinate,
                 )
@@ -172,6 +170,15 @@ def _relation_role(relation: str, kind: str) -> str:
     return relation.replace("_", " ").strip().title() or "Known here"
 
 
+def _connection_role(connection) -> str:
+    kind = str(connection.connection_kind or "travel").replace("_", " ").strip() or "travel"
+    if connection.direction == "bidirectional":
+        return f"Two-way {kind}"
+    if connection.usable_from_zone:
+        return f"Exit via {kind}"
+    return f"Incoming-only {kind}"
+
+
 def build_current_zone_dashboard(
     db: Database,
     zone_token: str,
@@ -183,6 +190,8 @@ def build_current_zone_dashboard(
 
     This is a read projection over ``ZoneContext``. It does not infer completeness,
     synthesize locations, promote incoming-only travel edges, or mutate knowledge.
+    Duplicate topology evidence for the same neighboring zone is collapsed for display
+    while preserving every role/source/evidence row and the strongest safe actionability.
     """
     context, status = build_zone_context(
         db,
@@ -255,27 +264,58 @@ def build_current_zone_dashboard(
         )
     )
 
+    # Finalization may compile additional provider topology for the same canonical
+    # neighbor already represented by another source. A player dashboard should show
+    # one neighbor row, not one row per evidence provider. Keep all source semantics and
+    # let any safe source-owned coordinate make that aggregate neighbor mappable.
+    exit_groups: dict[int, dict[str, object]] = {}
+    for connection in context.connections:
+        neighbor_id = int(connection.neighbor_zone_entity_id)
+        item = exit_groups.setdefault(
+            neighbor_id,
+            {
+                "name": str(connection.neighbor_zone_name),
+                "edges": [],
+                "roles": [],
+                "sources": [],
+                "evidence": [],
+                "usable": False,
+                "mappable": False,
+            },
+        )
+        item["edges"].append(int(connection.edge_id))
+        item["roles"].append(_connection_role(connection))
+        source = str(connection.source_name or connection.source_kind or "EverQuestie knowledge")
+        if connection.source_version:
+            source += f" {connection.source_version}"
+        item["sources"].append(source)
+        if connection.evidence:
+            item["evidence"].append(str(connection.evidence))
+        if connection.usable_from_zone:
+            item["usable"] = True
+        if (
+            connection.usable_from_zone
+            and int(connection.coordinate_zone_entity_id) == int(context.identity.entity_id)
+            and connection.x is not None
+            and connection.y is not None
+        ):
+            item["mappable"] = True
+
     exits = tuple(
         CurrentZoneExitSummary(
-            edge_id=int(connection.edge_id),
-            zone_entity_id=int(connection.neighbor_zone_entity_id),
-            zone_name=str(connection.neighbor_zone_name),
-            connection_kind=str(connection.connection_kind),
-            direction=str(connection.direction),
-            usable=bool(connection.usable_from_zone),
-            source_owned_coordinate=bool(
-                connection.usable_from_zone
-                and int(connection.coordinate_zone_entity_id) == int(context.identity.entity_id)
-                and connection.x is not None
-                and connection.y is not None
-            ),
-            source_label=(
-                str(connection.source_name or connection.source_kind or "EverQuestie knowledge")
-                + (f" {connection.source_version}" if connection.source_version else "")
-            ),
-            evidence=str(connection.evidence or ""),
+            edge_ids=_unique(int(value) for value in item["edges"]),
+            zone_entity_id=neighbor_id,
+            zone_name=str(item["name"]),
+            role_labels=_unique(str(value) for value in item["roles"]),
+            source_labels=_unique(str(value) for value in item["sources"]),
+            evidences=_unique(str(value) for value in item["evidence"]),
+            usable=bool(item["usable"]),
+            source_owned_coordinate=bool(item["mappable"]),
         )
-        for connection in context.connections
+        for neighbor_id, item in sorted(
+            exit_groups.items(),
+            key=lambda pair: (str(pair[1]["name"]).casefold(), pair[0]),
+        )
     )
 
     return CurrentZoneDashboard(context=context, entities=tuple(entities), exits=exits), "linked"
@@ -291,7 +331,7 @@ def current_zone_dashboard_text(db: Database, zone_token: str) -> str:
     lines = [
         f"WHAT'S HERE | {dashboard.zone_name}",
         f"Known entities: {len(dashboard.entities)} | located: {dashboard.located_entity_count}",
-        f"Confirmed travel edges: {len(dashboard.exits)} | usable exits: {dashboard.usable_exit_count} | mappable exits: {dashboard.mappable_exit_count}",
+        f"Confirmed neighboring zones: {len(dashboard.exits)} | usable exits: {dashboard.usable_exit_count} | mappable exits: {dashboard.mappable_exit_count}",
         f"Map bindings: {dashboard.map_binding_count} | provider zone fact sources: {dashboard.provider_fact_count}",
         "",
         "Evidence-backed entities (not exhaustive):",
@@ -309,6 +349,6 @@ def current_zone_dashboard_text(db: Database, zone_token: str) -> str:
         for row in dashboard.exits:
             suffix = " | source-side coordinate" if row.source_owned_coordinate else ""
             lines.append(
-                f"  • [zone] {row.zone_name} | {row.role_text} | {row.source_label}{suffix}"
+                f"  • [zone] {row.zone_name} | {row.role_text} | {row.source_text}{suffix}"
             )
     return "\n".join(lines)

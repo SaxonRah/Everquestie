@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from tkinter import ttk
 
+from .current_zone_dashboard import (
+    build_current_zone_dashboard,
+    current_zone_dashboard_text,
+)
+from .current_zone_dashboard_ui import ask_current_zone_dashboard
 from .local_map_readiness import local_map_readiness_text
 from .route_guidance import (
     RouteGuidanceResult,
@@ -19,6 +24,7 @@ class RouteGuidanceFrame(TravelFrame):
     def __init__(self, *args, **kwargs):
         self._route_guidance: RouteGuidanceResult | None = None
         self.get_map_readiness = kwargs.pop("get_map_readiness", None)
+        self.on_knowledge_entity = kwargs.pop("on_knowledge_entity", None)
         super().__init__(*args, **kwargs)
 
     def _build(self) -> None:
@@ -30,9 +36,14 @@ class RouteGuidanceFrame(TravelFrame):
             text="Map next hop",
             command=self.map_next_hop,
         ).pack(side="left")
+        ttk.Button(
+            route_actions,
+            text="What's here…",
+            command=self.show_current_zone_dashboard,
+        ).pack(side="left", padx=(6, 0))
         ttk.Label(
             route_actions,
-            text="Uses confirmed route evidence; player /loc is not required.",
+            text="Uses finalized canonical knowledge; Map/Knowledge keep their own action ownership.",
         ).pack(side="left", padx=(8, 0))
 
     def _local_readiness(self, zone: str):
@@ -108,6 +119,58 @@ class RouteGuidanceFrame(TravelFrame):
             self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess.")
         else:
             self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
+
+    def show_current_zone_dashboard(self) -> bool:
+        """Browse evidence-backed current/selected-zone entities by exact ID."""
+        self._clear_nearby_points()
+        if not TravelFrame._ensure_navigation_catalog_ready(self):
+            return False
+        zone = self._selected_or_current_zone()
+        if not zone:
+            self.status_var.set("Choose a zone or wait for the current zone from the log.")
+            return False
+
+        dashboard, status = build_current_zone_dashboard(self.db, zone)
+        self._set_result(current_zone_dashboard_text(self.db, zone))
+        if dashboard is None:
+            if status == "ambiguous":
+                self.status_var.set("Zone identity is ambiguous; EverQuestie will not guess what's here.")
+            else:
+                self.status_var.set("No canonical zone identity is present in shipped knowledge yet.")
+            return False
+
+        if not dashboard.choices:
+            self.status_var.set(
+                f"{dashboard.zone_name}: no evidence-backed entity or neighboring-zone rows are present yet."
+            )
+            return True
+
+        choice = ask_current_zone_dashboard(self, dashboard)
+        if choice is None:
+            self.status_var.set(
+                f"{dashboard.zone_name}: dashboard loaded; no Knowledge row was opened."
+            )
+            return True
+
+        callback = getattr(self, "on_knowledge_entity", None)
+        if callback is None:
+            self.status_var.set(
+                f"Selected [{choice.kind}] {choice.name}, but exact Knowledge navigation is not connected."
+            )
+            return False
+        try:
+            opened = bool(callback(choice.entity_id))
+        except Exception:
+            opened = False
+        if opened:
+            self.status_var.set(
+                f"Opened Knowledge: [{choice.kind}] {choice.name} | {choice.role_text}."
+            )
+            return True
+        self.status_var.set(
+            f"[{choice.kind}] {choice.name} could not be opened in Knowledge."
+        )
+        return False
 
     def find_route(self) -> None:
         self._clear_nearby_points()

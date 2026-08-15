@@ -147,6 +147,14 @@ def install_knowledge_relationship_navigation_ui() -> None:
         def _build_ui(self) -> None:
             super()._build_ui()
             self._knowledge_relationship_history: list[int] = []
+
+            # Runtime policy constructs Travel inside super(). The outer composed app
+            # already owns the exact-ID opener, so connect that callback here instead
+            # of teaching runtime policy or Travel how Knowledge tree selection works.
+            travel = getattr(self, "travel_tab", None)
+            if travel is not None:
+                travel.on_knowledge_entity = self._open_knowledge_entity_exact
+
             if not _packaged_runtime(self):
                 return
 
@@ -170,6 +178,18 @@ def install_knowledge_relationship_navigation_ui() -> None:
             )
             self.knowledge_relationship_back_button.pack(side="left", padx=(6, 0))
 
+        def _open_knowledge_entity_exact(self, entity_id: int) -> bool:
+            """Shared exact-ID Knowledge handoff for other composed player surfaces."""
+            opened = open_knowledge_entity_id(self, int(entity_id), record_history=True)
+            _set_back_button_state(self)
+            if opened:
+                row = self.db.entity(int(entity_id))
+                if row is not None:
+                    self.status.set(f"Knowledge: [{row['kind']}] {row['name']}")
+                return True
+            self.status.set("Knowledge entity could not be opened by exact ID.")
+            return False
+
         def _open_related_knowledge_entity(self) -> bool:
             entity_id = self._selected_entity_id()
             if entity_id is None:
@@ -192,8 +212,7 @@ def install_knowledge_relationship_navigation_ui() -> None:
             if choice is None:
                 self.status.set("Related entity selection cancelled.")
                 return False
-            opened = open_knowledge_entity_id(self, choice.entity_id, record_history=True)
-            _set_back_button_state(self)
+            opened = self._open_knowledge_entity_exact(choice.entity_id)
             if opened:
                 self.status.set(
                     f"Knowledge: [{choice.entity_kind}] {choice.entity_name} — {choice.relation_text or 'related'}"

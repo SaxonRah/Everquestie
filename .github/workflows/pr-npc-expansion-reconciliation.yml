@@ -1,0 +1,25 @@
+name: PR NPC expansion reconciliation
+
+on:
+  push:
+    branches:
+      - agent/npc-expansion-reconciliation
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile source
+        run: python -m compileall -q eqquest tests tools EverQuestie.py
+      - name: Run provider identity reconciliation regressions
+        run: python -m unittest tests.test_npc_expansion_reconciliation tests.test_quest_faction_reconciliation tests.test_knowledge_snapshot tests.test_world_entity_context tests.test_source_compatibility tests.test_knowledge_coverage -v
+      - name: Run full regression suite
+        run: python -m unittest discover -s tests -v

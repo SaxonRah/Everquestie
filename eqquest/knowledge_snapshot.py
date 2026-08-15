@@ -13,6 +13,7 @@ from .db_audit import identity_audit_text
 from .map_catalog import MapCatalog
 from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
+from .provider_zone_travel import ProviderZoneTravelCatalog
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
 from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
@@ -46,6 +47,8 @@ KNOWLEDGE_META_KEYS = {
     "mechanics_catalog_coverage",
     "provider_zone_catalog_version",
     "provider_zone_catalog_coverage",
+    "provider_zone_travel_catalog_version",
+    "provider_zone_travel_catalog_coverage",
     "zone_coverage_version",
     "zone_catalog_coverage",
     "eq_mcp_last_compile",
@@ -71,6 +74,7 @@ class KnowledgeSnapshotReport:
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
     provider_zone_reconciliation: dict[str, int]
+    provider_zone_travel: dict[str, int]
     zone_coverage: dict[str, Any]
     map_reconciliation: dict[str, int]
     fts_rows: int
@@ -259,8 +263,14 @@ def finalize_knowledge_snapshot(
             "zone_travel_unresolved": int(zone_travel.unresolved),
         }
     )
-    # Coverage is compiled only after zone/map/travel reconciliation, so the report
-    # describes the exact release graph users will receive rather than builder order.
+
+    # Provider topology is compiled only after the provider-zone identity catalog is
+    # fixed. The resulting rows use canonical gameplay IDs and share zone_travel_edges
+    # with map evidence; runtime routing therefore stays completely source-agnostic.
+    provider_travel = ProviderZoneTravelCatalog(db).reconcile()
+
+    # Coverage is compiled only after both map and provider topology are finalized, so
+    # release metrics describe the exact graph users will receive.
     zone_coverage = ZoneCoverageCatalog(db).compile_summary()
 
     stripped_user = strip_user_state(db)
@@ -313,6 +323,7 @@ def finalize_knowledge_snapshot(
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
         provider_zone_reconciliation=provider_zone.as_dict(),
+        provider_zone_travel=provider_travel.as_dict(),
         zone_coverage=zone_coverage.as_dict(),
         map_reconciliation=map_reconciliation,
         fts_rows=fts_rows,

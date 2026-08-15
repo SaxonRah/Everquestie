@@ -1,6 +1,6 @@
 # Route acceptance audit
 
-EverQuestie now has a read-only acceptance audit for answering a concrete release question:
+EverQuestie has a read-only acceptance audit for answering a concrete release question:
 
 > Can this finalized knowledge snapshot actually route from this canonical EverQuest zone to that canonical EverQuest zone?
 
@@ -16,15 +16,17 @@ The acceptance report is therefore a regression/release view over the same facts
 
 ## Default cross-world acceptance cases
 
-When no explicit route pairs are supplied, the command checks a deliberately difficult set of endpoint families:
+When no explicit route pairs are supplied, the command checks a deliberately varied set of real canonical endpoint families:
 
 - **The Hole → Labyrinth of Spite**
-- **Feldax Hive → The Hole**
-- **Feldax Hive → Paineel**
+- **Paineel → The Hole**
+- **Stonebrunt Mountains → Paineel**
 - **Greater Faydark → The Hole**
-- **The Stone Hive → North Freeport**
+- **Stone Hive → North Freeport**
 
 These names are acceptance **queries**, not hard-coded geography. The audit does not manufacture intermediate zones, edges, requirements, aliases, or reciprocal travel to make a case pass.
+
+The default list must contain literal real EverQuest client zone display names. Synthetic zones used to stress long/gated route mechanics belong only in unit tests. This matters because an unresolved default endpoint otherwise looks like a source-data failure even when the actual defect is the acceptance question itself. Likewise, the audit keeps exact identity semantics: the canonical zone is `Stone Hive`; it does not teach the resolver to accept the noncanonical query `The Stone Hive` merely to make the audit pass.
 
 The long synthetic route tests elsewhere in the suite prove that EverQuestie's algorithm can traverse arbitrary confirmed route lengths and gated transitions. This audit answers the separate real-data question: whether the supplied builder/finalized snapshot actually contains enough canonical source-backed topology for the requested endpoints.
 
@@ -41,7 +43,7 @@ Audit one or more explicit pairs:
 ```powershell
 python .\tools\audit_route_acceptance.py .\dist\everquestie-knowledge.sqlite3 `
   --route "The Hole" "Labyrinth of Spite" `
-  --route "Feldax Hive" "The Hole"
+  --route "Paineel" "The Hole"
 ```
 
 Show every intermediate zone for successful routes:
@@ -86,6 +88,8 @@ The audit uses the same exact identity policy as player-facing navigation. It do
 
 If an exact display-name collision exists, the existing authority rule may choose the unique EQ-client-backed canonical zone when that is safe. Multiple client-backed same-name zones remain ambiguous. Provider candidates do not become gameplay targets simply because they would connect two graph components.
 
+A permanent regression creates the exact client names used by the default suite and verifies that every default source and target resolves without fuzzy aliases. This prevents a synthetic stress-test name or a display-name typo from being misclassified as missing real-world knowledge again.
+
 ## Directionality and special transitions
 
 A missing reverse route is not repaired by assuming that a zone line is reciprocal. The route must have reciprocal evidence or an explicitly two-way edge.
@@ -97,6 +101,8 @@ This means a failed far route now points primarily to one of three source-data p
 1. a canonical zone identity/binding is missing or ambiguous;
 2. a legal transition has not been compiled into `zone_travel_edges`;
 3. directionality evidence is incomplete.
+
+Before treating an identity failure as a source-data problem, the default-suite regression ensures the query itself is a real canonical endpoint.
 
 ## How this drives source enrichment
 

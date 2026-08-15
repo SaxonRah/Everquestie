@@ -7,6 +7,10 @@ import sqlite3
 from .db import Database
 from .eqmap import map_to_game
 from .locations import LocationEvidence
+from .provider_zone_metadata import (
+    ProviderZoneMetadata,
+    provider_zone_metadata_for_gameplay_zone,
+)
 from .zone_catalog import ZoneMapBinding, ZoneMapCatalog
 from .zone_authority import resolve_authoritative_zone
 from .zone_identity import ZoneIdentity
@@ -14,6 +18,7 @@ from .zone_provider_reconciliation import (
     ProviderZoneBinding,
     ProviderZoneReconciliationCatalog,
 )
+from .zone_relationship_context import ZoneRelatedEntity, related_entities_for_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +83,8 @@ class ZoneContext:
     maps: tuple[ZoneMapBinding, ...]
     connections: tuple[ZoneConnection, ...]
     locations: tuple[ZoneLocatedEntity, ...]
+    related_entities: tuple[ZoneRelatedEntity, ...]
+    provider_metadata: tuple[ProviderZoneMetadata, ...]
     provider_bindings: tuple[ProviderZoneBinding, ...] = ()
 
     @property
@@ -85,8 +92,36 @@ class ZoneContext:
         return len({row.entity_id for row in self.locations})
 
     @property
+    def related_entity_count(self) -> int:
+        return len({row.entity_id for row in self.related_entities})
+
+    @property
     def usable_connections(self) -> tuple[ZoneConnection, ...]:
         return tuple(row for row in self.connections if row.usable_from_zone)
+
+    @property
+    def known_npcs(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(
+            row
+            for row in self.related_entities
+            if row.relation == "found_in" and row.kind == "npc"
+        )
+
+    @property
+    def known_items(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(
+            row
+            for row in self.related_entities
+            if row.relation == "found_in" and row.kind == "item"
+        )
+
+    @property
+    def quests_starting(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(row for row in self.related_entities if row.relation == "starts_in")
+
+    @property
+    def quests_occurring(self) -> tuple[ZoneRelatedEntity, ...]:
+        return tuple(row for row in self.related_entities if row.relation == "occurs_in")
 
 
 def _relation_exists(db: Database, name: str) -> bool:
@@ -336,6 +371,7 @@ def build_zone_context(
     zone_token: str,
     *,
     location_limit: int = 500,
+    relationship_limit: int = 1000,
 ) -> tuple[ZoneContext | None, str]:
     """Resolve one canonical zone and project its attached shipped knowledge.
 
@@ -365,6 +401,7 @@ def build_zone_context(
         linked_only=True,
     )
     projected_zone_ids = provider_catalog.projected_zone_entity_ids(identity.entity_id)
+    provider_metadata = provider_zone_metadata_for_gameplay_zone(db, identity.entity_id)
 
     maps = tuple(ZoneMapCatalog(db).maps_for_zone(identity.entity_id))
     connections = tuple(_connections_for_zone(db, identity.entity_id))
@@ -375,6 +412,12 @@ def build_zone_context(
             projected_zone_ids,
             limit=max(1, int(location_limit)),
         )
+    )
+    related_entities = related_entities_for_zone(
+        db,
+        identity.entity_id,
+        projected_zone_ids,
+        limit=max(1, int(relationship_limit)),
     )
     return (
         ZoneContext(
@@ -395,10 +438,55 @@ def build_zone_context(
             maps=maps,
             connections=connections,
             locations=locations,
+            related_entities=related_entities,
+            provider_metadata=provider_metadata,
             provider_bindings=provider_bindings,
         ),
         "linked",
     )
+
+
+def _append_related_section(
+    lines: list[str],
+    title: str,
+    rows: tuple[ZoneRelatedEntity, ...],
+    *,
+    limit: int,
+) -> None:
+    if not rows:
+        return
+    lines += ["", f"{title} (evidence-backed; not exhaustive):"]
+    for row in rows[: max(1, int(limit))]:
+        details = [row.source_label]
+        if row.preview_text:
+            details.append(row.preview_text)
+        if row.source_field:
+            details.append(row.source_field)
+        lines.append(f"  • {row.name} | " + " | ".join(details))
+
+
+def _append_provider_metadata(lines: list[str], rows: tuple[ProviderZoneMetadata, ...]) -> None:
+    if not rows:
+        return
+    lines += ["", "Provider zone facts (source-specific):"]
+    for row in rows:
+        details: list[str] = []
+        if row.level_range_text:
+            details.append(f"level {row.level_range_text}")
+        if row.expansion:
+            details.append(row.expansion)
+        if row.zone_type:
+            details.append(f"type: {row.zone_type}")
+        if row.instanced:
+            details.append(f"instanced: {row.instanced}")
+        if row.keyed:
+            details.append(f"keyed: {row.keyed}")
+        if row.hot_zone is not None:
+            details.append(f"hot zone: {'yes' if row.hot_zone else 'no'}")
+        facts = " | ".join(details) if details else "metadata present"
+        lines.append(
+            f"  • {row.provider_zone_name} | {row.source_label} | {facts}"
+        )
 
 
 def zone_context_text(
@@ -406,12 +494,14 @@ def zone_context_text(
     zone_token: str,
     *,
     location_limit: int = 25,
+    relationship_limit: int = 25,
 ) -> str:
     """Compact text rendering suitable for future UI/guidance surfaces."""
     context, status = build_zone_context(
         db,
         zone_token,
         location_limit=max(1, int(location_limit)),
+        relationship_limit=max(1, int(relationship_limit)) * 4,
     )
     if context is None:
         if status == "ambiguous":
@@ -442,6 +532,8 @@ def zone_context_text(
                 f"{binding.corroboration_count} structured zone-link corroboration(s)"
             )
 
+    _append_provider_metadata(lines, context.provider_metadata)
+
     if context.maps:
         lines += ["", "Map bindings:"]
         for binding in context.maps:
@@ -459,6 +551,31 @@ def zone_context_text(
                 f"  • {arrow} {connection.neighbor_zone_name} | "
                 f"{connection.connection_kind.replace('_', ' ')} | {source}{usability}"
             )
+
+    _append_related_section(
+        lines,
+        "Known NPCs",
+        context.known_npcs,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Quests starting here",
+        context.quests_starting,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Quests occurring here",
+        context.quests_occurring,
+        limit=relationship_limit,
+    )
+    _append_related_section(
+        lines,
+        "Items associated with this zone",
+        context.known_items,
+        limit=relationship_limit,
+    )
 
     if context.locations:
         lines += ["", f"Confirmed located entities: {context.entity_count}"]

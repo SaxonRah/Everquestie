@@ -10,7 +10,7 @@ import unittest
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is required for the bridge contract test")
 class MCPDetailBridgeContractTests(unittest.TestCase):
-    def test_bridge_emits_raw_structured_local_record(self) -> None:
+    def _run_bridge(self, module_source: str, snapshot: dict) -> list[dict]:
         repo_root = Path(__file__).resolve().parents[1]
         bridge = repo_root / "tools" / "mcp_local_detail_bridge.mjs"
         self.assertTrue(bridge.is_file())
@@ -20,16 +20,9 @@ class MCPDetailBridgeContractTests(unittest.TestCase):
             source_dir = mcp / "dist" / "sources"
             source_dir.mkdir(parents=True)
             (mcp / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
-            (source_dir / "index.js").write_text(
-                "export async function getLocalSpell(id) {\n"
-                "  return {id, name: 'Bridge Fire', mana: 222, effects: [{slot: 1, description: 'Burn'}]};\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            snapshot = {
-                "eqPath": str(Path(td) / "EverQuest"),
-                "systems": {"spells": {"count": 1, "names": {"77": "Bridge Fire"}}},
-            }
+            (source_dir / "index.js").write_text(module_source, encoding="utf-8")
+            snapshot = dict(snapshot)
+            snapshot.setdefault("eqPath", str(Path(td) / "EverQuest"))
 
             completed = subprocess.run(
                 [shutil.which("node") or "node", str(bridge), str(mcp), "-"],
@@ -40,13 +33,61 @@ class MCPDetailBridgeContractTests(unittest.TestCase):
                 timeout=20,
             )
 
-        messages = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+        return [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+
+    def test_bridge_emits_raw_structured_local_record(self) -> None:
+        messages = self._run_bridge(
+            "export async function getLocalSpell(id) {\n"
+            "  return {id, name: 'Bridge Fire', mana: 222, effects: [{slot: 1, description: 'Burn'}]};\n"
+            "}\n",
+            {"systems": {"spells": {"count": 1, "names": {"77": "Bridge Fire"}}}},
+        )
+
         record = next(message for message in messages if message.get("type") == "record")
         self.assertEqual("spells", record["system"])
         self.assertEqual("spell", record["kind"])
         self.assertEqual("77", record["external_id"])
         self.assertEqual(222, record["record"]["mana"])
         self.assertEqual("Burn", record["record"]["effects"][0]["description"])
+
+    def test_combat_ability_keeps_dbstring_identity_and_enriches_by_exact_spell_name(self) -> None:
+        messages = self._run_bridge(
+            "export async function getLocalSpellByName(name) {\n"
+            "  if (name === 'Exact Discipline') {\n"
+            "    return {id: '9001', name: 'Exact Discipline', endurance: 440, recastTime: 12000, classes: {Warrior: 80}};\n"
+            "  }\n"
+            "  return {id: '9999', name: 'Fuzzy Different Spell', endurance: 1};\n"
+            "}\n",
+            {
+                "systems": {
+                    "combatAbilities": {
+                        "count": 2,
+                        "names": {"700": "Exact Discipline", "701": "No Exact Match"},
+                    }
+                }
+            },
+        )
+
+        records = [message for message in messages if message.get("type") == "record"]
+        errors = [message for message in messages if message.get("type") == "record_error"]
+        self.assertEqual(1, len(records))
+        self.assertEqual(1, len(errors))
+
+        record = records[0]
+        payload = record["record"]
+        self.assertEqual("combatAbilities", record["system"])
+        self.assertEqual("combat_ability", record["kind"])
+        self.assertEqual("700", record["external_id"])
+        self.assertEqual("700", payload["id"])
+        self.assertEqual("700", payload["abilityId"])
+        self.assertEqual("9001", payload["spellId"])
+        self.assertEqual("Exact Discipline", payload["spellName"])
+        self.assertEqual(440, payload["endurance"])
+        self.assertEqual("exact_case_insensitive_name", payload["identityJoin"]["method"])
+        self.assertEqual("9001", payload["identityJoin"]["matchedSpellId"])
+
+        self.assertEqual("701", errors[0]["external_id"])
+        self.assertEqual("non_exact_spell_name_match_rejected", errors[0]["reason"])
 
 
 if __name__ == "__main__":

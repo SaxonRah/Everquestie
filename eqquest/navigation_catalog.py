@@ -8,7 +8,7 @@ from .zone_catalog import ZoneMapBindingStats, ZoneMapCatalog
 from .zone_travel import ZoneTravelBuildStats, ZoneTravelCatalog
 
 
-NAVIGATION_CATALOG_VERSION = "2"
+NAVIGATION_CATALOG_VERSION = "3"
 
 
 @dataclass(frozen=True, slots=True)

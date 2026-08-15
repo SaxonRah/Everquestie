@@ -69,36 +69,74 @@ the distributable knowledge graph.
 `travel_requirements_for_hop`. Requirements are informational gates on a confirmed
 transition; they do not silently remove the edge from pathfinding.
 
-## Manual builder workflow
+## Approved release manifests
 
-Apply a manifest to the existing writable builder database used by the current release
-workspace:
+Reviewed manifests committed under:
 
-```powershell
-python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
-  .\builder-data\travel-supplements\example.json
+```text
+builder-data/travel-supplements/*.json
 ```
 
-Machine-readable statistics:
+are part of EverQuestie's release knowledge inputs. `tools/build_knowledge_db.py`
+automatically compiles every JSON manifest in that directory, in deterministic filename
+order, after the selected providers have populated the working DB and before snapshot
+finalization begins.
+
+The release build fails loudly when the approved directory is missing or empty, or when
+any manifest cannot resolve its endpoints through authoritative canonical zone identity.
+That prevents a clean rebuild from silently dropping reviewed travel knowledge.
+
+This remains builder-only infrastructure. Packaged EverQuestie does not scan the
+manifest directory and ordinary users do not need these JSON files separately from the
+versioned knowledge snapshot.
+
+## Normal release workflow
+
+A normal knowledge release should use the main builder command. No separate supplement
+application step is required:
 
 ```powershell
-python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
-  .\builder-data\travel-supplements\example.json --json
-```
-
-Then create a fresh finalized test or release snapshot through the existing release path:
-
-```powershell
-python .\tools\finalize_knowledge_snapshot.py `
-  --input .\build\working.sqlite3 `
-  --output .\dist\everquestie-knowledge.sqlite3 `
+python .\tools\build_knowledge_db.py `
+  --working-db .\build\working.sqlite3 `
+  --snapshot-db .\dist\everquestie-knowledge.sqlite3 `
   --version 2026-08-15 `
+  <provider arguments> `
   --force
 ```
+
+The builder sequence is:
+
+1. import the explicitly selected knowledge providers;
+2. compile all repository-approved travel supplements;
+3. finalize the copied knowledge snapshot, including provider/map reconciliation;
+4. run route acceptance unless explicitly skipped.
 
 Audit the **finalized snapshot**, not the raw working DB. Provider- and map-derived travel
 rows are reconciled during snapshot finalization, so route acceptance against the raw
 working DB can under-report the real compiled topology.
+
+## Manual diagnostic workflow
+
+`tools/apply_travel_supplement.py` remains available for reviewing a new manifest or
+reproducing a travel frontier against an existing writable builder DB before committing
+that manifest to the approved release directory:
+
+```powershell
+python .\tools\apply_travel_supplement.py .\build\working.sqlite3 `
+  .\builder-data\travel-supplements\example.json `
+  --json
+```
+
+After a manual diagnostic application, create a fresh finalized test snapshot before
+running route acceptance:
+
+```powershell
+python .\tools\finalize_knowledge_snapshot.py `
+  --input .\build\working.sqlite3 `
+  --output .\build\test-knowledge.sqlite3 `
+  --version test `
+  --force
+```
 
 The finalizer may rebuild map-derived and structured-provider-derived travel rows, but
 the supplement uses its own `curated_travel_manifest` source kind and remains ordinary

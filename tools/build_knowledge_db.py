@@ -11,10 +11,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eqquest.knowledge_build import ProviderInvocation, build_and_finalize_knowledge
+from eqquest.approved_travel_supplements import (
+    build_and_finalize_with_approved_travel_supplements,
+)
+from eqquest.knowledge_build import ProviderInvocation
 from eqquest.provider_travel_frontier import ProviderTravelFrontierAudit
 from eqquest.route_acceptance import evaluate_route_acceptance, route_acceptance_text
 
+
+APPROVED_TRAVEL_SUPPLEMENT_DIR = REPO_ROOT / "builder-data" / "travel-supplements"
 
 _TOPOLOGY_FRONTIER_STATUSES = {
     "disconnected",
@@ -230,7 +235,8 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Build an EverQuestie working knowledge DB from explicitly selected providers, "
-            "finalize a distributable snapshot, then audit difficult real zone-to-zone routes."
+            "compile repository-approved travel supplements, finalize a distributable snapshot, "
+            "then audit difficult real zone-to-zone routes."
         )
     )
     p.add_argument("--working-db", required=True, help="Fresh builder/working SQLite database")
@@ -306,11 +312,12 @@ def main() -> int:
 
     try:
         invocations = build_invocations(args)
-        report = build_and_finalize_knowledge(
+        report = build_and_finalize_with_approved_travel_supplements(
             Path(args.working_db),
             Path(args.snapshot_db),
             invocations,
             snapshot_version=args.version,
+            supplement_dir=APPROVED_TRAVEL_SUPPLEMENT_DIR,
             overwrite=bool(args.force),
             progress=print,
         )

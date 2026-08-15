@@ -127,7 +127,7 @@ def guard_packaged_notebook_selection(app, _event=None) -> bool:
 def install_packaged_ui_policy() -> None:
     """Install final normal-user visibility and Knowledge-action guards."""
     from . import app as app_module
-    from .knowledge_map_target import select_knowledge_map_target
+    from .knowledge_map_choices import knowledge_map_choices
 
     current_app = app_module.EverQuestieApp
     current_build_ui = current_app._build_ui
@@ -145,25 +145,39 @@ def install_packaged_ui_policy() -> None:
         if entity_id is None:
             self.status.set("Select a Knowledge entity first.")
             return
-        result = select_knowledge_map_target(
+        result = knowledge_map_choices(
             self.db,
             entity_id,
             self.state_model.current_zone,
         )
-        if not result.ready or result.target is None:
+        if not result.ready:
             self.status.set(result.reason)
             return
 
-        target = result.target
+        if len(result.choices) == 1:
+            choice = result.choices[0]
+        else:
+            from .knowledge_location_ui import ask_knowledge_map_choice
+
+            choice = ask_knowledge_map_choice(
+                self,
+                result.selected_entity_name,
+                result.current_zone_name,
+                result.choices,
+            )
+            if choice is None:
+                self.status.set("Map location selection cancelled.")
+                return
+
         # The runtime Map owner remains responsible for local-map readiness, local
-        # variant selection, tab focus, coordinate conversion, and rendering. This
-        # Knowledge policy knows only canonical game-space identity + coordinates.
+        # variant selection, tab focus, coordinate conversion, and rendering. The
+        # chooser receives only canonical current-zone, game-space choices.
         self._focus_navigation_map_target(
-            target.zone_name,
-            target.x,
-            target.y,
-            target.z,
-            target.label,
+            choice.zone_name,
+            choice.x,
+            choice.y,
+            choice.z,
+            choice.map_label,
         )
 
     def _build_ui(self) -> None:

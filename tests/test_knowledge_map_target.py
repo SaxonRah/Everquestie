@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 import tempfile
 import unittest
 
 from eqquest.db import Database
+from eqquest.knowledge_map_choices import knowledge_map_choices
 from eqquest.knowledge_map_target import select_knowledge_map_target
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.packaged_ui_policy import install_packaged_ui_policy
@@ -168,7 +170,7 @@ class KnowledgeMapTargetTests(unittest.TestCase):
         finally:
             runtime.close()
 
-    def test_packaged_app_method_hands_only_ready_target_to_map_owner(self):
+    def test_packaged_app_method_hands_safe_target_or_explicit_choice_to_map_owner(self):
         self._add_location(zone_id=self.stone, y=125.0, x=-42.0, z=7.0)
         install_runtime_policy()
         install_packaged_ui_policy()
@@ -187,10 +189,19 @@ class KnowledgeMapTargetTests(unittest.TestCase):
         self.assertEqual(emitted, [("The Stone Hive", -42.0, 125.0, 7.0, "Scout Fana")])
 
         self._add_location(zone_id=self.stone, y=5.0, x=6.0, z=1.0, label="alternate")
+        choices = knowledge_map_choices(self.db, self.npc, "The Stone Hive").choices
+        self.assertEqual(len(choices), 2)
+        chosen = next(choice for choice in choices if (choice.x, choice.y) == (6.0, 5.0))
         emitted.clear()
-        app_module.EverQuestieApp._map_selected_knowledge_location(fake)
-        self.assertEqual(emitted, [])
-        self.assertIn("will not choose one automatically", status.value)
+        with patch(
+            "eqquest.knowledge_location_ui.ask_knowledge_map_choice",
+            return_value=chosen,
+        ):
+            app_module.EverQuestieApp._map_selected_knowledge_location(fake)
+        self.assertEqual(
+            emitted,
+            [(chosen.zone_name, chosen.x, chosen.y, chosen.z, chosen.map_label)],
+        )
 
 
 if __name__ == "__main__":

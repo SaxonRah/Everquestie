@@ -11,15 +11,17 @@ from .zone_travel import ZoneTravelCatalog
 
 
 # Explicit map-author syntax that is not currently compiled by ZoneTravelCatalog.
-# These patterns are audit-only: they identify safe-looking backlog without changing
-# route semantics until a parser change is reviewed against a real corpus.
+# Keep this list intentionally narrower than the compiler. When a frontier spelling
+# graduates into the production parser it must be removed here so the audit never
+# reports already-supported syntax as backlog.
 _FRONTIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("zone_line", re.compile(r"^(?:zl|z/l)\s*(?:(?:to|:|-|=)\s*)?(.+)$", re.I)),
-    ("zone_line", re.compile(r"^(.+?)\s+(?:zl|z/l)$", re.I)),
-    ("travel", re.compile(r"^to\s*:\s*(.+)$", re.I)),
-    ("zone_line", re.compile(r"^(?:zone\s*line|zoneline)\s*[-=]\s*(.+)$", re.I)),
-    ("exit", re.compile(r"^(?:exit|entrance)\s*[:=]\s*(.+)$", re.I)),
-    ("portal", re.compile(r"^(?:portal|teleport|teleporter)\s*[:=]\s*(.+)$", re.I)),
+    (
+        "zone_line",
+        re.compile(
+            r"^(?:connection|boundary)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            re.I,
+        ),
+    ),
 )
 
 
@@ -109,10 +111,13 @@ class TravelFrontierAudit:
 
     * current explicit syntax that the compiler already understands, including whether
       the stored ``zone_travel_edges`` row is missing/stale;
-    * additional explicit zone-line spellings that are safe-looking candidates for a
-      future parser expansion (for example ``ZL to Foo`` or ``Portal: Foo``);
+    * additional explicit travel spellings that are safe-looking candidates for a
+      future parser expansion (currently ``Connection`` / ``Boundary`` forms);
     * bare labels that exactly resolve to another canonical zone. Bare names are never
       auto-promoted here because they may be landmarks rather than exits.
+
+    Frontier patterns are intentionally removed when the production compiler learns
+    them. This keeps the audit a backlog measurement rather than a duplicate parser.
     """
 
     def __init__(self, db):
@@ -262,8 +267,8 @@ class TravelFrontierAudit:
             source_zone_id = int(row["source_zone_entity_id"])
             compiled_candidate = ZoneTravelCatalog._travel_candidate(label)
             if compiled_candidate is not None:
-                kind, destination = compiled_candidate
-                target_id, status, target_name, reason = self._resolve(
+                _kind, destination = compiled_candidate
+                target_id, status, _target_name, _reason = self._resolve(
                     destination, source_zone_id, identities
                 )
                 current["total"] += 1
@@ -280,7 +285,7 @@ class TravelFrontierAudit:
             frontier_candidate = self._frontier_candidate(label)
             if frontier_candidate is not None:
                 kind, destination = frontier_candidate
-                target_id, status, target_name, reason = self._resolve(
+                _target_id, status, target_name, reason = self._resolve(
                     destination, source_zone_id, identities
                 )
                 frontier["total"] += 1
@@ -366,7 +371,7 @@ def travel_frontier_audit_text(db, *, example_limit: int = 30) -> str:
         f"  stored edge status/target drift: {summary.current_explicit_status_drift:,}",
         "",
         "Frontier not currently auto-compiled:",
-        f"  additional explicit zone-line spellings: {summary.frontier_explicit:,}",
+        f"  additional explicit travel spellings: {summary.frontier_explicit:,}",
         f"    currently resolvable / ambiguous / unresolved: {summary.frontier_explicit_linked:,} / "
         f"{summary.frontier_explicit_ambiguous:,} / {summary.frontier_explicit_unresolved:,}",
         f"  bare labels that exactly name another canonical zone: {summary.frontier_bare_zone_labels:,}",
@@ -387,8 +392,8 @@ def travel_frontier_audit_text(db, *, example_limit: int = 30) -> str:
         for example in summary.examples:
             target = f" -> {example.target_zone}" if example.target_zone else ""
             lines.append(
-                f"  [{example.category}] {example.source_zone} | {example.map_stem} | "
-                f"{example.label} | {example.resolution_status}{target} | {example.source_name}"
+                f"  [{example.category}] {example.source_name} | {example.map_stem} | "
+                f"{example.label} | {example.resolution_status}{target}"
             )
 
     return "\n".join(lines)

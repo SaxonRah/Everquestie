@@ -15,6 +15,7 @@ from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
+from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 from .zone_travel import ZoneTravelCatalog
 
 
@@ -43,6 +44,8 @@ KNOWLEDGE_META_KEYS = {
     "map_links_dirty",
     "mechanics_catalog_version",
     "mechanics_catalog_coverage",
+    "provider_zone_catalog_version",
+    "provider_zone_catalog_coverage",
     "zone_coverage_version",
     "zone_catalog_coverage",
     "eq_mcp_last_compile",
@@ -67,6 +70,7 @@ class KnowledgeSnapshotReport:
     stripped_meta_rows: int
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
+    provider_zone_reconciliation: dict[str, int]
     zone_coverage: dict[str, Any]
     map_reconciliation: dict[str, int]
     fts_rows: int
@@ -223,6 +227,12 @@ def finalize_knowledge_snapshot(
     # semantic layer makes them queryable by stable names and future provider IDs.
     mechanics_coverage = MechanicsCatalog(db).reconcile()
 
+    # Reconcile provider-owned zone identities into a separate, non-destructive
+    # gameplay projection before any downstream catalogs are finalized. The provider
+    # entities and their provenance remain untouched; runtime consumes only rows that
+    # reached projection-safe `linked` status from builder evidence.
+    provider_zone = ProviderZoneReconciliationCatalog(db).reconcile()
+
     # Ensure the base map schema exists even for client-only/mapless knowledge builds.
     # Historic builder DBs may still contain absolute Windows paths from the original
     # runtime map index. Normalize those rows in the snapshot copy before any derived
@@ -302,6 +312,7 @@ def finalize_knowledge_snapshot(
         stripped_meta_rows=stripped_meta,
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
+        provider_zone_reconciliation=provider_zone.as_dict(),
         zone_coverage=zone_coverage.as_dict(),
         map_reconciliation=map_reconciliation,
         fts_rows=fts_rows,

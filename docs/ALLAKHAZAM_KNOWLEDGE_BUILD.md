@@ -18,7 +18,8 @@ python .\tools\build_knowledge_db.py `
   --allakhazam-version "2026-08-15" `
   --map-pack "Brewall=C:\EQ Maps\Brewall" `
   --map-version "Brewall=2026-08" `
-  --route-report .\build\route-acceptance.json
+  --route-report .\build\route-acceptance.json `
+  --provider-travel-frontier-report .\build\provider-travel-frontier.json
 ```
 
 Repeat `--map-pack NAME=PATH` for each approved independent map source.
@@ -26,6 +27,19 @@ Repeat `--map-pack NAME=PATH` for each approved independent map source.
 The route report currently includes the representative real canonical endpoint families established for the travel project: The Hole → Labyrinth of Spite, Paineel → The Hole, Stonebrunt Mountains → Paineel, Greater Faydark → The Hole, and Stone Hive → North Freeport.
 
 The default acceptance list deliberately uses literal EQ-client zone display names. Synthetic zones used by long/gated unit tests are never treated as real release endpoints, and the audit does not add aliases or fuzzy matching merely to make a route query resolve.
+
+When `--provider-travel-frontier-report PATH` is supplied, the same build also explains the provider/compiler boundary for the unique resolved endpoints of route failures whose status is actually topology-shaped:
+
+- `disconnected`;
+- `directionality_blocked`;
+- `route_inconsistency`.
+
+Successful route endpoints are not re-audited, and unresolved/ambiguous identity failures remain identity failures rather than being obscured by unrelated provider diagnostics. The frontier report reuses the finalized provider bindings, stored Connected Zones relationships, production direction semantics, and compiled canonical travel edges. It does not re-import the mirror, mutate reconciliation, or create travel edges.
+
+This makes the normal completion loop one build producing two complementary artifacts:
+
+1. `route-acceptance.json` says which representative player journeys succeed or fail;
+2. `provider-travel-frontier.json` says why the resolved endpoints of topology failures did or did not reach the canonical provider travel graph.
 
 ## Source boundary
 
@@ -43,22 +57,30 @@ Snapshot finalization then performs the existing conservative pipeline:
 
 The runtime receives only that finalized database. It does not need the mirror and does not parse source HTML.
 
-## Route acceptance is read-only
+## Route acceptance and frontier diagnostics are read-only
 
-The post-build acceptance audit opens the finalized snapshot with SQLite `mode=ro&immutable=1`. This is intentionally stronger than ordinary read-only mode: finalization already guarantees the snapshot has no WAL dependency, and the audit should not create sidecars or mutate the artifact it is evaluating.
+The post-build acceptance and provider-frontier audits open the finalized snapshot with SQLite `mode=ro&immutable=1`. This is intentionally stronger than ordinary read-only mode: finalization already guarantees the snapshot has no WAL dependency, and the audits should not create sidecars or mutate the artifact they are evaluating.
 
-Failures are diagnostic states rather than permission to invent travel:
+Route failures are diagnostic states rather than permission to invent travel:
 
 - unresolved or ambiguous canonical endpoint identity;
 - disconnected graph components;
 - same weak component but blocked directed reachability;
 - other explicitly classified topology gaps.
 
-The pathfinder still uses only confirmed canonical edges. The acceptance report tells the builder which real-data gap to fix next.
+For topology-shaped failures, the provider frontier then distinguishes conditions such as:
+
+- no provider zone/page associated with the canonical zone;
+- a provider page exists but exposes no structured Connected Zones rows;
+- stored provider rows are blocked by unresolved canonical bindings;
+- a row is compiler-eligible but a finalized edge is missing;
+- provider rows compiled successfully and the remaining gap lies elsewhere.
+
+The pathfinder still uses only confirmed canonical edges. These reports tell the builder which real-data gap to fix next.
 
 ## Gating a release
 
-By default the build prints route acceptance but does not fail solely because the real topology is still incomplete. During active data completion this is useful because the JSON report becomes the work queue.
+By default the build prints route acceptance but does not fail solely because the real topology is still incomplete. During active data completion this is useful because the JSON reports become the work queue.
 
 When the known-data graph is mature enough to make those cases release requirements, add:
 
@@ -68,8 +90,8 @@ When the known-data graph is mature enough to make those cases release requireme
 
 Any failed acceptance case will then return exit code `2`.
 
-For narrow provider/debug iteration, `--skip-route-audit` disables the post-finalization route audit. It cannot be combined with `--route-report` or `--require-route-acceptance`.
+For narrow provider/debug iteration, `--skip-route-audit` disables the post-finalization route audit. It cannot be combined with `--route-report`, `--provider-travel-frontier-report`, or `--require-route-acceptance`.
 
 ## What this does not claim
 
-Passing the synthetic and integration tests proves the builder/import/finalization/routing architecture. It does **not** claim that a particular developer mirror already contains every transition required for every representative route. The real `route-acceptance.json` produced from that mirror is the source of truth for the next topology-completion pass.
+Passing the synthetic and integration tests proves the builder/import/finalization/routing architecture. It does **not** claim that a particular developer mirror already contains every transition required for every representative route. The real `route-acceptance.json` and paired `provider-travel-frontier.json` produced from that mirror are the source of truth for the next topology-completion pass.

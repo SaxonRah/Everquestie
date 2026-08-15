@@ -54,7 +54,7 @@ class RouteAcceptanceTests(unittest.TestCase):
             evidence=f"confirmed acceptance edge {index}",
         )
 
-    def test_default_suite_keeps_difficult_real_endpoint_queries_literal(self):
+    def test_default_suite_keeps_difficult_current_live_endpoint_queries_literal(self):
         self.assertEqual(
             DEFAULT_ROUTE_ACCEPTANCE_CASES,
             (
@@ -62,16 +62,19 @@ class RouteAcceptanceTests(unittest.TestCase):
                 ("Paineel", "The Hole"),
                 ("Stonebrunt Mountains", "Paineel"),
                 ("Greater Faydark", "The Hole"),
-                ("Stone Hive", "North Freeport"),
+                ("Stone Hive", "West Freeport"),
             ),
         )
         flattened = {name for pair in DEFAULT_ROUTE_ACCEPTANCE_CASES for name in pair}
         self.assertNotIn("Feldax Hive", flattened)
         self.assertNotIn("The Stone Hive", flattened)
+        self.assertNotIn("North Freeport", flattened)
+        self.assertIn("West Freeport", flattened)
 
     def test_default_suite_literals_resolve_when_exact_client_names_exist(self):
-        # This catches a regression where a synthetic stress-test zone or a display-name
-        # typo leaks into the real snapshot acceptance suite. No fuzzy aliases are added.
+        # This catches a regression where a synthetic stress-test zone, retired default,
+        # or display-name typo leaks into the current-live snapshot acceptance suite.
+        # No fuzzy aliases are added.
         real_client_names = (
             "The Hole",
             "Labyrinth of Spite",
@@ -79,7 +82,7 @@ class RouteAcceptanceTests(unittest.TestCase):
             "Stonebrunt Mountains",
             "Greater Faydark",
             "Stone Hive",
-            "North Freeport",
+            "West Freeport",
         )
         for number, name in enumerate(real_client_names, start=100):
             self._zone(name, number)
@@ -92,17 +95,25 @@ class RouteAcceptanceTests(unittest.TestCase):
             self.assertNotIn(result.status, {"source_unresolved", "target_unresolved"})
             self.assertNotIn(result.status, {"source_ambiguous", "target_ambiguous"})
 
-    def test_stone_hive_query_does_not_weaken_exact_identity_policy(self):
+    def test_stone_hive_query_keeps_historical_zone_identity_without_live_default(self):
         self._zone("Stone Hive", 396)
+        self._zone("West Freeport", 9)
         self._zone("North Freeport", 8)
 
-        canonical = evaluate_route_acceptance(self.db, [("Stone Hive", "North Freeport")])
+        canonical = evaluate_route_acceptance(self.db, [("Stone Hive", "West Freeport")])
         self.assertTrue(canonical.results[0].source.linked)
         self.assertEqual(canonical.results[0].source.canonical_name, "Stone Hive")
+        self.assertTrue(canonical.results[0].target.linked)
+        self.assertEqual(canonical.results[0].target.canonical_name, "West Freeport")
 
-        noncanonical = evaluate_route_acceptance(self.db, [("The Stone Hive", "North Freeport")])
+        noncanonical = evaluate_route_acceptance(self.db, [("The Stone Hive", "West Freeport")])
         self.assertEqual(noncanonical.results[0].status, "source_unresolved")
         self.assertFalse(noncanonical.results[0].source.linked)
+
+        historical = evaluate_route_acceptance(self.db, [("Stone Hive", "North Freeport")])
+        self.assertTrue(historical.results[0].target.linked)
+        self.assertEqual(historical.results[0].target.canonical_name, "North Freeport")
+        self.assertNotIn(("Stone Hive", "North Freeport"), DEFAULT_ROUTE_ACCEPTANCE_CASES)
 
     def test_reachable_acceptance_has_no_64_hop_ceiling(self):
         source = self._zone("The Hole", 39)

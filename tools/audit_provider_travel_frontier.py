@@ -12,9 +12,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eqquest.provider_travel_frontier import (
-    DEFAULT_PROVIDER_TRAVEL_FRONTIER_ZONES,
     ProviderTravelFrontierAudit,
     provider_travel_frontier_text,
+)
+
+
+# The CLI default follows the current-live route-acceptance frontier. Historical/retired
+# identities can still be diagnosed explicitly with --zone.
+DEFAULT_CURRENT_LIVE_PROVIDER_TRAVEL_FRONTIER_ZONES: tuple[str, ...] = (
+    "Labyrinth of Spite",
 )
 
 
@@ -40,14 +46,14 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         dest="zones",
         help=(
-            "Canonical zone to diagnose; repeat for multiple zones. Defaults to the two "
-            "remaining difficult route-acceptance targets."
+            "Canonical zone to diagnose; repeat for multiple zones. Defaults to the "
+            "remaining current-live route-acceptance provider frontier."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args(argv)
 
-    zones = tuple(args.zones or DEFAULT_PROVIDER_TRAVEL_FRONTIER_ZONES)
+    zones = tuple(args.zones or DEFAULT_CURRENT_LIVE_PROVIDER_TRAVEL_FRONTIER_ZONES)
     conn = open_read_only(args.database)
     try:
         db = SimpleNamespace(conn=conn)

@@ -4,7 +4,7 @@
 
 `tools/audit_provider_travel_frontier.py` is a read-only diagnostic for the boundary between stored provider zone evidence and EverQuestie's canonical travel graph.
 
-It was added after the first real post-HTTrack-fix acceptance run established that provider topology was genuinely compiling: three of five difficult real route cases became reachable, while `Labyrinth of Spite` and `North Freeport` still had zero incoming canonical travel edges.
+It was added after the first real post-HTTrack-fix acceptance run established that provider topology was genuinely compiling: three of five difficult real route cases became reachable, while `Labyrinth of Spite` and `North Freeport` still had zero incoming canonical travel edges. Subsequent scope review established that `North Freeport` is a historical/retired identity rather than a current-live default destination, so the CLI now defaults only to the remaining current-live provider frontier, `Labyrinth of Spite`. `North Freeport` remains available for explicit historical diagnostics.
 
 The audit answers a narrower question than route acceptance:
 
@@ -88,11 +88,13 @@ The JSON output includes provider IDs/names, source provenance, raw direction, i
 
 ## Usage
 
-Default remaining acceptance targets:
+Default current-live provider frontier:
 
 ```powershell
 python tools/audit_provider_travel_frontier.py release.sqlite3
 ```
+
+The default currently audits `Labyrinth of Spite` only.
 
 Machine-readable output:
 
@@ -100,7 +102,7 @@ Machine-readable output:
 python tools/audit_provider_travel_frontier.py release.sqlite3 --json
 ```
 
-One or more explicit exact zones:
+One or more explicit exact zones, including historical/retired identities:
 
 ```powershell
 python tools/audit_provider_travel_frontier.py release.sqlite3 `
@@ -109,7 +111,7 @@ python tools/audit_provider_travel_frontier.py release.sqlite3 `
   --json
 ```
 
-## How to interpret the current two failures
+## How to interpret a frontier
 
 For the real route-acceptance loop, run this audit before changing importer or routing behavior.
 
@@ -121,4 +123,4 @@ If it reports `provider_rows_uncompiled`, the source evidence and canonical bind
 
 If it reports `compiled` but route acceptance still says the target has no incoming edge, compare the interpreted direction and the route-connectivity component. A correct one-way edge may still make a route unreachable in the requested direction.
 
-This keeps source enrichment, identity reconciliation, travel compilation and route search as separate debuggable layers.
+Historical diagnostics should not be promoted into current-live route acceptance simply because a historical identity still resolves. This keeps source enrichment, identity reconciliation, travel compilation, lifecycle scope, and route search as separate debuggable layers.

@@ -217,7 +217,7 @@ class ProviderZoneReconciliationCatalog:
 
         provider_zone_ids = [int(row["id"]) for row in zones if not client_ids.get(int(row["id"]))]
         counts = {"linked": 0, "candidate": 0, "ambiguous": 0, "unresolved": 0}
-        corroborating_relationships = 0
+        corroborating_relationship_ids: set[int] = set()
 
         with self.db.batch():
             self.db.conn.execute("DELETE FROM zone_provider_bindings")
@@ -257,7 +257,11 @@ class ProviderZoneReconciliationCatalog:
                         )
 
                 counts[status] += 1
-                corroborating_relationships += len(corroboration)
+                corroborating_relationship_ids.update(
+                    int(item["relationship_id"])
+                    for item in corroboration
+                    if item.get("relationship_id") is not None
+                )
                 self.db.conn.execute(
                     """
                     INSERT INTO zone_provider_bindings(
@@ -286,7 +290,7 @@ class ProviderZoneReconciliationCatalog:
                 candidate=counts["candidate"],
                 ambiguous=counts["ambiguous"],
                 unresolved=counts["unresolved"],
-                corroborating_relationships=corroborating_relationships,
+                corroborating_relationships=len(corroborating_relationship_ids),
             )
             self.db.set_meta("provider_zone_catalog_version", PROVIDER_ZONE_CATALOG_VERSION)
             self.db.set_meta(

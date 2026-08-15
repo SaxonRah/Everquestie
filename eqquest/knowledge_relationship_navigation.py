@@ -95,33 +95,39 @@ def open_knowledge_entity_id(app, entity_id: int, *, record_history: bool = True
     """Open one exact Knowledge entity ID without using the hidden Search tab.
 
     The normal Knowledge filter/tree is reused so every existing action (track quest,
-    source, packaged Map location) naturally follows the newly selected row.
+    source, packaged Map location) naturally follows the newly selected row. If a very
+    large same-name result set hits the lazy child limit, the exact target row is
+    inserted into its already-filtered kind node rather than silently failing or
+    selecting a different same-name entity.
     """
-    row = app.db.entity(int(entity_id))
+    target_id = int(entity_id)
+    row = app.db.entity(target_id)
     if row is None:
         return False
 
     current = app._selected_entity_id()
-    if record_history and current is not None and int(current) != int(entity_id):
-        history = getattr(app, "_knowledge_relationship_history", None)
-        if history is None:
-            history = []
-            app._knowledge_relationship_history = history
-        history.append(int(current))
-        if len(history) > 100:
-            del history[:-100]
-
     app.search_var.set(str(row["name"] or ""))
     app.kind_var.set(str(row["kind"] or "all"))
     app._search_knowledge()
 
-    iid = f"entity:{int(entity_id)}"
+    iid = f"entity:{target_id}"
     tree = app.entity_tree
-    if not tree.exists(iid):
-        kind = str(row["kind"] or "")
-        kind_node = getattr(app, "_knowledge_kind_nodes", {}).get(kind)
-        if kind_node and tree.exists(kind_node):
-            app._populate_knowledge_kind(kind, kind_node)
+    kind = str(row["kind"] or "")
+    kind_node = getattr(app, "_knowledge_kind_nodes", {}).get(kind)
+    if not tree.exists(iid) and kind_node and tree.exists(kind_node):
+        app._populate_knowledge_kind(kind, kind_node)
+
+    # The lazy topic loader intentionally caps very large result sets. Relationship
+    # navigation already owns the exact DB ID, so it is safe to add that known row to
+    # the filtered kind node if the cap omitted it.
+    if not tree.exists(iid) and kind_node and tree.exists(kind_node):
+        try:
+            tree.insert(kind_node, "end", iid=iid, text=str(row["name"] or ""))
+            mapping = getattr(app, "_knowledge_entity_by_item", None)
+            if mapping is not None:
+                mapping[iid] = target_id
+        except Exception:
+            return False
     if not tree.exists(iid):
         return False
 
@@ -133,6 +139,15 @@ def open_knowledge_entity_id(app, entity_id: int, *, record_history: bool = True
         app.notebook.select(app.knowledge_tab)
     except Exception:
         pass
+
+    if record_history and current is not None and int(current) != target_id:
+        history = getattr(app, "_knowledge_relationship_history", None)
+        if history is None:
+            history = []
+            app._knowledge_relationship_history = history
+        history.append(int(current))
+        if len(history) > 100:
+            del history[:-100]
     return True
 
 

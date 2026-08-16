@@ -1,13 +1,103 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from .quest_objective_navigation import tracked_quest_objective_navigation
-from .zone_opportunities import ZoneOpportunity, zone_opportunities, zone_opportunity_text
+from .zone_opportunities import (
+    ZoneOpportunity,
+    ZoneOpportunityStep,
+    zone_opportunities,
+    zone_opportunity_text,
+)
 
 
 _ZONE_OPPORTUNITIES_MARKER = "_everquestie_zone_opportunities_ui"
+
+
+def zone_opportunity_step_labels(
+    steps: tuple[ZoneOpportunityStep, ...],
+) -> tuple[str, ...]:
+    """Render exact structured steps without reinterpreting their meaning."""
+    labels: list[str] = []
+    for step in steps:
+        event = f" [{step.event_kind}]" if step.event_kind else ""
+        labels.append(f"Step {step.step_order}: {step.description}{event}")
+    return tuple(labels)
+
+
+class _ZoneOpportunityStepDialog(simpledialog.Dialog):
+    def __init__(self, parent, *, opportunity: ZoneOpportunity):
+        self.opportunity = opportunity
+        self.result: ZoneOpportunityStep | None = None
+        self._listbox = None
+        super().__init__(parent, title=f"Choose objective — {opportunity.quest_name}")
+
+    def body(self, master):
+        ttk.Label(
+            master,
+            text=(
+                f"{self.opportunity.quest_name} has multiple exact structured objectives "
+                f"in {self.opportunity.zone_name}.\n"
+                "Choose the objective you want to map. EverQuestie will not guess one."
+            ),
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self._listbox = tk.Listbox(
+            master,
+            exportselection=False,
+            width=100,
+            height=min(14, max(4, len(self.opportunity.steps))),
+        )
+        self._listbox.grid(row=1, column=0, sticky="nsew")
+        master.rowconfigure(1, weight=1)
+        master.columnconfigure(0, weight=1)
+        for label in zone_opportunity_step_labels(self.opportunity.steps):
+            self._listbox.insert("end", label)
+        if self.opportunity.steps:
+            self._listbox.selection_set(0)
+            self._listbox.activate(0)
+        self._listbox.bind("<Double-1>", lambda _event: self.ok())
+        return self._listbox
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        ttk.Button(box, text="Map objective", width=14, command=self.ok).pack(
+            side="left", padx=5, pady=5
+        )
+        ttk.Button(box, text="Cancel", width=10, command=self.cancel).pack(
+            side="left", padx=5, pady=5
+        )
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def validate(self) -> bool:
+        return bool(self._listbox is not None and self._listbox.curselection())
+
+    def apply(self) -> None:
+        if self._listbox is None:
+            return
+        selected = self._listbox.curselection()
+        if not selected:
+            return
+        index = int(selected[0])
+        if 0 <= index < len(self.opportunity.steps):
+            self.result = self.opportunity.steps[index]
+
+
+def ask_zone_opportunity_step(
+    parent,
+    opportunity: ZoneOpportunity,
+) -> ZoneOpportunityStep | None:
+    """Choose one exact structured objective, prompting only when choice exists."""
+    steps = tuple(opportunity.steps)
+    if not steps:
+        return None
+    if len(steps) == 1:
+        return steps[0]
+    dialog = _ZoneOpportunityStepDialog(parent, opportunity=opportunity)
+    return dialog.result
 
 
 def install_zone_opportunities_ui() -> None:
@@ -127,11 +217,19 @@ def install_zone_opportunities_ui() -> None:
             self.status.set("Select a Zone Opportunity first.")
             return
 
+        step = ask_zone_opportunity_step(self, opportunity)
+        if step is None:
+            if opportunity.steps:
+                self.status.set("Zone Opportunity objective selection cancelled.")
+            else:
+                self.status.set("Selected Zone Opportunity has no structured objective to map.")
+            return
+
         result = tracked_quest_objective_navigation(
             self.db,
             int(opportunity.quest_id),
             getattr(self.state_model, "current_zone", None),
-            step_order=int(opportunity.primary_step_order),
+            step_order=int(step.step_order),
         )
         if result.map_ready:
             if len(result.map_choices) == 1:

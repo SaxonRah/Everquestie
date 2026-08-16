@@ -146,6 +146,100 @@ class ZoneOpportunitiesUITests(unittest.TestCase):
         self.assertEqual(mapped, [("Here Zone", 12.0, 34.0, 5.0, "Here Mob")])
         self.assertIn("Mapped Zone Opportunity objective", fake.status.value)
 
+    def test_multiple_objectives_require_exact_step_choice_before_navigation(self):
+        second = ZoneOpportunityStep(
+            step_order=7,
+            description="Collect Here Sample",
+            source_zone="Here Zone",
+            event_kind="loot",
+        )
+        opportunity = ZoneOpportunity(
+            quest_id=self.opportunity.quest_id,
+            quest_name=self.opportunity.quest_name,
+            source_url=self.opportunity.source_url,
+            zone_entity_id=self.opportunity.zone_entity_id,
+            zone_name=self.opportunity.zone_name,
+            steps=(self.opportunity.steps[0], second),
+            profile_status=self.opportunity.profile_status,
+            profile_reason=self.opportunity.profile_reason,
+            activity_match=self.opportunity.activity_match,
+        )
+        fake = SimpleNamespace(
+            db=object(),
+            state_model=SimpleNamespace(current_zone="Here Zone"),
+            zone_opportunity_tree=SimpleNamespace(selection=lambda: ("zone-opportunity:44",)),
+            _zone_opportunity_by_item={"zone-opportunity:44": opportunity},
+            _focus_navigation_map_target=lambda *_args: None,
+            status=_Status(),
+        )
+        result = SimpleNamespace(
+            map_ready=False,
+            route_ready=False,
+            map_choices=(),
+            route_choices=(),
+            current_zone_name="Here Zone",
+            reason="Selected objective has no exact coordinate yet.",
+        )
+
+        with patch(
+            "eqquest.zone_opportunities_ui.ask_zone_opportunity_step",
+            return_value=second,
+        ) as choose, patch(
+            "eqquest.zone_opportunities_ui.tracked_quest_objective_navigation",
+            return_value=result,
+        ) as navigation:
+            self.app_module.EverQuestieApp._zone_opportunity_map_selected(fake)
+
+        choose.assert_called_once_with(fake, opportunity)
+        navigation.assert_called_once_with(
+            fake.db,
+            44,
+            "Here Zone",
+            step_order=7,
+        )
+        self.assertIn("Selected objective", fake.status.value)
+
+    def test_cancelling_multiple_objective_choice_never_navigates(self):
+        second = ZoneOpportunityStep(
+            step_order=7,
+            description="Collect Here Sample",
+            source_zone="Here Zone",
+            event_kind="loot",
+        )
+        opportunity = ZoneOpportunity(
+            quest_id=self.opportunity.quest_id,
+            quest_name=self.opportunity.quest_name,
+            source_url=self.opportunity.source_url,
+            zone_entity_id=self.opportunity.zone_entity_id,
+            zone_name=self.opportunity.zone_name,
+            steps=(self.opportunity.steps[0], second),
+            profile_status=self.opportunity.profile_status,
+            profile_reason=self.opportunity.profile_reason,
+            activity_match=self.opportunity.activity_match,
+        )
+        mapped: list[tuple] = []
+        fake = SimpleNamespace(
+            db=object(),
+            state_model=SimpleNamespace(current_zone="Here Zone"),
+            zone_opportunity_tree=SimpleNamespace(selection=lambda: ("zone-opportunity:44",)),
+            _zone_opportunity_by_item={"zone-opportunity:44": opportunity},
+            _focus_navigation_map_target=lambda *args: mapped.append(tuple(args)),
+            status=_Status(),
+        )
+
+        with patch(
+            "eqquest.zone_opportunities_ui.ask_zone_opportunity_step",
+            return_value=None,
+        ) as choose, patch(
+            "eqquest.zone_opportunities_ui.tracked_quest_objective_navigation"
+        ) as navigation:
+            self.app_module.EverQuestieApp._zone_opportunity_map_selected(fake)
+
+        choose.assert_called_once_with(fake, opportunity)
+        navigation.assert_not_called()
+        self.assertEqual(mapped, [])
+        self.assertIn("selection cancelled", fake.status.value.casefold())
+
     def test_session_dismissed_quest_is_not_rendered_in_zone_opportunities(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = Database(Path(tempdir) / "working.sqlite3")

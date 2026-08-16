@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,6 +8,8 @@ import unittest
 from eqquest.activity_pathways import ActivityPathwayEngine, pathway_detail_text
 from eqquest.db import Database
 from eqquest.events import Event
+from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.runtime import RuntimeDatabase
 
 
 class ActivityPathwayEngineTests(unittest.TestCase):
@@ -152,6 +155,54 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                 self.assertGreater(suggestions[0].score, suggestions[1].score)
             finally:
                 db.close()
+
+    def test_packaged_runtime_reads_immutable_knowledge_and_user_observations(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            working = root / "working.sqlite3"
+            knowledge = root / "everquestie-knowledge.sqlite3"
+            state = root / "everquestie-user.sqlite3"
+
+            builder = Database(working)
+            try:
+                quest = builder.upsert_entity(kind="quest", name="Packaged Pathway Quest")
+                builder.add_quest_step(
+                    quest,
+                    1,
+                    "Loot a Packaged Token",
+                    match={"event": "loot", "item": "Packaged Token"},
+                )
+            finally:
+                builder.close()
+            create_knowledge_snapshot(
+                working,
+                knowledge,
+                snapshot_version="activity-pathway-test",
+                overwrite=True,
+            )
+            before = sha256(knowledge.read_bytes()).hexdigest()
+
+            runtime = RuntimeDatabase(knowledge, state)
+            try:
+                engine = ActivityPathwayEngine(runtime)
+                engine.reset_session(engine.latest_observed_event_id())
+                runtime.add_event(
+                    Event(
+                        kind="loot",
+                        raw="You have looted a Packaged Token.",
+                        item="Packaged Token",
+                    )
+                )
+                engine.refresh_observations()
+                suggestions = engine.suggestions()
+                self.assertEqual([s.quest_name for s in suggestions], ["Packaged Pathway Quest"])
+            finally:
+                runtime.close()
+
+            self.assertEqual(sha256(knowledge.read_bytes()).hexdigest(), before)
+            self.assertFalse(Path(str(knowledge) + "-wal").exists())
+            self.assertFalse(Path(str(knowledge) + "-shm").exists())
+            self.assertTrue(state.is_file())
 
 
 if __name__ == "__main__":

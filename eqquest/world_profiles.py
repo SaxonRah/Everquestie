@@ -70,6 +70,22 @@ _P99_FORCE_DENY_NAMES = {
     normalize_name("Guild Hall"),
 }
 
+# Source parsers/providers sometimes preserve an explicit placeholder rather than an
+# empty field. These values mean "the source did not tell us"; they must never cross
+# the P99 era boundary as if they named a real post-Velious expansion.
+_EXPANSION_UNKNOWN_MARKERS = {
+    "?",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "unknown",
+    "unspecified",
+    "not specified",
+    "not available",
+    "tbd",
+}
+
 
 def world_profile(profile_id: str | None) -> WorldProfile:
     return _PROFILE_BY_ID.get(str(profile_id or "").strip().casefold(), _PROFILE_BY_ID[DEFAULT_WORLD_PROFILE_ID])
@@ -119,12 +135,13 @@ def _expansion_text(data: dict[str, Any]) -> str:
 def p99_expansion_allowed(expansion: str) -> bool | None:
     """Classify explicit source expansion text against the P99 Velious-era cap.
 
-    ``None`` means the source string is empty/unknown. The helper is intentionally
-    shared by zone routing and entity lifecycle projection so both surfaces apply the
-    same reviewed era boundary instead of growing separate expansion parsers.
+    ``None`` means the source string is empty or explicitly marks the expansion as
+    unknown/unavailable. The helper is intentionally shared by zone routing and entity
+    lifecycle projection so both surfaces apply the same reviewed era boundary instead
+    of growing separate expansion parsers.
     """
     text = normalize_name(expansion)
-    if not text:
+    if not text or text in _EXPANSION_UNKNOWN_MARKERS:
         return None
     if "kunark" in text or "velious" in text:
         return True

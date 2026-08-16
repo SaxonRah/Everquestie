@@ -73,6 +73,9 @@ class ProfileAvailabilityUITests(unittest.TestCase):
                         self.db = db
                         self.events: list[str] = []
 
+                    def _quest_zone_name(self, _quest_id: int) -> str:
+                        return "Stone Hive"
+
                     def _append_event(self, text: str) -> None:
                         self.events.append(text)
 
@@ -81,6 +84,7 @@ class ProfileAvailabilityUITests(unittest.TestCase):
                 self.assertEqual(len(fake.events), 1)
                 self.assertIn("not inferred from quest", fake.events[0])
                 self.assertIn("Classic / P99-style", fake.events[0])
+                self.assertIn("Stone Hive", fake.events[0])
             finally:
                 db.close()
 

@@ -5,6 +5,7 @@ from .activity_pathway_dismiss_ui import install_activity_pathway_dismiss_ui
 from .activity_pathways_ui import install_activity_pathways_ui
 from .knowledge_coverage_ui import install_knowledge_coverage_ui
 from .knowledge_relationship_ui import install_knowledge_relationship_navigation_ui
+from .live_track_guard_ui import install_live_track_guard_ui
 from .loot_relevance_ui import install_loot_relevance_ui
 from .map_loading_policy import install_map_loading_policy
 from .objective_reviewed_item_sources_ui import install_objective_reviewed_item_sources_ui
@@ -44,4 +45,5 @@ def install_application_layers() -> None:
     install_target_intelligence_ui()
     install_target_known_drops_ui()
     install_target_personal_sightings_ui()
+    install_live_track_guard_ui()
     install_runtime_mode_ui()

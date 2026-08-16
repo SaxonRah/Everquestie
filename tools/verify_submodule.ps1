@@ -1,11 +1,18 @@
 $ErrorActionPreference = "Stop"
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$McpPath = Join-Path $ProjectRoot "third_party\everquest1-mcp"
+$Verifier = Join-Path $PSScriptRoot "verify_mcp_builder_source.py"
 
-if (-not (Test-Path (Join-Path $McpPath "package.json"))) {
-    throw "everquest1-mcp is not initialized. Run .\tools\setup_mcp_submodule.cmd first."
+Write-Warning "verify_submodule.ps1 is a compatibility alias. EverQuestie verifies a repository-locked nested MCP builder source, not a parent Git submodule."
+
+if (Get-Command python -ErrorAction SilentlyContinue) {
+    & python $Verifier
+}
+elseif (Get-Command py -ErrorAction SilentlyContinue) {
+    & py $Verifier
+}
+else {
+    throw "Python was not found in PATH."
 }
 
-$Commit = (& git -C $McpPath rev-parse HEAD).Trim()
-Write-Host "everquest1-mcp path:   $McpPath"
-Write-Host "everquest1-mcp commit: $Commit"
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}

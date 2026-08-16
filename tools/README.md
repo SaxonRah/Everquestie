@@ -57,7 +57,7 @@ python .\tools\build_knowledge_db.py `
   --provider-travel-frontier-report .\build\provider-travel-frontier.json
 ```
 
-Add a second `--map-pack NAME=PATH` for Good or another approved map source. MCP enrichment is optional builder infrastructure: add `--mcp-repository PATH` only when that build needs it. It requires `--eq-install` because the MCP snapshot is generated from that installation.
+Add a second `--map-pack NAME=PATH` for Good or another approved map source. MCP enrichment is optional builder infrastructure: add `--mcp-repository PATH` only when that build needs it. It requires `--eq-install` because the MCP snapshot is generated from that installation. Canonical MCP builds also require the selected checkout to match `third_party/everquest1-mcp.lock.json`; `build_knowledge_db.py` verifies the locked repository, commit, and package version before importing MCP data.
 
 The default provider registry is `eqclient`, `allakhazam-mirror`, `mcp`, and `map-pack`. Allakhazam remains builder-only: its saved pages are normalized into EverQuestie's database and snapshot finalization strips builder-local file paths while retaining source provenance. Packaged runtime never scans the mirror or imports source HTML.
 
@@ -120,18 +120,38 @@ The finalizer leaves its input database untouched. The output has player/session
 
 Allakhazam is optional rather than a runtime prerequisite. When an Allakhazam mirror is selected in a provider build, its normalized records and provenance are compiled before this finalization boundary just like the client, maps, and approved travel supplements.
 
-## MCP setup
+## MCP builder source setup
 
-MCP is builder/developer infrastructure. If a knowledge build currently needs it, from the EverQuestie repository root on Windows run:
+MCP is builder/developer infrastructure only. Normal EverQuestie launch and packaged runtime never bootstrap MCP, Node.js, npm, or a third-party source checkout.
+
+When a knowledge build needs MCP enrichment, initialize the repository-locked nested builder source from the EverQuestie repository root:
 
 ```powershell
-.\tools\setup_mcp_submodule.cmd
+.\tools\setup_mcp_builder_source.cmd
 ```
 
 or directly:
 
 ```powershell
-.\tools\setup_mcp_submodule.ps1
+.\tools\setup_mcp_builder_source.ps1
 ```
 
-The helper initializes the pinned `third_party/everquest1-mcp` Git submodule, runs `npm install`, and builds the MCP project. `-Update` fetches upstream metadata while retaining the commit pinned by the EverQuestie checkout unless `-Ref <tag-or-commit>` is supplied.
+The tracked contract lives at `third_party/everquest1-mcp.lock.json`. Setup verifies the approved upstream repository, checks out the exact locked commit, runs `npm install`, and builds the builder source. `-Update` refreshes upstream refs without moving the canonical lock. `-Ref <tag-or-commit>` is an explicit developer override; canonical knowledge builds reject an unlocked checkout.
+
+Verify the local checkout without fetching, checking out, installing, or building anything:
+
+```powershell
+python .\tools\verify_mcp_builder_source.py
+```
+
+The historical `setup_mcp_submodule.*` and `verify_submodule.ps1` filenames remain compatibility aliases only; EverQuestie no longer uses a parent-repository Git submodule for MCP.
+
+## Source-checkout runtime launcher
+
+A source checkout can be launched without MCP:
+
+```cmd
+.\tools\run_source_app.cmd
+```
+
+The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.

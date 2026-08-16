@@ -219,6 +219,9 @@ You can also launch the package entry point:
 py -m eqquest
 ```
 
+Neither source-checkout launcher initializes or builds MCP. MCP remains optional
+builder/developer infrastructure and is not part of normal application startup.
+
 A source checkout with no finalized knowledge snapshot falls back to the writable
 builder database under `%USERPROFILE%\.eqquest\eqquest.sqlite3` and retains the
 builder/developer UI.
@@ -246,14 +249,24 @@ runtime testing.
 
 This section is for builders/developers, not normal users.
 
-Initialize and build the MCP submodule first:
+When a build needs MCP enrichment, initialize the **repository-locked builder source**:
 
 ```powershell
-git submodule update --init --recursive
-cd .\third_party\everquest1-mcp
-npm install
-npm run build
-cd ..\..
+.\tools\setup_mcp_builder_source.ps1
+```
+
+The tracked contract is `third_party\everquest1-mcp.lock.json`. Setup clones the
+approved upstream when needed, checks out the exact locked revision, installs Node
+packages, and builds the MCP source. The canonical knowledge builder independently
+verifies that the selected MCP checkout matches the repository lock before importing it.
+The historical `setup_mcp_submodule.*` filenames remain compatibility aliases only;
+EverQuestie no longer uses a parent-repository MCP Git submodule.
+
+You can verify the local builder source without fetching, checking out, installing, or
+building anything:
+
+```powershell
+python .\tools\verify_mcp_builder_source.py
 ```
 
 `tools\build_full_knowledge.ps1` is the current full local build driver. Its source-path

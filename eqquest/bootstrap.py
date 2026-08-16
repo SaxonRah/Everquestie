@@ -13,6 +13,7 @@ from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime_policy import install_runtime_policy
 from .target_intelligence_ui import install_target_intelligence_ui
 from .target_known_drops_live_ui import install_target_known_drops_ui
+from .target_personal_sightings_live_ui import install_target_personal_sightings_ui
 from .travel_output_ui import install_travel_output_ui
 from .world_profile_ui import install_world_profile_ui
 from .zone_opportunities_ui import install_zone_opportunities_ui
@@ -40,4 +41,5 @@ def install_application_layers() -> None:
     install_loot_relevance_ui()
     install_target_intelligence_ui()
     install_target_known_drops_ui()
+    install_target_personal_sightings_ui()
     install_runtime_mode_ui()

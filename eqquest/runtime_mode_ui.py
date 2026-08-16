@@ -5,6 +5,7 @@ from pathlib import Path
 
 _RUNTIME_MODE_UI_MARKER = "_everquestie_runtime_mode_ui"
 _RUNTIME_PROFILE_REFRESH_MARKER = "_everquestie_runtime_profile_refresh"
+_RUNTIME_DATABASE_DIAGNOSTIC_MARKER = "_everquestie_profile_capability_diagnostic"
 
 
 def _server_profile_label(db) -> str:
@@ -15,6 +16,39 @@ def _server_profile_label(db) -> str:
         return world_profile(active_world_profile_id(db)).label
     except Exception:
         return "not reported"
+
+
+def profile_capability_text(db) -> str:
+    """Describe which runtime surfaces are truly profile-specific today."""
+    try:
+        from .world_profiles import active_world_profile_id, world_profile
+
+        profile = world_profile(active_world_profile_id(db))
+    except Exception:
+        return (
+            "Server profile capabilities:\n"
+            "  Profile: not reported\n"
+            "  Routing / entity availability: not reported\n"
+            "  Class/level Mechanics: source compatibility not reported"
+        )
+
+    if profile.profile_id == "live":
+        routing = "Live profile policy (default)"
+        mechanics = "exact installed Live-client support-file facts"
+    elif profile.profile_id == "unrestricted":
+        routing = "unrestricted confirmed topology / lifecycle projection"
+        mechanics = "Live-client source facts only; not a custom-server ruleset projection"
+    else:
+        cap = f" through {profile.expansion_cap.replace('_', ' ').title()}" if profile.expansion_cap else ""
+        routing = f"profile-filtered topology / lifecycle{cap}"
+        mechanics = "Live-client source facts only; not a profile-specific ruleset projection"
+
+    return (
+        "Server profile capabilities:\n"
+        f"  Profile: {profile.label}\n"
+        f"  Routing / entity availability: {routing}\n"
+        f"  Class/level Mechanics: {mechanics}"
+    )
 
 
 def database_mode_text(db) -> str:
@@ -72,6 +106,24 @@ def install_runtime_mode_ui() -> None:
 
         setattr(_build_ui, _RUNTIME_MODE_UI_MARKER, True)
         current_app._build_ui = _build_ui
+
+    # Append the profile capability boundary to the normal Database diagnostics rather
+    # than making the persistent top banner excessively long. This is a read-only
+    # explanation of existing behavior; it does not change routing, lifecycle or
+    # mechanics policy.
+    current_database_text = getattr(current_app, "_database_diagnostic_text", None)
+    if current_database_text is not None and not getattr(
+        current_database_text,
+        _RUNTIME_DATABASE_DIAGNOSTIC_MARKER,
+        False,
+    ):
+        def _database_diagnostic_text(self) -> str:
+            text = current_database_text(self).rstrip()
+            capability = profile_capability_text(self.db)
+            return text + "\n\n" + capability
+
+        setattr(_database_diagnostic_text, _RUNTIME_DATABASE_DIAGNOSTIC_MARKER, True)
+        current_app._database_diagnostic_text = _database_diagnostic_text
 
     # The global Server selector is installed before this diagnostics layer. Decorate
     # its application-level callback so the persistent banner always reflects the

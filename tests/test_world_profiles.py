@@ -134,6 +134,38 @@ class WorldProfileRoutingTests(unittest.TestCase):
         self.assertEqual(decision.status, "era_unknown")
         self.assertIn("no compiled expansion fact proves", decision.reason)
 
+    def test_p99_unreviewed_taxonomy_values_remain_unknown(self):
+        for value in ("Antonica", "Norrath Geography", "Some Future Taxonomy"):
+            with self.subTest(value=value):
+                self.assertIsNone(p99_expansion_allowed(value))
+
+        antonica = self._zone("Taxonomy Example", 9002, "Antonica")
+        decision = zone_profile_decision(self.db, antonica, "p99")
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "era_unknown")
+
+    def test_p99_uses_exact_reviewed_expansion_names_not_classic_substrings(self):
+        for value in ("EverQuest", "Kunark", "The Ruins of Kunark", "Velious", "The Scars of Velious"):
+            with self.subTest(value=value):
+                self.assertIs(p99_expansion_allowed(value), True)
+
+        for value in (
+            "Luclin",
+            "Power",
+            "Planes of Power",
+            "LDoN",
+            "Gates",
+            "Omens",
+            "Empires of Kunark",
+            "Torment of Velious",
+            "Claws of Veeshan",
+            "The Serpent's Spine",
+            "The Outer Brood",
+            "Shattering of Ro",
+        ):
+            with self.subTest(value=value):
+                self.assertIs(p99_expansion_allowed(value), False)
+
     def test_p99_blocks_modern_hub_even_when_expansion_metadata_is_missing(self):
         west = self._zone("West Freeport", 9, "EverQuest")
         pok = self._zone("The Plane of Knowledge", 202)

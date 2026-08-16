@@ -86,6 +86,75 @@ _EXPANSION_UNKNOWN_MARKERS = {
     "tbd",
 }
 
+# Lifecycle classification is deliberately an allow/deny catalog rather than a
+# substring heuristic. Expansion fields are source data and are not guaranteed to be
+# clean: the production Allakhazam mirror has, for example, emitted "Antonica" in the
+# expansion slot. Likewise, modern expansion names can contain classic-era words
+# (Empires of Kunark, Torment of Velious). Only reviewed exact expansion labels may
+# therefore cross the P99 boundary; every other non-placeholder value stays unknown.
+_P99_CLASSIC_THROUGH_VELIOUS_EXPANSIONS = {
+    normalize_name(value)
+    for value in (
+        "EverQuest",
+        "Classic",
+        "Classic EverQuest",
+        "Original",
+        "Original EverQuest",
+        "EverQuest Classic",
+        "Kunark",
+        "The Ruins of Kunark",
+        "Ruins of Kunark",
+        "Velious",
+        "The Scars of Velious",
+        "Scars of Velious",
+    )
+}
+
+_P99_REVIEWED_POST_VELIOUS_EXPANSIONS = {
+    normalize_name(value)
+    for value in (
+        "Luclin",
+        "The Shadows of Luclin",
+        "Shadows of Luclin",
+        "Power",
+        "The Planes of Power",
+        "Planes of Power",
+        "The Legacy of Ykesha",
+        "Legacy of Ykesha",
+        "Ykesha",
+        "Lost Dungeons of Norrath",
+        "LDoN",
+        "Gates",
+        "Gates of Discord",
+        "Omens",
+        "Omens of War",
+        "Dragons of Norrath",
+        "Depths of Darkhollow",
+        "Prophecy of Ro",
+        "The Serpent's Spine",
+        "The Buried Sea",
+        "Secrets of Faydwer",
+        "Seeds of Destruction",
+        "Underfoot",
+        "House of Thule",
+        "Veil of Alaris",
+        "Rain of Fear",
+        "Call of the Forsaken",
+        "The Darkened Sea",
+        "The Broken Mirror",
+        "Empires of Kunark",
+        "Ring of Scale",
+        "The Burning Lands",
+        "Torment of Velious",
+        "Claws of Veeshan",
+        "Terror of Luclin",
+        "Night of Shadows",
+        "Laurion's Song",
+        "The Outer Brood",
+        "Shattering of Ro",
+    )
+}
+
 
 def world_profile(profile_id: str | None) -> WorldProfile:
     return _PROFILE_BY_ID.get(str(profile_id or "").strip().casefold(), _PROFILE_BY_ID[DEFAULT_WORLD_PROFILE_ID])
@@ -133,28 +202,22 @@ def _expansion_text(data: dict[str, Any]) -> str:
 
 
 def p99_expansion_allowed(expansion: str) -> bool | None:
-    """Classify explicit source expansion text against the P99 Velious-era cap.
+    """Classify reviewed explicit expansion text against the P99 Velious-era cap.
 
-    ``None`` means the source string is empty or explicitly marks the expansion as
-    unknown/unavailable. The helper is intentionally shared by zone routing and entity
-    lifecycle projection so both surfaces apply the same reviewed era boundary instead
-    of growing separate expansion parsers.
+    ``True`` is returned only for reviewed Classic/Kunark/Velious labels. ``False`` is
+    returned only for reviewed post-Velious expansion labels. ``None`` means the source
+    value is empty, a placeholder, or otherwise unrecognized. This conservative exact
+    boundary prevents taxonomy/noise from becoming a false era claim and prevents
+    modern names containing words such as "Kunark" or "Velious" from being allowed.
     """
     text = normalize_name(expansion)
     if not text or text in _EXPANSION_UNKNOWN_MARKERS:
         return None
-    if "kunark" in text or "velious" in text:
+    if text in _P99_CLASSIC_THROUGH_VELIOUS_EXPANSIONS:
         return True
-    if text in {
-        "everquest",
-        "classic",
-        "classic everquest",
-        "original",
-        "original everquest",
-        "everquest classic",
-    }:
-        return True
-    return False
+    if text in _P99_REVIEWED_POST_VELIOUS_EXPANSIONS:
+        return False
+    return None
 
 
 # Backward-compatible private spelling for older internal/tests while new entity

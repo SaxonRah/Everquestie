@@ -9,6 +9,7 @@ from eqquest.world_profile_routing import build_profiled_route_guidance, profile
 from eqquest.world_profiles import (
     active_world_profile_id,
     build_profiled_route_result,
+    p99_expansion_allowed,
     set_active_world_profile,
     shortest_path_for_profile,
     zone_profile_decision,
@@ -121,6 +122,17 @@ class WorldProfileRoutingTests(unittest.TestCase):
         route = build_profiled_route_result(self.db, "West Freeport", "Stone Hive", "p99")
         self.assertFalse(route.ok)
         self.assertIn("not routeable", route.text)
+
+    def test_p99_expansion_absence_markers_remain_unknown(self):
+        for marker in ("Unknown", "N/A", "NA", "None", "null", "?", "Unspecified", "Not specified", "TBD"):
+            with self.subTest(marker=marker):
+                self.assertIsNone(p99_expansion_allowed(marker))
+
+        unknown_zone = self._zone("Mystery Zone", 9001, "Unknown")
+        decision = zone_profile_decision(self.db, unknown_zone, "p99")
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "era_unknown")
+        self.assertIn("no compiled expansion fact proves", decision.reason)
 
     def test_p99_blocks_modern_hub_even_when_expansion_metadata_is_missing(self):
         west = self._zone("West Freeport", 9, "EverQuest")

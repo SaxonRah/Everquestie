@@ -163,9 +163,35 @@ def upsert_lifecycle_record(
         db.conn.commit()
 
 
+def _canonical_spell_identity(db: Any, entity_id: int) -> tuple[str, str] | None:
+    entity = db.conn.execute(
+        "SELECT id,kind,name FROM entities WHERE id=?",
+        (int(entity_id),),
+    ).fetchone()
+    if entity is None or str(entity["kind"] or "") != "spell":
+        return None
+    external = db.conn.execute(
+        """
+        SELECT external_id FROM entity_external_ids
+        WHERE entity_id=? AND namespace='eqclient:spell'
+        LIMIT 1
+        """,
+        (int(entity_id),),
+    ).fetchone()
+    if external is None:
+        return None
+    numeric_id = str(external["external_id"] or "").strip()
+    if not numeric_id.isdigit():
+        return None
+    return numeric_id, str(entity["name"] or "")
+
+
 def lifecycle_records_for_entity(db: Any, entity_id: int) -> tuple[EntityLifecycleRecord, ...]:
     if not lifecycle_record_table_exists(db):
         return ()
+
+    canonical_spell = _canonical_spell_identity(db, int(entity_id))
+    source_spell_key = f"spell:{canonical_spell[0]}" if canonical_spell else ""
     rows = db.conn.execute(
         """
         SELECT r.entity_id,r.source_page_id,r.entity_kind,r.source_external_id,
@@ -176,26 +202,44 @@ def lifecycle_records_for_entity(db: Any, entity_id: int) -> tuple[EntityLifecyc
         FROM entity_lifecycle_records r
         JOIN source_pages sp ON sp.id=r.source_page_id
         WHERE r.entity_id=?
+           OR (
+                r.entity_id IS NULL
+                AND r.entity_kind='spell'
+                AND r.source_external_id=?
+                AND lower(sp.source_name)='allakhazam'
+                AND lower(sp.source_kind)='local_mirror'
+           )
         ORDER BY r.field_name, sp.source_name, sp.source_key, r.source_page_id
         """,
-        (int(entity_id),),
+        (int(entity_id), source_spell_key),
     ).fetchall()
-    return tuple(
-        EntityLifecycleRecord(
-            entity_id=int(row["entity_id"]),
-            source_page_id=int(row["source_page_id"]),
-            entity_kind=str(row["entity_kind"] or ""),
-            source_external_id=str(row["source_external_id"] or ""),
-            source_entity_name=str(row["source_entity_name"] or ""),
-            field_name=str(row["field_name"] or ""),
-            field_value=str(row["field_value"] or ""),
-            evidence=str(row["evidence"] or ""),
-            source_name=str(row["source_name"] or ""),
-            source_kind=str(row["source_kind"] or ""),
-            source_key=str(row["source_key"] or ""),
+
+    result: list[EntityLifecycleRecord] = []
+    for row in rows:
+        resolved_entity_id = row["entity_id"]
+        if resolved_entity_id is None:
+            # Read-only fallback makes provider order irrelevant even before an optional
+            # builder reconciliation pass. Numeric spell ID AND exact normalized name
+            # must both agree; a matching number alone never attaches the source fact.
+            if canonical_spell is None or normalize_name(str(row["source_entity_name"] or "")) != normalize_name(canonical_spell[1]):
+                continue
+            resolved_entity_id = int(entity_id)
+        result.append(
+            EntityLifecycleRecord(
+                entity_id=int(resolved_entity_id),
+                source_page_id=int(row["source_page_id"]),
+                entity_kind=str(row["entity_kind"] or ""),
+                source_external_id=str(row["source_external_id"] or ""),
+                source_entity_name=str(row["source_entity_name"] or ""),
+                field_name=str(row["field_name"] or ""),
+                field_value=str(row["field_value"] or ""),
+                evidence=str(row["evidence"] or ""),
+                source_name=str(row["source_name"] or ""),
+                source_kind=str(row["source_kind"] or ""),
+                source_key=str(row["source_key"] or ""),
+            )
         )
-        for row in rows
-    )
+    return tuple(result)
 
 
 def _allakhazam_spell_numeric_id(source_external_id: str, source_key: str, url: str) -> str:
@@ -214,11 +258,11 @@ def _allakhazam_spell_numeric_id(source_external_id: str, source_key: str, url: 
 
 
 def reconcile_allakhazam_spell_lifecycle(db: Any) -> LifecycleReconciliationResult:
-    """Attach reviewed Allakhazam spell lifecycle facts to exact client spell identities.
+    """Persist exact source→canonical attachments when a builder has all providers.
 
-    Reconciliation requires both the same numeric spell ID and the same normalized spell
-    name. The numeric provider token alone is never sufficient, and no fuzzy/name-only
-    fallback is attempted. This makes the result independent of provider build order.
+    This is an optimization/provenance projection, not required for correctness:
+    runtime readers can resolve still-unattached records read-only using the same exact
+    numeric-ID + normalized-name rule.
     """
     if not lifecycle_record_table_exists(db):
         return LifecycleReconciliationResult()

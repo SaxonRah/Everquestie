@@ -7,11 +7,16 @@ import unittest
 from eqquest.db import Database
 from eqquest.world_profile_routing import build_profiled_route_guidance, profiled_route_guidance_text
 from eqquest.world_profiles import (
+    WORLD_PROFILES,
     active_world_profile_id,
     build_profiled_route_result,
+    expansion_allowed_through,
     p99_expansion_allowed,
+    profile_expansion_allowed,
+    reviewed_expansion_key,
     set_active_world_profile,
     shortest_path_for_profile,
+    world_profile,
     zone_profile_decision,
 )
 from eqquest.zone_travel import ZoneTravelCatalog
@@ -93,6 +98,31 @@ class WorldProfileRoutingTests(unittest.TestCase):
         self.assertIn("Gameplay profile: Live (default)", text)
         self.assertIn("Route: Stone Hive → West Freeport", text)
         self.assertIn("Confirmed hops: 3", text)
+
+    def test_p99_profile_is_data_driven_velious_cap_without_new_visible_profiles(self):
+        profile = world_profile("p99")
+        self.assertEqual(profile.availability_mode, "expansion_cap")
+        self.assertEqual(profile.expansion_cap, "velious")
+        self.assertEqual(profile.expansion_cap_label, "Velious")
+        self.assertEqual(
+            tuple(item.profile_id for item in WORLD_PROFILES),
+            ("live", "p99", "unrestricted"),
+        )
+
+    def test_generic_reviewed_expansion_chronology_supports_future_caps(self):
+        self.assertEqual(reviewed_expansion_key("The Scars of Velious"), "velious")
+        self.assertEqual(reviewed_expansion_key("The Planes of Power"), "planes_of_power")
+
+        self.assertIs(expansion_allowed_through("Velious", "Planes of Power"), True)
+        self.assertIs(expansion_allowed_through("Luclin", "Planes of Power"), True)
+        self.assertIs(expansion_allowed_through("Planes of Power", "Planes of Power"), True)
+        self.assertIs(expansion_allowed_through("Legacy of Ykesha", "Planes of Power"), False)
+        self.assertIsNone(expansion_allowed_through("Antonica", "Planes of Power"))
+
+        # P99 now delegates to the same generic cap classifier.
+        self.assertIs(profile_expansion_allowed("p99", "Velious"), True)
+        self.assertIs(profile_expansion_allowed("p99", "Luclin"), False)
+        self.assertIs(p99_expansion_allowed("Luclin"), False)
 
     def test_p99_allows_north_freeport_and_classic_routes(self):
         west = self._zone("West Freeport", 9, "EverQuest")

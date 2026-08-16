@@ -13,12 +13,14 @@ The lock records the exact approved upstream repository, full producer commit, a
 Run:
 
 ```powershell
-.\tools\setup_mcp_submodule.ps1
+.\tools\setup_mcp_builder_source.ps1
 ```
 
-The script name is retained for compatibility, but EverQuestie no longer relies on a parent-repository Git submodule. Both a normal Git checkout and a downloaded source ZIP use the same nested-clone layout. Setup clones the approved upstream when necessary and checks out the exact tracked lock revision before installing/building it.
+Both a normal Git checkout and a downloaded source ZIP use the same nested-clone layout. Setup clones the approved upstream when necessary and checks out the exact tracked lock revision before installing/building it.
 
 `-Update` refreshes upstream refs but **does not move the canonical builder off the tracked lock**. `-Ref <tag-or-commit>` is an explicit developer override for investigation; canonical/full knowledge builds reject an unlocked checkout.
+
+The historical `setup_mcp_submodule.*` names remain compatibility aliases only. EverQuestie does not rely on a parent-repository Git submodule for MCP.
 
 EverQuestie also honors `EVERQUEST1_MCP_PATH` where supported by builder tooling, but the selected checkout must still match the repository source lock for a canonical build.
 

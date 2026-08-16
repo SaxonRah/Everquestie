@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 
 from .activity_pathway_navigation import pathway_contact_navigation
 from .activity_pathways import ActivityPathwayEngine, PathwaySuggestion, pathway_detail_text
+from .session_activity import session_activity_summary, session_activity_text
 
 
 _ACTIVITY_PATHWAYS_MARKER = "_everquestie_activity_pathways_ui"
@@ -26,9 +27,9 @@ def install_activity_pathways_ui() -> None:
         current_build_live(self)
 
         self.activity_pathway_engine = ActivityPathwayEngine(self.db)
-        self.activity_pathway_engine.reset_session(
-            self.activity_pathway_engine.latest_observed_event_id()
-        )
+        boundary = self.activity_pathway_engine.latest_observed_event_id()
+        self.activity_pathway_engine.reset_session(boundary)
+        self._activity_session_start_event_id = boundary
         self._activity_pathway_by_item: dict[str, PathwaySuggestion] = {}
         self._activity_pathway_signature = None
 
@@ -96,6 +97,11 @@ def install_activity_pathways_ui() -> None:
             buttons,
             text="Why this?",
             command=self._activity_pathway_explain_selected,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
+            text="Session recap",
+            command=self._activity_session_recap,
         ).pack(side="left", padx=(6, 0))
 
         self.after(1000, self._activity_pathway_tick)
@@ -212,6 +218,16 @@ def install_activity_pathways_ui() -> None:
             return
         messagebox.showinfo("Potential Pathway", pathway_detail_text(suggestion))
 
+    def _activity_session_recap(self) -> None:
+        boundary = int(getattr(self, "_activity_session_start_event_id", 0) or 0)
+        summary = session_activity_summary(
+            self.db,
+            boundary,
+            current_zone=getattr(self.state_model, "current_zone", None),
+            pathway_count=len(getattr(self, "_activity_pathway_by_item", {})),
+        )
+        messagebox.showinfo("EverQuestie Session Recap", session_activity_text(summary))
+
     def _refresh_activity_pathways(self, *, force: bool = False) -> None:
         engine = getattr(self, "activity_pathway_engine", None)
         tree = getattr(self, "activity_pathway_tree", None)
@@ -300,7 +316,9 @@ def install_activity_pathways_ui() -> None:
         current_start(self)
         engine = getattr(self, "activity_pathway_engine", None)
         if engine is not None and getattr(self, "tailer", None) is not None:
-            engine.reset_session(engine.latest_observed_event_id())
+            boundary = engine.latest_observed_event_id()
+            self._activity_session_start_event_id = boundary
+            engine.reset_session(boundary)
             self._activity_pathway_signature = None
             self._refresh_activity_pathways(force=True)
 
@@ -315,6 +333,7 @@ def install_activity_pathways_ui() -> None:
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected
     current_app._activity_pathway_navigate_contact = _activity_pathway_navigate_contact
     current_app._activity_pathway_explain_selected = _activity_pathway_explain_selected
+    current_app._activity_session_recap = _activity_session_recap
     current_app._refresh_activity_pathways = _refresh_activity_pathways
     current_app._activity_pathway_tick = _activity_pathway_tick
     current_app._start = _start

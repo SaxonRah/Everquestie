@@ -183,6 +183,9 @@ def personal_observation_summary(db, entity_id: int) -> PersonalObservationSumma
     if kind == "npc":
         # Only loot lines that explicitly named this corpse source qualify. A generic
         # loot line is never associated with the currently selected NPC by proximity.
+        loot_count, loot_first, loot_last = _count_event(db, "loot", "actor", labels)
+        if loot_count:
+            first, last = _merge_time(first, last, loot_first, loot_last)
         direct_loot = _top_grouped(
             db,
             kind="loot",

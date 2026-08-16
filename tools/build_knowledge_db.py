@@ -15,6 +15,7 @@ from eqquest.approved_travel_supplements import (
     build_and_finalize_with_approved_travel_supplements,
 )
 from eqquest.knowledge_build import ProviderInvocation
+from eqquest.mcp_source_lock import require_local_mcp_source_lock
 from eqquest.provider_travel_frontier import ProviderTravelFrontierAudit
 from eqquest.route_acceptance import evaluate_route_acceptance, route_acceptance_text
 
@@ -261,6 +262,14 @@ def parser() -> argparse.ArgumentParser:
         help="Capture MCP inventory only; skip optional rich-detail bridge",
     )
     p.add_argument(
+        "--allow-unlocked-mcp",
+        action="store_true",
+        help=(
+            "Developer-only override: allow --mcp-repository to differ from the tracked "
+            "EverQuestie source lock. Canonical/full builds must not use this flag."
+        ),
+    )
+    p.add_argument(
         "--map-pack",
         action="append",
         default=[],
@@ -307,6 +316,18 @@ def main() -> int:
     args = parser().parse_args()
     try:
         validate_audit_options(args)
+        if args.mcp_repository and not args.allow_unlocked_mcp:
+            mcp_status = require_local_mcp_source_lock(
+                REPO_ROOT,
+                mcp_path=args.mcp_repository,
+            )
+            lock = mcp_status.lock_read.lock
+            assert lock is not None
+            print(
+                "MCP source lock: "
+                f"{lock.package_version} @ {lock.commit[:12]} "
+                f"({mcp_status.mcp_path})"
+            )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

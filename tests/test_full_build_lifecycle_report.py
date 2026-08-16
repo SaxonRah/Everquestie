@@ -95,9 +95,10 @@ class FullBuildLifecycleReportTests(unittest.TestCase):
         build_call = "python .\\tools\\build_knowledge_db.py"
         self.assertIn(audit_call, script)
         self.assertIn("--output $MirrorAuditReport", script)
+        self.assertIn("--require-complete", script)
         self.assertLess(script.index(audit_call), script.index(build_call))
         self.assertIn("Mirror inventory   : $MirrorAuditReport", script)
-        self.assertIn("Allakhazam mirror  : audited + included", script)
+        self.assertIn("Allakhazam mirror  : completed + audited + included", script)
         self.assertNotIn("spell_pages -eq 0", script)
         self.assertNotIn("spell_pages_with_expansion -eq 0", script)
 

@@ -12,6 +12,8 @@ python .\tools\audit_allakhazam_mirror.py "D:\AllakhazamMirror\everquest.allakha
 
 Add `--json` when another build step needs machine-readable output. The audit is read-only: it performs no network access, creates no database, and does not modify the mirror.
 
+The ordinary audit is deliberately diagnostic, so it can also be run against an active mirror and will report HTTrack `.tmp` files without failing. A canonical full knowledge build is stricter: `tools/build_full_knowledge.ps1` invokes the same audit with `--require-complete` and stops before database construction while any `.tmp` files remain. Those files are HTTrack-owned in-progress state and are expected to become normal completed HTML as the mirror finishes; EverQuestie does not rename, repair or promote them.
+
 The report separates raw HTTrack files/assets from unique canonical structured pages and reports recognized page counts by kind. For spell lifecycle it additionally reports:
 
 - unique numeric Allakhazam spell pages captured;
@@ -104,6 +106,8 @@ For profile/lifecycle coverage, `tools/audit_profile_lifecycle.py` is the corres
 ## Gating a release
 
 By default the build prints route acceptance but does not fail solely because the real topology is still incomplete. During active data completion this is useful because the JSON reports become the work queue.
+
+The source-capture boundary is different: `tools/build_full_knowledge.ps1` refuses an Allakhazam mirror that still contains HTTrack `.tmp` files. This gate says only that the selected source capture has finished; it does not claim the completed mirror contains every entity or lifecycle fact.
 
 When the known-data graph is mature enough to make those cases release requirements, add:
 

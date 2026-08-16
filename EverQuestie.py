@@ -8,6 +8,7 @@ from eqquest.travel_output_ui import install_travel_output_ui
 from eqquest.world_profile_ui import install_world_profile_ui
 from eqquest.profile_availability_ui import install_profile_availability_ui
 from eqquest.activity_pathways_ui import install_activity_pathways_ui
+from eqquest.activity_clusters_ui import install_activity_clusters_ui
 from eqquest.runtime_mode_ui import install_runtime_mode_ui
 from eqquest.runtime import main
 
@@ -21,5 +22,6 @@ if __name__ == "__main__":
     install_world_profile_ui()
     install_profile_availability_ui()
     install_activity_pathways_ui()
+    install_activity_clusters_ui()
     install_runtime_mode_ui()
     main()

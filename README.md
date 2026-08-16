@@ -44,14 +44,30 @@ Travel deliberately does not invent reciprocal edges. A route can run in reverse
 when the underlying evidence is explicitly bidirectional or a separate reverse edge is
 present.
 
+Travel also applies a user-selectable gameplay profile to the same compiled knowledge
+graph. **Live is the default.** `Classic / P99-style (Velious cap)` preserves reviewed
+historical identities such as North Freeport while excluding positively post-Velious
+zones and modern hubs. `Unrestricted / custom` exposes all confirmed compiled topology
+for diagnostics or intentionally mixed-era servers. Historical knowledge stays in the
+DB when it is unavailable to the active profile.
+
+The P99-style profile is a compatibility projection over the current EverQuestie
+corpus; it is not a claim that a Live client snapshot is a byte-perfect Project 1999
+dataset. The same profile boundary can later be applied to quest/item/spell/mechanics
+availability as server-specific evidence is compiled.
+
 Travel can also:
 
 - use the live current zone as the route start;
 - cache a confirmed route and follow the player's live zone along it;
+- invalidate that cached route when the gameplay profile changes;
 - map a source-owned coordinate for the next hop when one is known;
 - show canonical zone context and route actionability;
 - open the current-zone **What's here** dashboard and hand exact selected entities to
   Knowledge.
+
+Route output explicitly distinguishes a `ROUTE RESULT` from `SOURCE ZONE CONTEXT`, so a
+source-zone dossier cannot silently masquerade as the answer to a route request.
 
 ### Local Knowledge
 
@@ -127,6 +143,7 @@ everquestie-knowledge.sqlite3     read-only / immutable at runtime
           +-------------------------+
                                     |
 eqlog + quest progress + bindings  |
++ gameplay profile                 |
           |                         |
           v                         v
 everquestie-user.sqlite3       packaged EverQuestie
@@ -139,6 +156,9 @@ immutable semantics and writes player/session state to:
 %USERPROFILE%\.eqquest\everquestie-user.sqlite3
 ```
 
+The selected gameplay profile is user state. Switching Live / Classic-P99 / unrestricted
+routing never rewrites the shipped knowledge snapshot.
+
 Filesystem selections and UI preferences remain in the human-readable settings file:
 
 ```text
@@ -150,7 +170,9 @@ can migrate its tracked quests, quest progress, observed events, and user metada
 the split user-state database without changing the shipped knowledge snapshot.
 
 Builder/source-checkout mode may still use the old writable combined database as a
-workspace. That file is not the release artifact.
+workspace. That file is not the release artifact. The application displays an explicit
+`PACKAGED / IMMUTABLE` or `BUILDER / MUTABLE` database-mode banner so those two modes
+are not easy to confuse during testing.
 
 ## Source and identity policy
 
@@ -201,8 +223,15 @@ A source checkout with no finalized knowledge snapshot falls back to the writabl
 builder database under `%USERPROFILE%\.eqquest\eqquest.sqlite3` and retains the
 builder/developer UI.
 
-To exercise the packaged split-database behavior from a source checkout, point runtime
-at a finalized snapshot explicitly:
+To exercise the packaged split-database behavior from a source checkout, use the
+explicit helper. It points only the child process at the finalized `dist` snapshot and
+restores the caller's environment when EverQuestie exits:
+
+```powershell
+.\tools\run_packaged.ps1
+```
+
+The equivalent manual form is:
 
 ```powershell
 $env:EVERQUESTIE_KNOWLEDGE_DB = (Resolve-Path .\dist\everquestie-knowledge.sqlite3).Path
@@ -298,7 +327,11 @@ application headlessly, and runs the regression suite for code/tool pull request
 - The shipped knowledge database is immutable; player state is separate and writable.
 - Knowledge identity prefers exact/namespaced evidence over fuzzy guesses.
 - Ambiguous identities remain ambiguous.
+- Live is the default gameplay profile; historical knowledge is preserved for alternate
+  profiles rather than deleted from the DB.
 - Travel is directional unless bidirectionality is explicitly supported.
+- Gameplay profiles filter route availability without inventing or rewriting travel
+  evidence.
 - Coordinates are only used for navigation when their source-zone ownership is safe.
 - Map catalog construction, provider reconciliation, FTS rebuilding, and MCP compilation
   are builder responsibilities, not player startup work.
@@ -309,6 +342,7 @@ application headlessly, and runs the regression suite for code/tool pull request
 
 - [Database distribution](docs/DATABASE_DISTRIBUTION.md)
 - [Source policy](docs/SOURCE_POLICY.md)
+- [Gameplay / world profiles](docs/WORLD_PROFILES.md)
 - [Allakhazam knowledge build](docs/ALLAKHAZAM_KNOWLEDGE_BUILD.md)
 - [Provider zone reconciliation](docs/PROVIDER_ZONE_RECONCILIATION.md)
 - [Provider zone travel](docs/PROVIDER_ZONE_TRAVEL.md)

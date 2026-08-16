@@ -7,7 +7,7 @@ import unittest
 
 from eqquest.allakhazam_mirror_importer import AllakhazamMirrorImporter
 from eqquest.db import Database
-from eqquest.entity_lifecycle import direct_entity_lifecycle_evidence
+from eqquest.entity_lifecycle import entity_expansion_evidence
 from eqquest.world_profiles import p99_expansion_allowed
 
 
@@ -46,7 +46,7 @@ class AllakhazamMirrorLifecycleTests(unittest.TestCase):
         data = json.loads(row["data_json"] or "{}")
 
         self.assertEqual(data["era"], "Original")
-        evidence = direct_entity_lifecycle_evidence(self.db, result.entity_id)
+        evidence = entity_expansion_evidence(self.db, result.entity_id)
         self.assertEqual(tuple(record.expansion for record in evidence), ("Original",))
         self.assertIs(p99_expansion_allowed("Original"), True)
 
@@ -75,7 +75,7 @@ class AllakhazamMirrorLifecycleTests(unittest.TestCase):
 
         self.assertEqual(data["expansion"], "Scars of Velious")
         self.assertEqual(data["metadata"]["Expansion"], "Scars of Velious")
-        evidence = direct_entity_lifecycle_evidence(self.db, result.entity_id)
+        evidence = entity_expansion_evidence(self.db, result.entity_id)
         self.assertEqual(tuple(record.expansion for record in evidence), ("Scars of Velious",))
         self.assertIs(p99_expansion_allowed("Scars of Velious"), True)
 
@@ -103,7 +103,7 @@ class AllakhazamMirrorLifecycleTests(unittest.TestCase):
 
         self.assertNotIn("expansion", data)
         self.assertNotIn("era", data)
-        self.assertEqual(direct_entity_lifecycle_evidence(self.db, result.entity_id), ())
+        self.assertEqual(entity_expansion_evidence(self.db, result.entity_id), ())
 
 
 if __name__ == "__main__":

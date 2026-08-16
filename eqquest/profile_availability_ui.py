@@ -91,10 +91,19 @@ def install_profile_availability_ui() -> None:
             except Exception:
                 pass
 
-        # Mechanics spell selection is another read-only projection of the same entity.
-        # Re-render it so a profile switch cannot leave a stale Live/P99 availability
-        # block underneath otherwise-current stacking mechanics.
         mechanics = getattr(self, "mechanics_view", None)
+
+        # Class/level mechanics are exact Live-client source facts, not a profile ruleset
+        # projection. Re-render their source-context notice immediately on profile change.
+        refresh_class = getattr(mechanics, "refresh_class_level", None)
+        if callable(refresh_class):
+            try:
+                refresh_class()
+            except Exception:
+                pass
+
+        # Spell selection is another read-only projection of the same entity. Re-render
+        # it so a profile switch cannot leave stale availability under current mechanics.
         refresh_spell = getattr(mechanics, "_spell_selected", None)
         if callable(refresh_spell):
             try:

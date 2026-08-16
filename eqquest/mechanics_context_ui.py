@@ -10,6 +10,7 @@ from .mechanics_catalog import (
     MechanicsCatalog,
 )
 from .mechanics_context import ClassMechanicsContext, build_class_mechanics_context
+from .mechanics_profile_availability import mechanics_profile_source_notice
 from .spell_stacking_context import spell_stacking_text
 
 
@@ -180,7 +181,9 @@ class MechanicsContextFrame(MechanicsFrame):
             self._set_text(self.class_summary, f"Class identity {token!r} is {detail}.")
             return
 
-        self._set_text(self.class_summary, mechanics_context_summary(context))
+        summary = mechanics_context_summary(context)
+        source_notice = mechanics_profile_source_notice(self.db)
+        self._set_text(self.class_summary, summary + "\n\n" + source_notice)
         for row in mechanics_skill_rows(context):
             self.skills_tree.insert("", "end", values=row)
 

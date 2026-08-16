@@ -28,7 +28,8 @@ Current reviewed direct entity lifecycle inputs are deliberately narrow:
 - Allakhazam local-mirror NPC `Expansion` → normalized `data_json.expansion`;
 - Allakhazam local-mirror zone `Expansion` → normalized `data_json.expansion`;
 - Allakhazam local-mirror item metadata `Expansion` → normalized `data_json.expansion`;
-- Allakhazam local-mirror quest `Era` → normalized `data_json.era`.
+- Allakhazam local-mirror quest `Era` → normalized `data_json.era`;
+- Allakhazam local-mirror numeric spell page Quick Facts `Expansion` → source-granular lifecycle evidence attached only after exact numeric EQ-client spell ID **and** exact normalized-name corroboration.
 
 Zone availability also has its separate reviewed world-profile evidence/override layer.
 
@@ -70,6 +71,21 @@ Items, spells, recipes, skills, and other portable/system entities require stron
 Once a portable entity carries a lifecycle field from an explicitly reviewed source/field/parser combination, it can be classified directly rather than through location.
 
 Live intentionally does not use origin expansion alone as retirement evidence. Knowing that an item originated in Classic does not prove that it still exists on the current Live server. Live retirement/removal needs separate lifecycle evidence or reviewed overrides.
+
+## Mechanics source boundary
+
+Gameplay-profile availability and profile-specific mechanics are different capabilities.
+
+The packaged Mechanics class/level projection currently uses exact support tables compiled from the installed **Live EverQuest client** used by the knowledge builder. Those rows remain useful source facts under every selected profile, but changing the Server selector does not transform Live base stats, AC formulas, skill caps, or skill progression into P99/custom mechanics.
+
+Therefore:
+
+- under `Live (default)`, Mechanics labels class/level data as exact installed Live-client support-file facts;
+- under `Classic / P99-style` or `Unrestricted / custom`, the same facts remain visible but the UI explicitly states that they are **not** a profile-specific ruleset projection;
+- spell Mechanics may additionally show entity availability from reviewed lifecycle evidence, but spell stacking/mechanics and lifecycle availability remain separate projections;
+- a future truly P99/TLP-specific mechanics implementation requires its own reviewed profile-specific mechanics source rather than edits to Live-client values.
+
+The global Server selector re-renders both class/level source context and selected-spell availability immediately so a profile switch cannot leave stale claims in Mechanics.
 
 ## Quest state boundary
 

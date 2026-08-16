@@ -361,6 +361,13 @@ def main() -> int:
     print(f"schema version: {report.snapshot.schema_version}")
     print(f"integrity: {report.snapshot.diagnostics.get('integrity')}")
     print(
+        "spell lifecycle reconciliation: "
+        + ", ".join(
+            f"{key}={value}"
+            for key, value in sorted(report.snapshot.lifecycle_reconciliation.items())
+        )
+    )
+    print(
         "provider zone reconciliation: "
         + ", ".join(
             f"{key}={value}"

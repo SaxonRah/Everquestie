@@ -11,22 +11,33 @@ def player_knowledge_detail_text(
     *,
     include_source_text: bool = False,
 ) -> str:
-    """Render player-facing Knowledge detail without raw source-page dumps.
+    """Render the complete player-facing Knowledge projection.
 
     The underlying knowledge renderer deliberately retains an opt-in raw-source
-    snapshot for builder/debug callers. The normal Knowledge pane should instead show
-    canonical/entity-specific projections plus provenance. Shared client support files
-    such as dbstr_us.txt and ZoneNames.txt are whole-file source records, so dumping
-    their plain text beneath one selected entity is noisy and frequently repetitive.
+    snapshot for builder/debug callers. The normal Knowledge pane instead shows
+    canonical/entity-specific projections plus provenance, gameplay-profile context,
+    and a clearly separated player-owned log-history block when observations exist.
+
+    Shared client support files such as dbstr_us.txt and ZoneNames.txt are whole-file
+    source records, so their raw text is never dumped beneath one selected entity.
+    Personal observations are not promoted into canonical source data; they remain a
+    read-only projection of the writable user-state event history.
 
     ``include_source_text`` is accepted for signature compatibility with the legacy
     app callback, which historically passed ``True``. It is intentionally ignored at
     this player-facing boundary; direct diagnostic callers can still request source
     text from :func:`eqquest.knowledge.entity_detail_text`.
     """
+    from .personal_observations import personal_observation_text
     from .profile_availability import profiled_entity_detail_text
 
-    return profiled_entity_detail_text(db, int(entity_id), include_source_text=False)
+    text = profiled_entity_detail_text(db, int(entity_id), include_source_text=False)
+    if text == "Entity not found.":
+        return text
+    observations = personal_observation_text(db, int(entity_id))
+    if not observations:
+        return text
+    return text.rstrip() + "\n\n" + observations
 
 
 def install_profile_availability_ui() -> None:
@@ -42,7 +53,7 @@ def install_profile_availability_ui() -> None:
     # legacy/source UI builder intact while making normal entity detail and the quest
     # engine consume the same selected gameplay profile as Travel. Raw source-page
     # snapshots remain available to explicit diagnostics but are not dumped into the
-    # normal Knowledge pane.
+    # normal Knowledge pane. Player observations remain clearly labeled user-state data.
     app_module.entity_detail_text = player_knowledge_detail_text
     app_module.QuestEngine = ProfileAwareQuestEngine
 

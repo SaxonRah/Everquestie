@@ -64,6 +64,36 @@ class ActivityFactionContextTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_welcome_boundary_excludes_prior_faction_context_and_zone(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                db.add_event(Event(kind="zone", raw="zone", zone="Old Zone"))
+                db.add_event(Event(kind="faction_up", raw="old faction", target="Old Faction"))
+                db.add_event(Event(kind="welcome", raw="Welcome to EverQuest!"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="kill", actor="Post Login Mob"))
+                db.add_event(
+                    Event(kind="faction_down", raw="new faction", target="Post Login Faction")
+                )
+
+                summary = activity_cluster_summary(db, 0, current_zone="Old Zone")
+
+                self.assertTrue(summary.active)
+                self.assertEqual(summary.zone, "")
+                self.assertEqual(summary.faction_messages, 1)
+                self.assertEqual(
+                    [row.label for row in summary.top_factions],
+                    ["Post Login Faction"],
+                )
+                text = activity_cluster_text(summary)
+                self.assertIn("Zone unknown", text)
+                self.assertIn("Post Login Faction worse ×1", text)
+                self.assertNotIn("Old Faction", text)
+                self.assertNotIn("Old Zone", text)
+            finally:
+                db.close()
+
     def test_faction_messages_alone_never_create_activity_cluster(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = Database(Path(tempdir) / "working.sqlite3")

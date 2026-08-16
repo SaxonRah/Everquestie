@@ -13,9 +13,10 @@ from .allakhazam import (
     extract_canonical_url,
     infer_kind_and_external_id,
 )
+from .allakhazam_mirror_importer import _spell_numeric_id
 
 
-STRUCTURED_KINDS = {"quest", "npc", "item", "zone"}
+STRUCTURED_KINDS = {"quest", "npc", "item", "zone", "spell"}
 _HTML_END_RE = re.compile(r"</html\s*>", re.I)
 _BODY_END_RE = re.compile(r"</body\s*>", re.I)
 _HEAD_PROBE_BYTES = 16 * 1024
@@ -78,7 +79,7 @@ class TemporaryPageAudit:
 
 def _filename_family(path: Path) -> str:
     name = path.name.casefold()
-    for family in ("npc", "item", "quest", "zone"):
+    for family in ("npc", "item", "quest", "zone", "spell"):
         if name.startswith(family) and ".htm" in name:
             return family
     return "other"
@@ -249,6 +250,8 @@ def audit_allakhazam_temporary_pages(
             files_with_canonical += 1
             canonical_counts[canonical] += 1
             kind, _external_id = infer_kind_and_external_id(canonical)
+            if _spell_numeric_id(canonical):
+                kind = "spell"
 
             if kind not in STRUCTURED_KINDS:
                 try:
@@ -351,7 +354,7 @@ def allakhazam_temporary_audit_text(
         f"Files with canonical Allakhazam URL: {audit.files_with_canonical_url:,}",
         f"Unique canonical pages represented: {audit.unique_canonical_pages:,}",
         f"Duplicate canonical temporary files: {audit.duplicate_canonical_files:,}",
-        f"Structured quest/NPC/item/zone temporary files: {audit.structured_canonical_files:,}",
+        f"Structured quest/NPC/item/zone/spell temporary files: {audit.structured_canonical_files:,}",
         f"Likely-complete structured recovery candidates: {audit.likely_complete_structured_files:,}",
         f"Structured files missing document-end markers: {audit.structured_files_missing_document_end:,}",
         f"Structured temporary files duplicating an already completed page: {audit.duplicate_of_completed_page_files:,}",
@@ -390,6 +393,7 @@ def allakhazam_temporary_audit_text(
         "  • structured_missing_document_end strongly suggests an interrupted/truncated response and should be resumed/re-fetched rather than renamed.",
         "  • duplicate_of_completed_page can normally be ignored for knowledge coverage because a completed canonical copy already exists.",
         "  • generic legacy bestiary canonicals are classified with the same document fallback used by the production importer.",
+        "  • numeric Allakhazam spell canonicals use the same exact spell-ID rule as the production mirror importer.",
         "  • if 'Mirror changed during scan' is YES, all counts are an in-progress point-in-time snapshot rather than a final mirror inventory.",
     ]
     return "\n".join(lines)

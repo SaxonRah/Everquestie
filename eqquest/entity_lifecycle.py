@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from .db import Database, normalize_name
+from .entity_lifecycle_records import lifecycle_records_for_entity
 from .world_profiles import profile_expansion_allowed, world_profile
 
 
@@ -18,13 +19,18 @@ LIFECYCLE_FIELD_KEYS = ("expansion", "expansion_name", "era")
 # - item: explicit metadata-table ``Expansion``
 # - quest: explicit quest-table ``Era``
 #
-# Do not widen this catalog merely because another source happens to expose a similarly
-# named field. Add a reviewed source/field policy only after confirming its semantics.
+# New cross-source evidence should prefer ``entity_lifecycle_records`` so adding one
+# lifecycle fact never has to replace a canonical entity's primary source or detail row.
 _REVIEWED_ENTITY_DATA_LIFECYCLE_FIELDS: dict[tuple[str, str, str], frozenset[str]] = {
     ("allakhazam", "local_mirror", "npc"): frozenset({"expansion"}),
     ("allakhazam", "local_mirror", "zone"): frozenset({"expansion"}),
     ("allakhazam", "local_mirror", "item"): frozenset({"expansion"}),
     ("allakhazam", "local_mirror", "quest"): frozenset({"era"}),
+}
+_REVIEWED_SOURCE_GRANULAR_LIFECYCLE_FIELDS: dict[
+    tuple[str, str, str], frozenset[str]
+] = {
+    ("allakhazam", "local_mirror", "spell"): frozenset({"expansion"}),
 }
 
 
@@ -151,6 +157,21 @@ def lifecycle_field_policy(
             "entity lifecycle field source/field semantics have not been reviewed",
         )
 
+    if origin_key == "entity_lifecycle_records":
+        reviewed = _REVIEWED_SOURCE_GRANULAR_LIFECYCLE_FIELDS.get(
+            (source_name_key, source_kind_key, kind),
+            frozenset(),
+        )
+        if field in reviewed:
+            return LifecycleFieldPolicyDecision(
+                True,
+                "reviewed source-granular lifecycle field from the Allakhazam local mirror",
+            )
+        return LifecycleFieldPolicyDecision(
+            False,
+            "source-granular lifecycle field source/field semantics have not been reviewed",
+        )
+
     if origin_key == "entity_details.detail_json":
         if source_kind_key == "mcp_local_details":
             return LifecycleFieldPolicyDecision(
@@ -193,9 +214,9 @@ def entity_expansion_evidence(
 ) -> tuple[EntityExpansionEvidence, ...]:
     """Read reviewed, explicit, source-backed expansion statements for an entity.
 
-    The normalized database can contain lifecycle-looking top-level fields on multiple
-    surfaces. Only source/field/origin combinations accepted by
-    :func:`lifecycle_field_policy` become direct gameplay-profile evidence.
+    The normalized database can contain lifecycle-looking fields on multiple surfaces.
+    Only source/field/origin combinations accepted by :func:`lifecycle_field_policy`
+    become direct gameplay-profile evidence.
 
     Text descriptions, locations, names, dates, IDs, nested metadata, and unreviewed
     detail fields are never promoted into lifecycle truth.
@@ -220,22 +241,19 @@ def entity_expansion_evidence(
     result: list[EntityExpansionEvidence] = []
     seen: set[tuple[str, str, int | None, str]] = set()
 
-    def add(
+    def add_values(
+        *,
         field_name: str,
         expansion: str,
-        row,
+        source_name: str,
+        source_kind: str,
+        source_key: str,
+        source_page_id: int | None,
         origin: str,
-        fallback_name: str,
-        fallback_kind: str,
     ) -> None:
         text = " ".join(str(expansion or "").split()).strip()
         if not text:
             return
-        source_name, source_kind, source_key, source_page_id = _source_fields(
-            row,
-            fallback_name=fallback_name,
-            fallback_kind=fallback_kind,
-        )
         policy = lifecycle_field_policy(
             entity_kind=str(base["kind"] or ""),
             origin=origin,
@@ -265,6 +283,29 @@ def entity_expansion_evidence(
             )
         )
 
+    def add(
+        field_name: str,
+        expansion: str,
+        row,
+        origin: str,
+        fallback_name: str,
+        fallback_kind: str,
+    ) -> None:
+        source_name, source_kind, source_key, source_page_id = _source_fields(
+            row,
+            fallback_name=fallback_name,
+            fallback_kind=fallback_kind,
+        )
+        add_values(
+            field_name=field_name,
+            expansion=expansion,
+            source_name=source_name,
+            source_kind=source_kind,
+            source_key=source_key,
+            source_page_id=source_page_id,
+            origin=origin,
+        )
+
     base_field = lifecycle_field(_json_object(base["data_json"]))
     if base_field is not None:
         add(
@@ -274,6 +315,20 @@ def entity_expansion_evidence(
             "entity.data_json",
             "EverQuestie normalized entity",
             "entity_data",
+        )
+
+    # Source-granular records are the preferred surface for facts that enrich a
+    # canonical entity owned by another source. They preserve the exact source page
+    # without replacing the entity's primary source or its canonical rich-detail row.
+    for record in lifecycle_records_for_entity(db, int(entity_id)):
+        add_values(
+            field_name=record.field_name,
+            expansion=record.field_value,
+            source_name=record.source_name,
+            source_kind=record.source_kind,
+            source_key=record.source_key,
+            source_page_id=record.source_page_id,
+            origin="entity_lifecycle_records",
         )
 
     # entity_details is a one-row canonical projection. Rich detail is retained for

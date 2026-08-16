@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .db import Database
 from .locations import location_evidence_for_entity
+from .quest_engine import Guidance, QuestEngine
 from .world_profiles import (
     active_world_profile_id,
     world_profile,
@@ -274,3 +275,86 @@ def entity_profile_lines(
             f"  • {zone.zone_name}: {state_text} | {zone.source} | {zone.reason}"
         )
     return lines
+
+
+def profiled_entity_detail_text(
+    db: Database,
+    entity_id: int,
+    *,
+    include_source_text: bool = False,
+) -> str:
+    """Render normal Knowledge detail plus non-destructive profile availability."""
+    from .knowledge import entity_detail_text
+
+    text = entity_detail_text(db, entity_id, include_source_text=include_source_text)
+    if text == "Entity not found.":
+        return text
+    return text + "\n" + "\n".join(entity_profile_lines(db, entity_id))
+
+
+def _step_zone_decision(db: Database, zone_text: str | None, profile_id: str):
+    zone_id = _canonical_zone_id(db, zone_text)
+    if zone_id is None:
+        return None
+    return zone_profile_decision(db, zone_id, profile_id)
+
+
+class ProfileAwareQuestEngine(QuestEngine):
+    """Keep quest progress intact while making guidance profile-aware."""
+
+    def guidance(self, current_zone: str | None) -> list[Guidance]:
+        base = super().guidance(current_zone)
+        profile = world_profile(active_world_profile_id(self.db))
+        if profile.profile_id == "unrestricted" or not base:
+            return base
+
+        tracked = list(self.db.tracked_quests())
+        out: list[Guidance] = []
+        for index, guide in enumerate(base):
+            if index >= len(tracked):
+                out.append(guide)
+                continue
+
+            quest = tracked[index]
+            quest_id = int(quest["id"])
+            quest_decision = entity_profile_decision(self.db, quest_id, profile.profile_id)
+            steps = list(self.db.quest_steps(quest_id))
+            active_step = int(quest["active_step"])
+            pending = next(
+                (step for step in steps if int(step["step_order"]) == active_step),
+                None,
+            )
+
+            text = guide.text
+            warning = ""
+            if pending is not None and pending["zone"]:
+                step_zone = str(pending["zone"])
+                zone_decision = _step_zone_decision(self.db, step_zone, profile.profile_id)
+                if zone_decision is not None and not zone_decision.allowed:
+                    # The base engine emits this travel prefix from structured step-zone
+                    # evidence. Remove only that exact prefix; objective/progress text
+                    # remains unchanged and no tracking state is touched.
+                    if current_zone:
+                        prefix = f"Travel from {current_zone} to {step_zone}. "
+                    else:
+                        prefix = f"Destination zone: {step_zone}. "
+                    if text.startswith(prefix):
+                        text = text[len(prefix):]
+                    warning = (
+                        f"Gameplay profile: {profile.label}. {zone_decision.zone_name} is outside this profile; "
+                        f"EverQuestie will keep tracking observed progress but will not recommend travel there. "
+                        f"Reason: {zone_decision.reason}"
+                    )
+
+            if not warning and quest_decision.blocked:
+                warning = (
+                    f"Gameplay profile: {profile.label}. Known quest world evidence is outside this profile. "
+                    "EverQuestie will keep tracking observed progress rather than discarding player state. "
+                    f"Reason: {quest_decision.reason}"
+                )
+
+            if warning:
+                text = warning + "\n" + text
+            out.append(Guidance(guide.title, text, guide.source_url))
+
+        return out

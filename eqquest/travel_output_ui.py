@@ -92,7 +92,7 @@ def install_travel_output_ui() -> None:
         payload = f"{prefix}\n\n{text}" if prefix else text
         current_set_result(self, payload)
 
-    def _destination_changed(self, *_args) -> None:
+    def _route_endpoint_changed(self, *_args) -> None:
         if not hasattr(self, "result_text"):
             return
         target = self.to_var.get().strip()
@@ -106,7 +106,7 @@ def install_travel_output_ui() -> None:
         current_set_result(
             self,
             f"ROUTE REQUEST PENDING | {source} → {target}\n\n"
-            "Press Find route, or press Enter while the destination field is focused.",
+            "Press Find route, or press Enter while either route field is focused.",
         )
         try:
             self.status_var.set(
@@ -122,7 +122,8 @@ def install_travel_output_ui() -> None:
         _configure_text(self, "Canonical navigation knowledge", "Travel result / zone context")
         _bind_from_enter(self)
         try:
-            self.to_var.trace_add("write", self._everquestie_destination_trace)
+            self.to_var.trace_add("write", self._everquestie_route_endpoint_trace)
+            self.from_var.trace_add("write", self._everquestie_route_endpoint_trace)
         except Exception:
             pass
 
@@ -152,7 +153,7 @@ def install_travel_output_ui() -> None:
         return bool(current_dashboard(self))
 
     setattr(_build, _TRAVEL_OUTPUT_UI_MARKER, True)
-    RouteGuidanceFrame._everquestie_destination_trace = _destination_changed
+    RouteGuidanceFrame._everquestie_route_endpoint_trace = _route_endpoint_changed
     RouteGuidanceFrame._set_result = _set_result
     RouteGuidanceFrame._build = _build
     RouteGuidanceFrame.show_zone_context = _show_zone_context

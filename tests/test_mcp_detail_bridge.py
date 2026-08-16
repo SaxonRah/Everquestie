@@ -70,14 +70,13 @@ class MCPDetailBridgeContractTests(unittest.TestCase):
 
         records = [message for message in messages if message.get("type") == "record"]
         errors = [message for message in messages if message.get("type") == "record_error"]
-        self.assertEqual(1, len(records))
-        self.assertEqual(1, len(errors))
+        self.assertEqual(2, len(records))
+        self.assertEqual(0, len(errors))
 
-        record = records[0]
-        payload = record["record"]
-        self.assertEqual("combatAbilities", record["system"])
-        self.assertEqual("combat_ability", record["kind"])
-        self.assertEqual("700", record["external_id"])
+        exact = next(record for record in records if record["external_id"] == "700")
+        payload = exact["record"]
+        self.assertEqual("combatAbilities", exact["system"])
+        self.assertEqual("combat_ability", exact["kind"])
         self.assertEqual("700", payload["id"])
         self.assertEqual("700", payload["abilityId"])
         self.assertEqual("9001", payload["spellId"])
@@ -86,8 +85,21 @@ class MCPDetailBridgeContractTests(unittest.TestCase):
         self.assertEqual("exact_case_insensitive_name", payload["identityJoin"]["method"])
         self.assertEqual("9001", payload["identityJoin"]["matchedSpellId"])
 
-        self.assertEqual("701", errors[0]["external_id"])
-        self.assertEqual("non_exact_spell_name_match_rejected", errors[0]["reason"])
+        fallback = next(record for record in records if record["external_id"] == "701")
+        fallback_payload = fallback["record"]
+        self.assertEqual("701", fallback_payload["id"])
+        self.assertEqual("701", fallback_payload["abilityId"])
+        self.assertIsNone(fallback_payload["spellId"])
+        self.assertEqual("no_exact_spell_match", fallback_payload["identityJoin"]["method"])
+        self.assertEqual(
+            "non_exact_spell_name_match_rejected",
+            fallback_payload["identityJoin"]["reason"],
+        )
+        self.assertEqual("9999", fallback_payload["identityJoin"]["rejectedSpellId"])
+        self.assertEqual(
+            "Fuzzy Different Spell",
+            fallback_payload["identityJoin"]["rejectedSpellName"],
+        )
 
 
 if __name__ == "__main__":

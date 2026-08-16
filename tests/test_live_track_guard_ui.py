@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 import unittest
 
-from eqquest.live_track_guard_ui import track_live_recommendation
+from eqquest.live_track_guard_ui import install_live_track_guard_ui, track_live_recommendation
 
 
 class _Status:
@@ -30,6 +31,15 @@ class LiveTrackGuardTests(unittest.TestCase):
             _target_quest_relevance_key=(1, 2, 3),
         )
         return fake, tracked, guidance, live_refreshes
+
+    def test_guard_installer_owns_recent_loot_track_action_too(self):
+        source = inspect.getsource(install_live_track_guard_ui)
+        self.assertIn("self._selected_loot_relevance()", source)
+        self.assertIn(
+            "current_app._loot_relevance_track_quest = _loot_relevance_track_quest",
+            source,
+        )
+        self.assertIn("LOOT RELEVANCE | tracking selected quest", source)
 
     def test_database_already_tracked_blocks_stale_untracked_row(self):
         fake, tracked, guidance, refreshes = self._fake(lambda quest_id: int(quest_id) == 44)

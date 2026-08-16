@@ -94,6 +94,19 @@ def install_live_track_guard_ui() -> None:
             surface_label="Zone Opportunity",
         )
 
+    def _loot_relevance_track_quest(self) -> None:
+        selected = self._selected_loot_relevance()
+        if selected is None:
+            self.status.set("Select a Recent Loot Relevance row first.")
+            return
+        _item, use = selected
+        track_live_recommendation(
+            self,
+            use,
+            announce="LOOT RELEVANCE | tracking selected quest",
+            surface_label="Recent Loot Relevance",
+        )
+
     def _target_quest_track_selected(self) -> None:
         relevance = self._selected_target_quest()
         if relevance is None:
@@ -108,5 +121,6 @@ def install_live_track_guard_ui() -> None:
 
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected
     current_app._zone_opportunity_track_selected = _zone_opportunity_track_selected
+    current_app._loot_relevance_track_quest = _loot_relevance_track_quest
     current_app._target_quest_track_selected = _target_quest_track_selected
     setattr(current_app, _LIVE_TRACK_GUARD_MARKER, True)

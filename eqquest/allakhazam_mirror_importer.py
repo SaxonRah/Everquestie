@@ -97,12 +97,13 @@ def normalize_allakhazam_mirror_href(href: str, source_url: str) -> str:
 
 
 class AllakhazamMirrorImporter(AllakhazamImporter):
-    """Allakhazam importer with HTTrack link recovery scoped to mirror builds.
+    """Allakhazam importer with HTTrack recovery plus explicit lifecycle fields.
 
-    The base importer remains the parser/normalizer owner.  This subclass changes only
-    anchor URL presentation while a mirror page is being extracted; all entity,
-    relationship, provenance, quest, location and direction semantics stay in the base
-    importer.
+    The base importer remains the parser/normalizer owner. This subclass changes
+    anchor URL presentation while a mirror page is being extracted and preserves a
+    small set of explicit source lifecycle fields needed by server-profile projection.
+    It does not derive lifecycle from dates, names, locations, walkthrough prose, or
+    other indirect evidence.
     """
 
     def __init__(self, db):
@@ -144,3 +145,85 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
             )
             for text, url in anchors
         ]
+
+    def _merge_explicit_lifecycle(
+        self,
+        entity_id: int,
+        *,
+        source_page_id: int,
+        source_url: str,
+        key: str,
+        value: str | None,
+    ) -> None:
+        """Merge one explicit source lifecycle field onto the canonical source entity."""
+        cleaned = " ".join(str(value or "").split()).strip()
+        if not cleaned:
+            return
+        current = self.db.entity(int(entity_id))
+        if current is None:
+            return
+        self.db.upsert_entity(
+            kind=str(current["kind"]),
+            name=str(current["name"]),
+            source_page_id=int(source_page_id),
+            source_url=source_url,
+            external_id=(str(current["external_id"]) if current["external_id"] else None),
+            data={key: cleaned},
+        )
+
+    def _extract_quest(
+        self,
+        root: HtmlNode,
+        quest_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        super()._extract_quest(root, quest_id, source_page_id, source_url, stats)
+
+        table = self._quest_table(root)
+        if table is None:
+            return
+        rows = self._field_rows(table)
+        era_row = rows.get("era")
+        era = self._row_value(era_row, "Era") if era_row is not None else None
+        self._merge_explicit_lifecycle(
+            quest_id,
+            source_page_id=source_page_id,
+            source_url=source_url,
+            key="era",
+            value=era,
+        )
+
+    def _extract_item(
+        self,
+        root: HtmlNode,
+        item_id: int,
+        source_page_id: int,
+        source_url: str,
+        stats: dict[str, int],
+    ) -> None:
+        super()._extract_item(root, item_id, source_page_id, source_url, stats)
+
+        # Allakhazam item pages expose a structured metadata table. Preserve only its
+        # explicit Expansion row as lifecycle evidence; do not infer from IC/Page
+        # update dates or where the item happens to be found.
+        meta_table = self._node_by_id(root, "sortableTable0")
+        if meta_table is None:
+            return
+        for row in self._table_rows(meta_table):
+            cells = self._row_cells(row)
+            if len(cells) < 2:
+                continue
+            label = cells[0].text().strip().rstrip(":").strip()
+            if label.casefold() != "expansion":
+                continue
+            expansion = cells[1].text().strip()
+            self._merge_explicit_lifecycle(
+                item_id,
+                source_page_id=source_page_id,
+                source_url=source_url,
+                key="expansion",
+                value=expansion,
+            )
+            break

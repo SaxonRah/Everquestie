@@ -103,12 +103,14 @@ def activity_cluster_summary(
     current_zone: str | None = None,
     top_limit: int = 3,
 ) -> ActivityClusterSummary:
-    """Summarize repeated activity in the player's current zone segment.
+    """Summarize repeated activity in the player's current log-geography segment.
 
-    The monitoring-session boundary comes from Activity Pathways. If the log contains
-    a zone transition after that boundary, only rows after the *latest* zone transition
-    participate. This prevents an old camp/activity pattern from following the player
-    into the next zone.
+    The monitoring-session boundary comes from Activity Pathways. After that boundary,
+    both explicit zone entries and ``Welcome to EverQuest!`` are hard geography
+    boundaries. Only rows after the latest such boundary participate. A zone entry names
+    the new segment; Welcome clears zone ownership until a later explicit zone entry.
+    This prevents post-login activity from being mislabeled as the zone from the prior
+    login/session.
 
     Generic kill rows remain observations of a mob being slain; they are never labeled
     as guaranteed personal kills here. Faction changes are contemporaneous context only:
@@ -118,20 +120,25 @@ def activity_cluster_summary(
     zone = " ".join(str(current_zone or "").split()).strip()
     segment_after = boundary
 
-    latest_zone = db.conn.execute(
+    latest_boundary = db.conn.execute(
         """
-        SELECT id, zone
+        SELECT id, kind, zone
         FROM observed_events
-        WHERE id>? AND kind='zone'
+        WHERE id>? AND kind IN ('zone','welcome')
         ORDER BY id DESC
         LIMIT 1
         """,
         (boundary,),
     ).fetchone()
-    if latest_zone is not None:
-        segment_after = int(latest_zone["id"])
-        if not zone:
-            zone = " ".join(str(latest_zone["zone"] or "").split()).strip()
+    if latest_boundary is not None:
+        segment_after = int(latest_boundary["id"])
+        kind = str(latest_boundary["kind"] or "").casefold()
+        if kind == "zone":
+            zone = " ".join(str(latest_boundary["zone"] or "").split()).strip()
+        else:
+            # Welcome is an explicit loss of authoritative zone context. Do not trust
+            # a stale caller-side current_zone value across this boundary.
+            zone = ""
 
     rows = db.conn.execute(
         """

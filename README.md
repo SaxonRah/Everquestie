@@ -1,298 +1,317 @@
 # EverQuestie v0.13
 
-EverQuestie is a local-first, read-only EverQuest companion. It tails `eqlog_*.txt`,
-tracks quest/objective progress, compiles local EverQuest knowledge into its own SQLite
-database, renders native EQ map files, and can optionally perform **explicit** online
-searches through the `everquest1-mcp` project.
+EverQuestie is a local-first, log-driven EverQuest companion. It reads normal
+`eqlog_*.txt` output, combines it with a precompiled local knowledge database, and helps
+with quest progress, maps, locations, travel, mechanics, and navigation.
 
-Normal gameplay is offline. EverQuestie never reads process memory, injects into EQ,
-reads packets, sends keystrokes, or automates gameplay.
+The normal packaged application is designed to work offline. It does **not** read
+EverQuest process memory, inject into the game, inspect packets, send keystrokes, or
+automate gameplay.
 
+## What EverQuestie does
 
-## v0.13: deep local knowledge + FTS + Questie/navigation improvements
+### Live log companion
 
-v0.13 deliberately does **not** inspect the configured Allakhazam DB or Wiki mirror
-directories automatically. Those mirrors can remain under HTTrack for days without
-EverQuestie touching their in-progress captures. Mirror imports remain manual actions.
+EverQuestie tails the selected EverQuest log and maintains session state from observed
+log lines. The Live tab shows current zone/location information, recent parsed events,
+tracked quests/objectives, and guidance derived from the local knowledge database.
 
-The local-client compiler now goes beyond ID/name inventory. **Compile full local DB via
-MCP (offline)** uses a small JSONL bridge to the built `everquest1-mcp` `localdata` module
-and stores rich per-record details in EverQuestie's own SQLite database for spells, zones,
-factions, achievements, AAs, Overseer agents/quests, mercenaries, tributes and lore. The
-complete source object is preserved in `entity_details`; compact useful scalar fields are
-also merged into the normalized entity record. An unchanged detail fingerprint skips the
-rich pass on later compiles.
+Tracked objectives can hand navigation to the correct owner:
 
-EverQuestie also directly compiles compact authoritative client tables when present:
+- a confirmed location in the current zone can be focused on the Map tab;
+- an objective in another canonical zone can be handed to Travel for route guidance;
+- unresolved or ambiguous evidence is reported instead of guessed.
 
-- `Resources/skillcaps.txt`
-- `Resources/basedata.txt`
-- `Resources/ACMitigation.txt`
-- `Resources/SpellStackingGroups.txt`
-- selected named/description records from `dbstr_us.txt` (creature types, alternate
-  currencies, expansions and game events)
+### Native EQ maps
 
-### Local full-text search
+The Map tab renders normal EverQuest `.txt` map files and supports local map search,
+player position, logged `/loc` trails, pan/zoom state, and navigation targets.
 
-The DB now owns an SQLite FTS5 index over entity names, aliases, notes, rich local detail,
-JSON data and quest-step text. **Search local DB** uses FTS when the Python SQLite build
-provides it and falls back to the previous local LIKE search otherwise. Full local compiles
-rebuild the index automatically; the new Database tab can rebuild it manually.
+The global Good/Brewall map catalog is compiled into the shipped knowledge database.
+Normal users do **not** rebuild that catalog. A player's selected Good, Brewall, or EQ
+map directory is only the local rendering source for the actual map geometry.
 
-### Knowledge and quest UI
+When multiple legitimate local map variants exist for one canonical zone, EverQuestie
+requires an explicit user choice and stores that binding in writable user state. It does
+not break canonical zone ambiguity by filename guessing.
 
-Knowledge detail pages render rich installed-client records. Spells receive a structured
-mechanics view (mana/endurance, cast/recast/recovery, targeting, class levels, effects,
-description and available stacking/message data); other rich local records retain their
-full text/JSON representation with provenance.
+### Travel and zone navigation
 
-Tracked quests are now a collapsible objective tree rather than a flat quest list. Objective
-rows show completion/count progress, and selecting a resolvable NPC/item objective asks the
-map to focus the known entity location when one exists.
+Packaged EverQuestie has a dedicated Travel tab. Routes are computed from finalized
+canonical zone identities and confirmed directed travel evidence.
 
-### Map quality-of-life
+Travel deliberately does not invent reciprocal edges. A route can run in reverse only
+when the underlying evidence is explicitly bidirectional or a separate reverse edge is
+present.
 
-The map can show a trail made only from actual logged `/loc` samples, clear that trail, and
-optionally follow the newest logged position. Manual map pan/zoom is remembered per zone in
-EverQuestie's own metadata and restored when that zone is opened again.
+Travel can also:
 
-### Database maintenance
+- use the live current zone as the route start;
+- cache a confirmed route and follow the player's live zone along it;
+- map a source-owned coordinate for the next hop when one is known;
+- show canonical zone context and route actionability;
+- open the current-zone **What's here** dashboard and hand exact selected entities to
+  Knowledge.
 
-A new **Database** tab reports SQLite integrity, database size, core/source/support-table
-counts, FTS availability/index size, and the current source policy. It also provides:
+### Local Knowledge
 
-- **Rebuild local search index**
-- **Refresh diagnostics**
-- **Backup database…** using SQLite's backup API
+Knowledge is backed by the shipped SQLite database and its finalized FTS5 index. It
+covers the normalized entity kinds currently populated by the builders, including
+quests, NPCs, items, zones, factions, spells, achievements, alternate advancement,
+Overseer data, mercenaries, tributes, lore, combat abilities, client help topics, and
+other client-derived identities.
 
-The source/provenance rules are documented in `docs/SOURCE_POLICY.md`.
+Knowledge navigation preserves exact entity IDs when duplicate names exist. Related
+entities, locations, quest steps, source evidence, and provider relationships remain
+source-aware rather than being flattened into one unqualified answer.
 
-### Optional Windows packaging
+In packaged runtime, Knowledge also exposes safe navigation actions:
 
-`tools\build_windows_exe.cmd` creates a PyInstaller Windows build when PyInstaller is
-already installed. It intentionally does not install packages by itself. The MCP repository
-is not bundled into the executable; it remains an optional separately configured source
-compiler/search component.
+- **Map location** for confirmed locations in the live current zone;
+- **Route to location** for confirmed locations in another canonical zone.
 
-## v0.12: collapsible Knowledge + Classic EQ Stone
+### Rich EverQuest client mechanics
 
-The Knowledge tab is now organized as a lazy hierarchical tree instead of a flat list.
-Each populated knowledge kind is a native expandable `[+]` topic, for example:
+The full builder imports both the broad `everquest1-mcp` identity inventory and the
+structured records exposed by its local-data parsers.
 
-```text
-[+] Quests (8,214)
-[+] NPCs / Bestiary (44,472)
-[+] Items (...)
-[+] Zones (...)
-[+] Factions (...)
-[+] Spells (...)
-[+] Alternate Advancement (AA) (...)
-[+] Achievements (...)
-...
-```
+Rich records currently cover:
 
-Expanding a topic loads its children on demand. Very large topics load up to 1,000
-rows for browsing and display how many remain; use the Knowledge Search box to narrow
-them. Searches stay grouped by topic rather than returning `[kind] name` rows in one
-undifferentiated list.
+- spells;
+- zones;
+- factions;
+- achievements;
+- alternate advancement abilities;
+- Overseer agents/minions;
+- Overseer quests;
+- mercenaries;
+- tributes;
+- lore;
+- combat abilities / disciplines.
 
-EverQuestie also has a persistent UI theme setting under **Sources → Persistent
-settings**. **Classic EQ Stone** is the default for new settings files and uses an
-original EverQuestie blue/gray marble texture plus beveled stone panels, parchment-like
-inputs, cream/gold text, and dark content panes. **System** restores the platform ttk
-theme. Theme changes apply live and are saved to:
+The complete source-granular MCP records are retained in `mcp_detail_records`. The
+canonical one-row-per-entity UI/search projection lives in `entity_details`, so multiple
+source IDs can safely map to one canonical entity without losing the original records.
 
-```ini
-[ui]
-theme = classic_eq_stone
-```
+Spell and combat-ability detail views expose useful local mechanics such as mana or
+endurance cost, cast/recast/recovery timing, targeting, resist data, class/level data,
+effects, descriptions, and available stacking information.
 
-The bundled stone texture is original EverQuestie artwork inspired by the visual
-character of the classic EverQuest interface; no EQInterface/game UI assets are copied
-into the project.
+EverQuestie also compiles direct client support tables such as skill caps, base stats,
+AC mitigation, and spell stacking data. The packaged Mechanics tab projects that data
+through canonical class/skill/spell identities instead of requiring users to understand
+raw client table IDs.
 
-## v0.11: local EverQuest knowledge compiler
+## Packaged runtime architecture
 
-EverQuestie owns the knowledge database. The installed EverQuest client,
-`everquest1-mcp`, Allakhazam mirrors, and map packs are source/evidence layers rather
-than runtime databases.
+Normal users do not need `everquest1-mcp`, Node.js, HTTrack mirrors, a source checkout,
+map-catalog compilation, or an FTS rebuild.
+
+EverQuestie separates immutable global knowledge from writable player state:
 
 ```text
-EverQuest installation
-        |
-        | local files only
-        v
-everquest1-mcp local-data parser
-        |
-        | save_data_snapshot inventory
-        v
-EverQuestie normalizer ----------------+
-                                        |
-Allakhazam DB HTTrack mirror -----------+--> ~/.eqquest/eqquest.sqlite3
-Allakhazam Wiki HTTrack mirror ---------+          |
-Good / Brewall map files ---------------+          +--> quests / maps / Find / Where
-                                                   |
-eqlog_*.txt -------------------------------------> quest state / observations
-
-OPTIONAL, EXPLICIT ONLY
-Search tab -> choose online source -> press Search online
+builder inputs
+  EverQuest client
+  Allakhazam mirror
+  everquest1-mcp
+  Good + Brewall map catalogs
+  approved travel supplements
+          |
+          v
+build/working.sqlite3
+          |
+          | finalize / audit
+          v
+everquestie-knowledge.sqlite3     read-only / immutable at runtime
+          |
+          +-------------------------+
+                                    |
+eqlog + quest progress + bindings  |
+          |                         |
+          v                         v
+everquestie-user.sqlite3       packaged EverQuestie
 ```
 
-### Compile installed EQ data
-
-First configure/build `everquest1-mcp`, select the EverQuest installation in
-**Sources → EverQuest client data**, then press:
+The packaged runtime opens `everquestie-knowledge.sqlite3` with SQLite read-only,
+immutable semantics and writes player/session state to:
 
 ```text
-Compile full local DB via MCP (offline)
+%USERPROFILE%\.eqquest\everquestie-user.sqlite3
 ```
 
-v0.11 asks the local MCP process to create its local-data snapshot and compiles the
-snapshot's ID/name inventories into EverQuestie's own schema with provenance. The
-currently normalized identity classes are:
-
-- spells
-- zones
-- factions
-- achievements
-- alternate advancement abilities
-- Overseer agents/minions
-- Overseer quests
-- mercenaries
-- tributes
-- lore entries
-- combat abilities
-
-Systems that the upstream snapshot reports only as aggregate counts are retained in
-source metadata rather than being turned into invented entities.
-
-v0.11 established the first compiler layer: stable local IDs, names, source metadata and
-cross-source identities. v0.13 layers rich per-record details plus local support tables onto
-those identities while preserving the original inventory/provenance model.
-
-The existing **Import basic client files** action still directly imports
-`Resources/ZoneNames.txt` and `Help/*.html` for the details that importer already
-understands. A full MCP compile runs that basic import first and then merges the broader
-MCP inventory.
-
-The compiler runs in a worker thread with a separate SQLite connection so the UI stays
-responsive. It refuses to start while live log monitoring is active, avoiding a long
-bulk write competing with observation writes.
-
-`everquest1-mcp` normally writes `.eq-mcp-snapshot.json` in the selected EQ directory.
-EverQuestie uses that generated snapshot only long enough to ingest it. If a snapshot
-already existed, EverQuestie restores its original bytes and timestamps; if none
-existed, the temporary snapshot is removed afterward.
-
-A stable content fingerprint ignores the snapshot's creation timestamp. Recompiling an
-unchanged client therefore updates source metadata without rewriting tens of thousands
-of identical entity rows.
-
-After compilation, EverQuestie's normal gameplay/search/map runtime uses its own SQLite
-DB. Node and the MCP process are not required merely to monitor EQ or query the compiled
-local knowledge.
-
-## Scrollable UI
-
-v0.11 adds visible scrolling to the UI surfaces that can grow beyond the current window:
-
-- the entire **Sources** page is vertically scrollable;
-- Sources knowledge-summary text has its own scrollbar;
-- Live event history, tracked quests, and Guidance have scrollbars;
-- Knowledge result list and entity detail have scrollbars;
-- Search result text has a scrollbar;
-- Map imported-location results have a scrollbar.
-
-The map canvas itself keeps its existing pan/zoom controls rather than adding redundant
-canvas scrollbars.
-
-## Persistent settings
-
-EverQuestie stores user-selected filesystem locations in:
+Filesystem selections and UI preferences remain in the human-readable settings file:
 
 ```text
 %USERPROFILE%\.eqquest\settings.ini
 ```
 
-The INI is saved automatically and remembers the selected EQ log, EverQuest
-installation, MCP repository, Allakhazam DB and Wiki mirrors, map-pack root, and recent
-manual import folders. **Sources → Persistent settings** shows the exact file and can
-open or save it directly.
+If an older combined `%USERPROFILE%\.eqquest\eqquest.sqlite3` exists, packaged runtime
+can migrate its tracked quests, quest progress, observed events, and user metadata into
+the split user-state database without changing the shipped knowledge snapshot.
 
-The application database remains:
+Builder/source-checkout mode may still use the old writable combined database as a
+workspace. That file is not the release artifact.
 
-```text
-%USERPROFILE%\.eqquest\eqquest.sqlite3
-```
+## Source and identity policy
 
-Keeping settings and accumulated knowledge separate makes both files easy to inspect or
-back up.
+EverQuestie owns its normalized schema. External datasets are evidence providers, not
+runtime databases.
 
-## Local Allakhazam mirrors
+The current full build can combine:
 
-### DB mirror
+- **Installed EverQuest client files** for client identities, mechanics, help data and
+  other locally shipped data;
+- **everquest1-mcp** for broad local inventory plus structured rich records;
+- **a local Allakhazam HTTrack mirror** for recognized structured community/world
+  evidence and relationships;
+- **Good's and Brewall's map packs** for map identity, labels, POIs and travel evidence;
+- **repository-approved travel supplements** for reviewed source-backed edges that are
+  not safely recoverable from the automated providers.
 
-Point the DB mirror field at the local HTTrack tree. The structured importer recursively
-recognizes quest, NPC, item, and zone pages, keeps canonical URLs, raw source text/HTML,
-aliases, relationships, locations, and quest objectives.
+Stable namespaced IDs and source provenance are retained throughout the build. Provider
+zone identities are reconciled conservatively into canonical gameplay zones; ambiguous
+or unsupported identities remain visible as evidence but are not promoted merely to
+increase route or location coverage.
 
-Mirror refresh is local and incremental: finalized HTML is SHA-256 checked, unchanged
-recognized pages are skipped, and HTTrack `*.tmp` files are ignored.
+The packaged runtime does not perform hidden source refreshes or background website
+requests. Source-checkout/developer mode retains explicit Search and Sources surfaces,
+including optional online MCP-backed search, but those builder/developer tabs are hidden
+from normal packaged users.
 
-### Wiki mirror
+See [docs/SOURCE_POLICY.md](docs/SOURCE_POLICY.md) for the field-level source policy.
 
-Point the Wiki mirror field at the local Wiki HTTrack tree. EverQuestie indexes canonical
-Wiki articles as local `wiki` entities with provenance and source snapshots. Unchanged
-pages are skipped on later scans.
+## Running a source checkout
 
-## `everquest1-mcp` repository setup
-
-Upstream project:
-
-```text
-https://github.com/ArtSabintsev/everquest1-mcp.git
-```
-
-For a Git checkout, initialize the submodule with:
-
-```powershell
-git submodule update --init --recursive
-```
-
-Then build it:
+EverQuestie requires Python 3.11 or newer. The core application uses Python's standard
+library, Tkinter, and SQLite.
 
 ```powershell
-cd third_party\everquest1-mcp
-npm install
-npm run build
-```
-
-The helper script can do this for you:
-
-```powershell
-.\tools\setup_mcp_submodule.cmd
-```
-
-## Running EverQuestie
-
-```powershell
+git clone https://github.com/SaxonRah/Everquestie.git
+cd Everquestie
 py EverQuestie.py
 ```
 
-or:
+You can also launch the package entry point:
 
 ```powershell
 py -m eqquest
 ```
 
-The core runtime remains Python standard library + Tkinter + SQLite. Node/npm are needed
-only for the optional MCP-backed local compiler/search and explicit online searches.
+A source checkout with no finalized knowledge snapshot falls back to the writable
+builder database under `%USERPROFILE%\.eqquest\eqquest.sqlite3` and retains the
+builder/developer UI.
 
-## Testing
+To exercise the packaged split-database behavior from a source checkout, point runtime
+at a finalized snapshot explicitly:
+
+```powershell
+$env:EVERQUESTIE_KNOWLEDGE_DB = (Resolve-Path .\dist\everquestie-knowledge.sqlite3).Path
+py .\EverQuestie.py
+Remove-Item Env:EVERQUESTIE_KNOWLEDGE_DB
+```
+
+`EVERQUESTIE_USER_DB` can optionally override the writable user-state path for isolated
+runtime testing.
+
+## Building the full knowledge database
+
+This section is for builders/developers, not normal users.
+
+Initialize and build the MCP submodule first:
+
+```powershell
+git submodule update --init --recursive
+cd .\third_party\everquest1-mcp
+npm install
+npm run build
+cd ..\..
+```
+
+`tools\build_full_knowledge.ps1` is the current full local build driver. Its source-path
+variables are intentionally explicit, so set the EverQuest installation, Allakhazam
+mirror, MCP checkout, Good's map folder, and Brewall map folder near the top of the
+script for the builder machine.
+
+Then run:
+
+```powershell
+.\tools\build_full_knowledge.ps1
+```
+
+The full build:
+
+1. compiles the installed EQ client data;
+2. imports the local Allakhazam mirror;
+3. imports MCP inventory and rich structured details;
+4. indexes Good's and Brewall's map catalogs;
+5. compiles approved travel supplements;
+6. finalizes `dist\everquestie-knowledge.sqlite3`;
+7. audits MCP inventory and rich-detail persistence in both working and finalized DBs;
+8. runs canonical route acceptance and provider-frontier auditing;
+9. runs the complete regression suite;
+10. prints artifact sizes, source versions, reports, and the final snapshot SHA-256.
+
+A requested rich MCP build is intentionally strict: missing required detail systems,
+zero-record populated systems, incomplete source-record accounting, failed route
+acceptance, or failed tests stop the build instead of silently producing a "full" but
+incomplete artifact.
+
+## Building a Windows release
+
+`tools\build_release.ps1` is the release/distribution boundary for an existing builder
+database. PyInstaller must already be installed for the selected Python interpreter.
+
+Example:
+
+```powershell
+.\tools\build_release.ps1 -Version 0.13.0
+```
+
+The default release is a one-folder Windows build with
+`everquestie-knowledge.sqlite3` beside `EverQuestie.exe`. The script stages the builder
+DB through SQLite backup, compiles the approved travel manifests into the staged copy,
+finalizes and audits the knowledge snapshot, runs route acceptance and tests, builds the
+Windows application, writes a release manifest with hashes, and creates a versioned ZIP.
+
+An optional one-file build embeds the immutable snapshot:
+
+```powershell
+.\tools\build_release.ps1 -Version 0.13.0 -OneFile
+```
+
+The release never packages the mutable builder DB or a player's user-state DB.
+
+## Tests
+
+Run the regression suite with:
 
 ```powershell
 py -m unittest discover -s tests -v
 ```
 
-v0.13 was validated with the unit suite plus compile/import, Node-bridge syntax, headless
-Tk/theme, and large-FTS smoke tests.
+The repository's runtime smoke workflow also compiles the Python source, imports the
+application headlessly, and runs the regression suite for code/tool pull requests.
+
+## Design rules worth knowing
+
+- Normal gameplay is local-first and does not require builder infrastructure.
+- The shipped knowledge database is immutable; player state is separate and writable.
+- Knowledge identity prefers exact/namespaced evidence over fuzzy guesses.
+- Ambiguous identities remain ambiguous.
+- Travel is directional unless bidirectionality is explicitly supported.
+- Coordinates are only used for navigation when their source-zone ownership is safe.
+- Map catalog construction, provider reconciliation, FTS rebuilding, and MCP compilation
+  are builder responsibilities, not player startup work.
+- Provenance is retained so facts can be audited, refreshed, and reconciled without
+  pretending that every source agrees.
+
+## More architecture documentation
+
+- [Database distribution](docs/DATABASE_DISTRIBUTION.md)
+- [Source policy](docs/SOURCE_POLICY.md)
+- [Allakhazam knowledge build](docs/ALLAKHAZAM_KNOWLEDGE_BUILD.md)
+- [Provider zone reconciliation](docs/PROVIDER_ZONE_RECONCILIATION.md)
+- [Provider zone travel](docs/PROVIDER_ZONE_TRAVEL.md)
+- [Current-zone dashboard](docs/CURRENT_ZONE_DASHBOARD.md)
+- [Knowledge relationship navigation](docs/KNOWLEDGE_RELATIONSHIP_NAVIGATION.md)
+- [Release portability](docs/RELEASE_PORTABILITY.md)

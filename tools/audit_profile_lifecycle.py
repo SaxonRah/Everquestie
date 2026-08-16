@@ -40,24 +40,36 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit machine-readable JSON instead of the human-readable report",
     )
+    parser.add_argument(
+        "--output",
+        help=(
+            "Write the selected report directly as UTF-8 text instead of stdout. "
+            "Useful for deterministic Windows build artifacts without shell encoding differences."
+        ),
+    )
     args = parser.parse_args(argv)
 
     conn = open_read_only(args.database)
     try:
         db = SimpleNamespace(conn=conn)
         if args.json:
-            print(
-                json.dumps(
-                    profile_lifecycle_audit(db).as_dict(),
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
+            payload = json.dumps(
+                profile_lifecycle_audit(db).as_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
             )
         else:
-            print(profile_lifecycle_audit_text(db))
+            payload = profile_lifecycle_audit_text(db)
     finally:
         conn.close()
+
+    if args.output:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
     return 0
 
 

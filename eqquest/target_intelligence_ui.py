@@ -251,6 +251,9 @@ def install_target_intelligence_ui() -> None:
         if relevance is None:
             self.status.set("Select a target-related quest first.")
             return
+        if relevance.tracked:
+            self.status.set(f"{relevance.quest_name} is already tracked.")
+            return
         self._track_and_reconcile(
             int(relevance.quest_id),
             announce="TARGET | tracking source-backed related quest",

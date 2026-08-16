@@ -1,8 +1,14 @@
-# Third-party source trees
+# Third-party builder source trees
 
-`third_party/everquest1-mcp` points at:
+`third_party/everquest1-mcp` is a **builder-only** nested Git checkout of:
 
 `https://github.com/ArtSabintsev/everquest1-mcp.git`
+
+Its reproducible source contract is tracked in:
+
+`third_party/everquest1-mcp.lock.json`
+
+The lock records the exact approved upstream repository, full producer commit, and package version used by canonical EverQuestie knowledge builds. The current lock was recovered from the known-good rich knowledge snapshot's recorded MCP provenance rather than chosen from the upstream default branch.
 
 Run:
 
@@ -10,13 +16,10 @@ Run:
 .\tools\setup_mcp_submodule.ps1
 ```
 
-The helper supports both EverQuestie distribution forms:
+The script name is retained for compatibility, but EverQuestie no longer relies on a parent-repository Git submodule. Both a normal Git checkout and a downloaded source ZIP use the same nested-clone layout. Setup clones the approved upstream when necessary and checks out the exact tracked lock revision before installing/building it.
 
-- **Git checkout:** installs/initializes `third_party/everquest1-mcp` as a real Git submodule.
-- **Downloaded ZIP:** a ZIP cannot carry the parent repository's `160000` gitlink, so the helper creates a normal nested clone at the exact same path and builds it. EverQuestie uses that clone identically at runtime.
+`-Update` refreshes upstream refs but **does not move the canonical builder off the tracked lock**. `-Ref <tag-or-commit>` is an explicit developer override for investigation; canonical/full knowledge builds reject an unlocked checkout.
 
-Use `-Update` only when you explicitly want the helper to update an existing MCP checkout/clone. `-Ref <tag-or-commit>` can select a particular upstream ref before building.
+EverQuestie also honors `EVERQUEST1_MCP_PATH` where supported by builder tooling, but the selected checkout must still match the repository source lock for a canonical build.
 
-EverQuestie also honors `EVERQUEST1_MCP_PATH` if the MCP repository lives elsewhere.
-
-The MCP server is not required while monitoring EverQuest. It is used only for explicit MCP searches and as an optional parser/reference dependency.
+Normal EverQuestie users do not need this repository, Node.js, npm, or MCP at runtime. The dependency exists only as builder/developer infrastructure; its compiled knowledge is shipped in the immutable EverQuestie knowledge database.

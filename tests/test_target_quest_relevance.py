@@ -137,6 +137,121 @@ class TargetQuestRelevanceTests(unittest.TestCase):
         self.assertTrue(rows[0].tracked)
         self.assertFalse(rows[1].tracked)
 
+    def test_active_tracked_exact_npc_step_surfaces_live_progress_without_graph_edge(self):
+        npc = self._npc("a gnoll pup")
+        quest = self._quest("Cull the Pups")
+        page = self._page("quest/tracked-kill", "Cull the Pups", "quest")
+        self.db.add_quest_step(
+            quest,
+            1,
+            "Defeat five gnoll pups",
+            match={"event": "kill", "npc_entity_id": npc, "count": 5},
+            source_page_id=page,
+        )
+        self.db.track_quest(quest)
+        self.db.set_step_progress(quest, 1, 2, False)
+
+        rows = target_quest_relevance(self.db, npc)
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertTrue(row.tracked)
+        self.assertEqual(row.tracked_progress_label, "active 2/5")
+        reason = row.reasons[0]
+        self.assertEqual(reason.path_kind, "tracked_step")
+        self.assertEqual(reason.step_order, 1)
+        self.assertTrue(reason.active_step)
+        self.assertEqual(reason.display_label, "Active tracked kill objective [2/5]")
+        self.assertIn("Defeat five gnoll pups", reason.evidence)
+
+    def test_tracked_step_without_source_page_cannot_claim_target_progress(self):
+        npc = self._npc("an unsourced gnoll")
+        quest = self._quest("Unsourced Objective")
+        self.db.add_quest_step(
+            quest,
+            1,
+            "Defeat the unsourced gnoll",
+            match={"event": "kill", "npc_entity_id": npc, "count": 2},
+            source_page_id=None,
+        )
+        self.db.track_quest(quest)
+
+        self.assertEqual(target_quest_relevance(self.db, npc), ())
+
+    def test_tracked_item_step_requires_reviewed_drop_before_target_is_source(self):
+        npc = self._npc("a diseased rat")
+        item = self._item("Diseased Rat Pelt")
+        quest = self._quest("Pelt Collection")
+        quest_page = self._page("quest/pelts", "Pelt Collection", "quest")
+        drop_page = self._page("npc/diseased-rat", "a diseased rat", "npc")
+        self.db.add_quest_step(
+            quest,
+            1,
+            "Loot three Diseased Rat Pelts",
+            match={"event": "loot", "item_entity_id": item, "count": 3},
+            source_page_id=quest_page,
+        )
+        self.db.track_quest(quest)
+
+        self.assertEqual(target_quest_relevance(self.db, npc), ())
+
+        self.db.upsert_relationship(
+            item,
+            npc,
+            "drops_from",
+            source_page_id=drop_page,
+            evidence="Diseased Rat Pelt is a reviewed drop from a diseased rat.",
+        )
+        rows = target_quest_relevance(self.db, npc)
+
+        self.assertEqual(len(rows), 1)
+        reason = rows[0].reasons[0]
+        self.assertEqual(reason.path_kind, "tracked_step")
+        self.assertEqual(reason.via_item_id, item)
+        self.assertEqual(
+            reason.display_label,
+            "Active tracked loot objective: Diseased Rat Pelt [0/3]",
+        )
+
+    def test_parallel_count_step_is_visible_but_future_sequential_contact_is_not(self):
+        active_npc = self._npc("Quest Giver")
+        target = self._npc("a roaming wolf")
+        quest = self._quest("Parallel Work")
+        page = self._page("quest/parallel", "Parallel Work", "quest")
+        self.db.add_quest_step(
+            quest,
+            1,
+            "Speak to Quest Giver",
+            match={"event": "say", "npc_entity_id": active_npc},
+            source_page_id=page,
+        )
+        self.db.add_quest_step(
+            quest,
+            2,
+            "Defeat four roaming wolves",
+            match={"event": "kill", "npc_entity_id": target, "count": 4},
+            source_page_id=page,
+        )
+        self.db.add_quest_step(
+            quest,
+            3,
+            "Speak to a roaming wolf after the hunt",
+            match={"event": "say", "npc_entity_id": target},
+            source_page_id=page,
+        )
+        self.db.track_quest(quest)
+        self.db.set_step_progress(quest, 2, 1, False)
+
+        rows = target_quest_relevance(self.db, target)
+
+        self.assertEqual(len(rows), 1)
+        step_reasons = [r for r in rows[0].reasons if r.path_kind == "tracked_step"]
+        self.assertEqual(len(step_reasons), 1)
+        self.assertEqual(step_reasons[0].step_order, 2)
+        self.assertFalse(step_reasons[0].active_step)
+        self.assertEqual(step_reasons[0].progress_label, "parallel 1/4")
+        self.assertEqual(step_reasons[0].display_label, "Parallel tracked kill objective [1/4]")
+
     def test_detail_text_explains_non_inference_boundary(self):
         npc = self._npc()
         quest = self._quest("Talk to the Rat")
@@ -152,6 +267,26 @@ class TargetQuestRelevanceTests(unittest.TestCase):
         self.assertIn("Conversation target", text)
         self.assertIn("normalized source-backed relationships", text)
         self.assertIn("does not infer quest relevance", text)
+
+    def test_tracked_detail_text_names_step_progress_and_identity_boundary(self):
+        npc = self._npc("a named target")
+        quest = self._quest("Tracked Detail")
+        page = self._page("quest/tracked-detail", "Tracked Detail", "quest")
+        self.db.add_quest_step(
+            quest,
+            1,
+            "Defeat the named target",
+            match={"event": "kill", "npc_entity_id": npc, "count": 2},
+            source_page_id=page,
+        )
+        self.db.track_quest(quest)
+        row = target_quest_relevance(self.db, npc)[0]
+
+        text = target_quest_relevance_text(row)
+
+        self.assertIn("Structured step 1; active now", text)
+        self.assertIn("exact canonical ID", text)
+        self.assertIn("player state", text)
 
     def test_non_npc_entity_is_not_accepted_as_target(self):
         item = self._item("Not an NPC")

@@ -10,6 +10,7 @@ from eqquest.entity_lifecycle import (
     entity_lifecycle_decision,
 )
 from eqquest.profile_availability import entity_profile_decision, profiled_entity_detail_text
+from eqquest.world_profiles import set_active_world_profile
 
 
 class EntityLifecycleTests(unittest.TestCase):
@@ -115,6 +116,7 @@ class EntityLifecycleTests(unittest.TestCase):
             detail_format="mcp-json",
             detail_json={"name": "Modern Test Spell", "expansion": "Planes of Power"},
         )
+        set_active_world_profile(self.db, "p99")
 
         evidence = entity_expansion_evidence(self.db, spell)
         decision = entity_profile_decision(self.db, spell, "p99")

@@ -55,7 +55,15 @@ def install_activity_clusters_ui() -> None:
             boundary,
             current_zone=current_zone,
         )
-        suggestions = tuple(getattr(self, "_activity_pathway_by_item", {}).values())
+        dismissed = {
+            int(value)
+            for value in getattr(self, "_activity_pathway_dismissed_quests", set())
+        }
+        suggestions = tuple(
+            suggestion
+            for suggestion in getattr(self, "_activity_pathway_by_item", {}).values()
+            if int(suggestion.quest_id) not in dismissed
+        )
         related = related_pathway_names(summary, suggestions)
         text = activity_cluster_text(summary, pathway_names=related)
         monitoring = getattr(self, "tailer", None) is not None

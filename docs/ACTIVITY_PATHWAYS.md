@@ -62,7 +62,8 @@ The Live-tab **Potential Pathways** panel provides:
 - **Track quest** — explicit opt-in to existing tracking/reconciliation;
 - **Navigate contact** — find an evidence-backed quest contact and delegate safely to Map or Travel;
 - **Why this?** — lists the exact session observation and structured objective/relationship chain that produced the suggestion;
-- **Session recap** — summarizes parsed activity since monitoring started without promoting it into canonical knowledge.
+- **Session recap** — summarizes parsed activity since monitoring started without promoting it into canonical knowledge;
+- **Dismiss selected for session** — hides one opportunity until the next monitoring session without altering quest or database state.
 
 ### Navigate contact
 
@@ -78,6 +79,14 @@ The action does not create coordinates or resolve provider ambiguity itself. It 
 
 Simply seeing, selecting, viewing, or navigating a pathway never changes tracked quest state or quest progress.
 
+### Session-only dismissal
+
+Dismissal is deliberately a display preference, not knowledge or quest state.
+
+The UI keeps dismissed quest IDs only in memory for the active monitoring session. The underlying pathway engine continues to compute the source-backed opportunity, but the Live tree and Current Activity related-pathway text filter it out. Starting monitoring again clears the dismissed set and begins a fresh session context.
+
+This first anti-noise control intentionally avoids permanent snooze metadata or a user-state schema change. If a longer-lived ignore/snooze feature is added later, it should remain player-owned state and must never suppress canonical knowledge itself.
+
 ## Current Activity cluster
 
 The Live tab also projects a compact **Current Activity** log pattern. This is session context, not canonical EverQuest knowledge and not a claim that the player is at a named camp.
@@ -88,7 +97,7 @@ The cluster:
 - resets its segment at the latest logged zone transition, so old-zone activity does not follow the player into a new zone;
 - summarizes repeated mobs observed slain and items the player looted;
 - stays quiet for one-off activity;
-- names only already-surfaced Potential Pathways whose exact evidence overlaps the cluster;
+- names only already-surfaced, non-dismissed Potential Pathways whose exact evidence overlaps the cluster;
 - continues to describe generic kill lines as `observed slain`, not guaranteed personal kills.
 
 The initial noise threshold is deliberately conservative: at least three relevant kill/loot observations are required, plus either a repeated subject or at least five total relevant observations.
@@ -105,6 +114,7 @@ In packaged mode:
 
 - observations are read from `everquestie-user.sqlite3`;
 - quest/entity/relationship knowledge is read from the immutable `everquestie-knowledge.sqlite3` snapshot;
+- session dismissal is in-memory UI state only;
 - the pathway, activity-cluster, recap, and personal-observation projections perform no knowledge writes.
 
 Regression coverage hashes finalized knowledge in packaged-mode activity/personal-history tests and verifies that no knowledge WAL/SHM sidecars are created.
@@ -114,7 +124,7 @@ Regression coverage hashes finalized knowledge in packaged-mode activity/persona
 Future slices can build on the same evidence model without changing its trust boundary:
 
 1. richer faction context, clearly labeled as contemporaneous observation unless canonical causality is known;
-2. optional player-controlled dismissal/snooze state for recurring opportunities;
+2. optional persistent snooze/ignore state if session-only dismissal proves insufficient;
 3. longer-term encounter statistics that remain explicitly personal observations rather than canonical rates;
 4. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed;
 5. profile-aware nearby-opportunity summaries as richer quest/NPC/item coverage arrives from the completed mirrors.

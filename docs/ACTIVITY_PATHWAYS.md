@@ -60,9 +60,22 @@ The Live-tab **Potential Pathways** panel provides:
 
 - **View quest** — exact entity-ID handoff to Knowledge;
 - **Track quest** — explicit opt-in to existing tracking/reconciliation;
+- **Navigate contact** — find an evidence-backed quest contact and delegate safely to Map or Travel;
 - **Why this?** — lists the exact session observation and structured objective/relationship chain that produced the suggestion.
 
-Simply seeing or selecting a pathway never changes tracked quest state or quest progress.
+### Navigate contact
+
+A potential pathway is not assumed to be owned yet, so navigation prefers a structured `started_by` quest starter. If no safely navigable starter location is known, an explicit `objective_turn_in_to` NPC may be offered as a useful fallback. Kill targets and unrelated quest actors are never substituted for those roles.
+
+The action does not create coordinates or resolve provider ambiguity itself. It delegates to the same `knowledge_map_choices` projection used by normal Knowledge actions:
+
+- only navigable canonical location evidence can become a Map/Travel choice;
+- a current-zone contact is handed to the Map owner in game-space coordinates;
+- a remote contact is collapsed to a canonical destination zone and handed to Travel;
+- multiple safe points or remote zones require the existing explicit chooser;
+- candidate/unresolved provider locations remain evidence-only.
+
+Simply seeing, selecting, viewing, or navigating a pathway never changes tracked quest state or quest progress.
 
 ## Runtime split
 
@@ -78,11 +91,10 @@ Regression coverage hashes the finalized knowledge snapshot before/after a packa
 
 Future slices can build on the same evidence model without changing its trust boundary:
 
-1. quest starter / turn-in NPC map and Travel actions;
-2. faction-change context correlated with nearby activity, clearly labeled as observation unless canonical causality is known;
-3. session summaries (zones visited, mobs observed slain, loot, faction changes, quest progress);
-4. personal encounter/drop history stored only in user state;
-5. camp/activity clustering based on repeated observations, labeled as inferred session context rather than canonical knowledge;
-6. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed.
+1. faction-change context correlated with nearby activity, clearly labeled as observation unless canonical causality is known;
+2. session summaries (zones visited, mobs observed slain, loot, faction changes, quest progress);
+3. personal encounter/drop history stored only in user state;
+4. camp/activity clustering based on repeated observations, labeled as inferred session context rather than canonical knowledge;
+5. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed.
 
 The completed Allakhazam DB/wiki mirror should increase the breadth of these pathways substantially, but Activity Pathways itself remains source-agnostic: it consumes normalized EverQuestie knowledge rather than crawling or querying providers at runtime.

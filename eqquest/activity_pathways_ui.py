@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .activity_pathway_navigation import pathway_contact_navigation
 from .activity_pathways import ActivityPathwayEngine, PathwaySuggestion, pathway_detail_text
 
 
@@ -88,6 +89,11 @@ def install_activity_pathways_ui() -> None:
         ).pack(side="left", padx=(6, 0))
         ttk.Button(
             buttons,
+            text="Navigate contact",
+            command=self._activity_pathway_navigate_contact,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
             text="Why this?",
             command=self._activity_pathway_explain_selected,
         ).pack(side="left", padx=(6, 0))
@@ -109,7 +115,11 @@ def install_activity_pathways_ui() -> None:
             return
         # This existing exact-ID handoff opens Knowledge without resolving by name,
         # so duplicate quest names remain distinct.
-        self._map_entity_selected(int(suggestion.quest_id))
+        opener = getattr(self, "_open_knowledge_entity_exact", None)
+        if callable(opener):
+            opener(int(suggestion.quest_id))
+        else:
+            self._map_entity_selected(int(suggestion.quest_id))
 
     def _activity_pathway_track_selected(self) -> None:
         suggestion = _selected_pathway(self)
@@ -121,6 +131,80 @@ def install_activity_pathways_ui() -> None:
         )
         self._refresh_guidance()
         self._refresh_activity_pathways(force=True)
+
+    def _activity_pathway_navigate_contact(self) -> None:
+        suggestion = _selected_pathway(self)
+        if suggestion is None:
+            self.status.set("Select a Potential Pathway first.")
+            return
+
+        result = pathway_contact_navigation(
+            self.db,
+            int(suggestion.quest_id),
+            getattr(self.state_model, "current_zone", None),
+        )
+        if result.map_ready:
+            if len(result.map_choices) == 1:
+                choice = result.map_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_map_choice
+
+                choice = ask_knowledge_map_choice(
+                    self,
+                    f"{result.quest_name} — {result.contact_kind}",
+                    result.current_zone_name,
+                    result.map_choices,
+                )
+                if choice is None:
+                    self.status.set("Pathway contact map selection cancelled.")
+                    return
+            self._focus_navigation_map_target(
+                choice.zone_name,
+                choice.x,
+                choice.y,
+                choice.z,
+                choice.map_label,
+            )
+            self.status.set(
+                f"Pathway {result.contact_kind} mapped: {choice.location_entity_name}."
+            )
+            return
+
+        if result.route_ready:
+            if len(result.route_choices) == 1:
+                choice = result.route_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_route_choice
+
+                choice = ask_knowledge_route_choice(
+                    self,
+                    f"{result.quest_name} — {result.contact_kind}",
+                    result.current_zone_name,
+                    result.route_choices,
+                )
+                if choice is None:
+                    self.status.set("Pathway contact route selection cancelled.")
+                    return
+
+            travel = getattr(self, "travel_tab", None)
+            if travel is None or not hasattr(travel, "route_to_zone"):
+                self.status.set("Travel routing is not connected in this application surface.")
+                return
+            self.notebook.select(self.travel_tab)
+            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
+            if routed:
+                self.status.set(
+                    f"Travel route opened to {choice.zone_name} for pathway "
+                    f"{result.contact_kind}."
+                )
+            else:
+                self.status.set(
+                    f"No confirmed route to {choice.zone_name} is currently available; "
+                    "see Travel for details."
+                )
+            return
+
+        self.status.set(result.reason)
 
     def _activity_pathway_explain_selected(self) -> None:
         suggestion = _selected_pathway(self)
@@ -147,7 +231,14 @@ def install_activity_pathways_ui() -> None:
                 suggestion.quest_id,
                 suggestion.score,
                 tuple(
-                    (e.event_kind, e.subject, e.observed_count, e.step_order)
+                    (
+                        e.event_kind,
+                        e.subject,
+                        e.observed_count,
+                        e.step_order,
+                        e.path_kind,
+                        e.related_item,
+                    )
                     for e in suggestion.evidence
                 ),
             )
@@ -188,12 +279,12 @@ def install_activity_pathways_ui() -> None:
             prefix = "Watching live activity" if monitoring else "Last monitoring session"
             self.activity_pathway_status.set(
                 f"{prefix}: {len(suggestions)} potential quest pathway(s). "
-                "Exact structured objectives only; nothing is auto-tracked."
+                "Exact structured/source-backed relationships only; nothing is auto-tracked."
             )
         elif monitoring:
             self.activity_pathway_status.set(
                 "Watching live activity. Potential pathways appear when exact kill/loot "
-                "observations match structured quest objectives."
+                "observations match structured objectives or reviewed source-backed chains."
             )
         else:
             self.activity_pathway_status.set(
@@ -222,6 +313,7 @@ def install_activity_pathways_ui() -> None:
     current_app._selected_activity_pathway = _selected_pathway
     current_app._activity_pathway_view_selected = _activity_pathway_view_selected
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected
+    current_app._activity_pathway_navigate_contact = _activity_pathway_navigate_contact
     current_app._activity_pathway_explain_selected = _activity_pathway_explain_selected
     current_app._refresh_activity_pathways = _refresh_activity_pathways
     current_app._activity_pathway_tick = _activity_pathway_tick

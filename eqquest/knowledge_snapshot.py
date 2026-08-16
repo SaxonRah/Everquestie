@@ -10,6 +10,7 @@ from typing import Any
 
 from .db import Database
 from .db_audit import identity_audit_text
+from .entity_lifecycle_records import reconcile_allakhazam_spell_lifecycle
 from .map_catalog import MapCatalog
 from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
@@ -79,6 +80,7 @@ class KnowledgeSnapshotReport:
     stripped_meta_rows: int
     stripped_builder_payloads: int
     mechanics_reconciliation: dict[str, Any]
+    lifecycle_reconciliation: dict[str, int]
     quest_faction_reconciliation: dict[str, int]
     provider_zone_reconciliation: dict[str, int]
     provider_zone_travel: dict[str, int]
@@ -238,6 +240,12 @@ def finalize_knowledge_snapshot(
     # semantic layer makes them queryable by stable names and future provider IDs.
     mechanics_coverage = MechanicsCatalog(db).reconcile()
 
+    # Cross-source lifecycle facts are attached only after every provider has had a
+    # chance to populate canonical identities. Allakhazam spell facts require the exact
+    # numeric client spell ID AND exact normalized name; provider order cannot change
+    # the finalized attachment result.
+    lifecycle_reconciliation = reconcile_allakhazam_spell_lifecycle(db)
+
     # Structured Allakhazam quest faction names become graph edges only after all
     # providers have populated the builder DB and only when one exact client-backed
     # faction identity exists. Raw quest metadata remains untouched for unresolved or
@@ -335,6 +343,7 @@ def finalize_knowledge_snapshot(
         stripped_meta_rows=stripped_meta,
         stripped_builder_payloads=stripped_payloads,
         mechanics_reconciliation=mechanics_coverage.as_dict(),
+        lifecycle_reconciliation=lifecycle_reconciliation.as_dict(),
         quest_faction_reconciliation=quest_faction.as_dict(),
         provider_zone_reconciliation=provider_zone.as_dict(),
         provider_zone_travel=provider_travel.as_dict(),

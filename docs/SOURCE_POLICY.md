@@ -11,7 +11,7 @@ Normal play, log parsing, maps, Knowledge, local Search, quest progress, and the
 Preferences are intentionally field-specific rather than "one source wins everything":
 
 - **EverQuest client files:** preferred for client IDs, spell mechanics, local progression tables, zone identity, and other mechanics physically shipped with the selected client.
-- **Allakhazam local mirror:** quest walkthroughs/objectives, NPC/item/zone relationships, community locations and other world/quest evidence after the user explicitly imports a completed local mirror.
+- **Allakhazam local mirror:** quest walkthroughs/objectives, NPC/item/zone relationships, community locations, and explicit structured lifecycle fields from reviewed page types. Spell pages may contribute only their labeled Quick Facts `Expansion` field, stored as source-granular lifecycle evidence and attached to a canonical client spell only after exact ID + exact normalized-name corroboration.
 - **Good/Brewall/EQ map files:** geometry, labels and map POIs for the selected map pack.
 - **Explicit online search:** temporary lookup results. They are not silently inserted into SQLite.
 
@@ -19,7 +19,7 @@ Preferences are intentionally field-specific rather than "one source wins everyt
 
 A field name such as `expansion` or `era` is not automatically gameplay-profile evidence. Direct lifecycle use is approved at the combination of **source + entity kind + field + parser semantics**.
 
-Current reviewed direct lifecycle fields are the explicit structured Allakhazam local-mirror values normalized by EverQuestie: NPC/zone/item `Expansion` and quest `Era`. They are accepted because the parser reads a labeled source field rather than inferring an era from names, dates, levels, locations, or prose.
+Current reviewed direct lifecycle fields are the explicit structured Allakhazam local-mirror values normalized by EverQuestie: NPC/zone/item `Expansion`, quest `Era`, and spell Quick Facts `Expansion`. The spell value is kept in source-granular lifecycle storage so it cannot overwrite the canonical spell's client/MCP mechanics or primary provenance. It may attach to a canonical spell only when the Allakhazam spell ID and normalized spell name both exactly match the canonical `eqclient:spell` identity. These values are accepted because the parser reads a labeled source field rather than inferring an era from names, dates, levels, locations, comments, or prose.
 
 Canonical rich-detail JSON is fail-closed for lifecycle use until a source/field combination is separately reviewed. This is particularly important for `everquest1-mcp`: the repository-locked 1.2.1 local spell parser does not supply a direct spell expansion field, and its expansion grouping helper explicitly approximates eras from class minimum-level ranges. Those groups are useful reference output but are not direct spell lifecycle evidence.
 

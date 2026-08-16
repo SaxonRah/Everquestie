@@ -7,6 +7,7 @@ from typing import Any
 
 from .db import normalize_name
 from .entity_lifecycle import lifecycle_field, lifecycle_field_policy
+from .entity_lifecycle_records import lifecycle_record_table_exists
 from .world_profiles import profile_expansion_allowed, world_profile
 
 
@@ -21,7 +22,6 @@ class LifecycleKindCoverage:
     profile_conflict: int
     profile_undetermined: int
 
-    # Compatibility properties for callers written when the audit was P99-only.
     @property
     def p99_available(self) -> int:
         return self.profile_available
@@ -83,7 +83,6 @@ class LifecycleAuditSummary:
     by_rejected_source_kind: tuple[tuple[str, int], ...]
     by_rejected_reason: tuple[tuple[str, int], ...]
 
-    # Compatibility properties for existing P99-default builder/report callers.
     @property
     def p99_available_direct(self) -> int:
         return self.available_direct
@@ -176,19 +175,16 @@ def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummar
     """Measure reviewed direct lifecycle coverage for one expansion-capped profile.
 
     Lifecycle-looking fields are passed through the same source policy used at runtime.
-    Rejected candidates are counted separately so source drift is visible without being
-    promoted into gameplay-profile truth.
-
-    The default remains ``p99`` for build/report compatibility. Live is intentionally
-    not accepted here because origin expansion alone is not a Live retirement fact;
-    unrestricted is not an era boundary either.
+    Source-granular records are also resolved read-only using exact canonical identity,
+    so provider order does not change audit results. Rejected candidates remain visible
+    without being promoted into gameplay-profile truth.
     """
     profile = _audit_profile(profile_id)
     cap_label = profile.expansion_cap_label or profile.expansion_cap or "expansion cap"
 
     entity_rows = db.conn.execute(
         """
-        SELECT e.id,e.kind,e.data_json,e.source_page_id,
+        SELECT e.id,e.kind,e.name,e.data_json,e.source_page_id,
                COALESCE(sp.source_name,'') AS source_name,
                COALESCE(sp.source_kind,'') AS source_kind
         FROM entities e
@@ -209,6 +205,7 @@ def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummar
 
     kind_entities: Counter[str] = Counter()
     entity_kind: dict[int, str] = {}
+    entity_name: dict[int, str] = {}
     evidence_by_entity: dict[
         int,
         dict[tuple[str, str, int | None, str], tuple[str, str]],
@@ -233,7 +230,9 @@ def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummar
         if not text:
             return
         fallback_source_kind = source_kind or (
-            "entity_data" if origin == "entity.data_json" else "entity_detail"
+            "entity_data"
+            if origin == "entity.data_json"
+            else ("entity_lifecycle_record" if origin == "entity_lifecycle_records" else "entity_detail")
         )
         key = (normalize_name(text), origin, source_page_id, field_name.casefold())
         policy = lifecycle_field_policy(
@@ -256,6 +255,7 @@ def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummar
         entity_id = int(row["id"])
         kind = str(row["kind"] or "unknown")
         entity_kind[entity_id] = kind
+        entity_name[entity_id] = str(row["name"] or "")
         kind_entities[kind] += 1
         found = lifecycle_field(_json_object(row["data_json"]))
         if found is not None:
@@ -270,6 +270,62 @@ def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummar
                     if row["source_page_id"] is not None
                     else None
                 ),
+                source_name=str(row["source_name"] or ""),
+                source_kind=str(row["source_kind"] or ""),
+            )
+
+    if lifecycle_record_table_exists(db):
+        spell_identity_rows = db.conn.execute(
+            """
+            SELECT x.external_id,e.id,e.name
+            FROM entity_external_ids x
+            JOIN entities e ON e.id=x.entity_id
+            WHERE x.namespace='eqclient:spell' AND e.kind='spell'
+            """
+        ).fetchall()
+        spell_by_external_id = {
+            str(row["external_id"] or ""): (int(row["id"]), str(row["name"] or ""))
+            for row in spell_identity_rows
+        }
+        lifecycle_rows = db.conn.execute(
+            """
+            SELECT r.source_page_id,r.entity_id,r.entity_kind,r.source_external_id,
+                   r.source_entity_name,r.field_name,r.field_value,
+                   COALESCE(sp.source_name,'') AS source_name,
+                   COALESCE(sp.source_kind,'') AS source_kind
+            FROM entity_lifecycle_records r
+            JOIN source_pages sp ON sp.id=r.source_page_id
+            ORDER BY r.source_page_id,r.entity_kind,r.source_external_id,r.field_name
+            """
+        ).fetchall()
+        for row in lifecycle_rows:
+            resolved_entity_id = (
+                int(row["entity_id"]) if row["entity_id"] is not None else None
+            )
+            kind = str(row["entity_kind"] or "unknown")
+            if resolved_entity_id is None and kind == "spell":
+                source_external_id = str(row["source_external_id"] or "")
+                numeric_id = (
+                    source_external_id.split(":", 1)[1]
+                    if source_external_id.casefold().startswith("spell:")
+                    else source_external_id
+                ).strip()
+                canonical = spell_by_external_id.get(numeric_id)
+                if canonical is None:
+                    continue
+                canonical_id, canonical_name = canonical
+                if normalize_name(str(row["source_entity_name"] or "")) != normalize_name(canonical_name):
+                    continue
+                resolved_entity_id = canonical_id
+            if resolved_entity_id is None or resolved_entity_id not in entity_kind:
+                continue
+            consider_candidate(
+                resolved_entity_id,
+                entity_kind.get(resolved_entity_id, kind),
+                str(row["field_name"] or ""),
+                str(row["field_value"] or ""),
+                origin="entity_lifecycle_records",
+                source_page_id=int(row["source_page_id"]),
                 source_name=str(row["source_name"] or ""),
                 source_kind=str(row["source_kind"] or ""),
             )
@@ -473,7 +529,7 @@ def profile_lifecycle_audit_text(db, profile_id: str = "p99") -> str:
         [
             "",
             "Boundary: field presence alone is not lifecycle evidence; source + field + parser semantics must be reviewed.",
-            "Only explicit top-level fields accepted by the shared lifecycle source policy are counted as direct evidence.",
+            "Reviewed source-granular lifecycle records are counted only after exact canonical identity resolution.",
             "Rejected lifecycle-looking fields remain diagnostic candidates and do not affect gameplay profiles.",
             (
                 f"Only reviewed expansion labels cross the {summary.expansion_cap_label} boundary for "

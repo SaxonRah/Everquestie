@@ -88,18 +88,27 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         summary = profile_lifecycle_audit(self.db)
         by_kind = {row.kind: row for row in summary.by_kind}
 
+        self.assertEqual(summary.profile_id, "p99")
+        self.assertEqual(summary.expansion_cap, "velious")
+        self.assertEqual(summary.expansion_cap_label, "Velious")
         self.assertEqual(summary.total_entities, 5)
         self.assertEqual(summary.entities_with_expansion_evidence, 3)
         self.assertEqual(summary.evidence_rows, 3)
         self.assertEqual(summary.rejected_lifecycle_candidates, 1)
         self.assertEqual(summary.entities_with_rejected_lifecycle_candidates, 1)
-        self.assertEqual(summary.p99_available_direct, 1)
-        self.assertEqual(summary.p99_blocked_direct, 1)
-        self.assertEqual(summary.p99_conflict, 0)
-        self.assertEqual(summary.p99_undetermined_direct, 1)
+        self.assertEqual(summary.available_direct, 1)
+        self.assertEqual(summary.blocked_direct, 1)
+        self.assertEqual(summary.conflict, 0)
+        self.assertEqual(summary.undetermined_direct, 1)
+        # Legacy P99 properties remain exact aliases for existing build/report callers.
+        self.assertEqual(summary.p99_available_direct, summary.available_direct)
+        self.assertEqual(summary.p99_blocked_direct, summary.blocked_direct)
+        self.assertEqual(summary.p99_conflict, summary.conflict)
+        self.assertEqual(summary.p99_undetermined_direct, summary.undetermined_direct)
         self.assertEqual(by_kind["npc"].with_expansion_evidence, 2)
         self.assertEqual(by_kind["spell"].with_expansion_evidence, 0)
         self.assertEqual(by_kind["item"].with_expansion_evidence, 0)
+        self.assertEqual(by_kind["zone"].profile_undetermined, 1)
         self.assertEqual(by_kind["zone"].p99_undetermined, 1)
         self.assertIn(("local_mirror", 3), summary.by_source_kind)
         self.assertIn(("mcp_local_details", 1), summary.by_rejected_source_kind)
@@ -109,6 +118,8 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         self.assertIn(("Antonica", 1), summary.by_unclassified_expansion)
 
         text = profile_lifecycle_audit_text(self.db)
+        self.assertIn("Gameplay profile: Classic / P99-style (Velious cap) [p99]", text)
+        self.assertIn("Expansion cap: Velious", text)
         self.assertIn("Entities with reviewed expansion/era evidence: 3", text)
         self.assertIn("Rejected lifecycle-looking candidates: 1 across 1 entities", text)
         self.assertIn(
@@ -122,23 +133,27 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         self.assertIn("field presence alone is not lifecycle evidence", text)
         self.assertIn("Locations, prose, names, dates, nested metadata, and fuzzy inference are excluded", text)
 
-    def test_cli_json_is_read_only_and_machine_readable(self):
+    def test_cli_json_is_read_only_machine_readable_and_backward_compatible(self):
         self._build_fixture()
         self.db.close()
         before = sha256(self.path.read_bytes()).hexdigest()
         tool = Path(__file__).resolve().parents[1] / "tools" / "audit_profile_lifecycle.py"
 
         completed = subprocess.run(
-            [sys.executable, str(tool), str(self.path), "--json"],
+            [sys.executable, str(tool), str(self.path), "--profile", "p99", "--json"],
             check=True,
             capture_output=True,
             text=True,
         )
         payload = json.loads(completed.stdout)
 
-        self.assertEqual(payload["entities_with_expansion_evidence"], 3)
-        self.assertEqual(payload["p99_blocked_direct"], 1)
-        self.assertEqual(payload["p99_undetermined_direct"], 1)
+        self.assertEqual(payload["profile_id"], "p99")
+        self.assertEqual(payload["expansion_cap"], "velious")
+        self.assertEqual(payload["available_direct"], 1)
+        self.assertEqual(payload["blocked_direct"], 1)
+        self.assertEqual(payload["undetermined_direct"], 1)
+        self.assertEqual(payload["p99_blocked_direct"], payload["blocked_direct"])
+        self.assertEqual(payload["p99_undetermined_direct"], payload["undetermined_direct"])
         self.assertEqual(payload["rejected_lifecycle_candidates"], 1)
         self.assertEqual(payload["by_rejected_source_kind"][0]["source_kind"], "mcp_local_details")
         self.assertEqual(payload["by_unclassified_expansion"][0]["expansion"], "Antonica")
@@ -147,6 +162,27 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         self.assertFalse(Path(str(self.path) + "-shm").exists())
 
         # tearDown tolerates an already closed handle.
+        self.db = type("ClosedDB", (), {"close": lambda self: None})()
+
+    def test_cli_rejects_non_expansion_capped_profile_read_only(self):
+        self._build_fixture()
+        self.db.close()
+        before = sha256(self.path.read_bytes()).hexdigest()
+        tool = Path(__file__).resolve().parents[1] / "tools" / "audit_profile_lifecycle.py"
+
+        completed = subprocess.run(
+            [sys.executable, str(tool), str(self.path), "--profile", "live", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("not an expansion-capped profile", completed.stderr)
+        self.assertEqual(sha256(self.path.read_bytes()).hexdigest(), before)
+        self.assertFalse(Path(str(self.path) + "-wal").exists())
+        self.assertFalse(Path(str(self.path) + "-shm").exists())
+
         self.db = type("ClosedDB", (), {"close": lambda self: None})()
 
 

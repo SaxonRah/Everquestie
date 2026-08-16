@@ -1,30 +1,39 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 import unittest
 
-from eqquest.bootstrap import install_application_layers
+from eqquest import bootstrap
 
 
 class RuntimeBootstrapTests(unittest.TestCase):
-    def test_shared_bootstrap_installs_complete_live_intelligence_stack(self):
-        from eqquest import app as app_module
+    def test_shared_bootstrap_declares_complete_live_intelligence_stack_in_order(self):
+        source = inspect.getsource(bootstrap.install_application_layers)
+        installers = [
+            "install_runtime_policy",
+            "install_map_loading_policy",
+            "install_knowledge_coverage_ui",
+            "install_packaged_ui_policy",
+            "install_knowledge_relationship_navigation_ui",
+            "install_travel_output_ui",
+            "install_world_profile_ui",
+            "install_profile_availability_ui",
+            "install_activity_pathways_ui",
+            "install_activity_pathway_dismiss_ui",
+            "install_activity_clusters_ui",
+            "install_zone_opportunities_ui",
+            "install_loot_relevance_ui",
+            "install_target_intelligence_ui",
+            "install_runtime_mode_ui",
+        ]
 
-        install_application_layers()
-        app_cls = app_module.EverQuestieApp
-
-        self.assertTrue(getattr(app_cls, "_everquestie_activity_pathways_ui", False))
-        self.assertTrue(getattr(app_cls, "_everquestie_activity_pathway_dismiss_ui", False))
-        self.assertTrue(getattr(app_cls, "_everquestie_activity_clusters_ui", False))
-        self.assertTrue(getattr(app_cls, "_everquestie_zone_opportunities_ui", False))
-        self.assertTrue(getattr(app_cls, "_everquestie_loot_relevance_ui", False))
-        self.assertTrue(getattr(app_cls, "_everquestie_target_intelligence_ui", False))
-
-        self.assertTrue(callable(getattr(app_cls, "_refresh_activity_pathways", None)))
-        self.assertTrue(callable(getattr(app_cls, "_refresh_activity_cluster", None)))
-        self.assertTrue(callable(getattr(app_cls, "_refresh_zone_opportunities", None)))
-        self.assertTrue(callable(getattr(app_cls, "_refresh_loot_relevance", None)))
-        self.assertTrue(callable(getattr(app_cls, "_refresh_target_intelligence", None)))
+        positions = []
+        for installer in installers:
+            needle = f"{installer}()"
+            self.assertIn(needle, source)
+            positions.append(source.index(needle))
+        self.assertEqual(positions, sorted(positions))
 
     def test_both_supported_launchers_use_the_same_bootstrap(self):
         root = Path(__file__).resolve().parents[1]

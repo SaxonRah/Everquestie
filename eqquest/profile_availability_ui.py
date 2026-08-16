@@ -6,8 +6,10 @@ _PROFILE_QUEST_ZONE_MARKER = "_everquestie_profile_quest_zone_policy"
 
 
 def install_profile_availability_ui() -> None:
-    """Project the global gameplay profile into Knowledge and tracked-quest guidance."""
+    """Project the global gameplay profile into player-facing knowledge surfaces."""
     from . import app as app_module
+    from . import mechanics_context_ui as mechanics_ui
+    from .mechanics_profile_availability import profiled_spell_stacking_text
     from .profile_availability import (
         ProfileAwareQuestEngine,
         profiled_entity_detail_text,
@@ -20,6 +22,11 @@ def install_profile_availability_ui() -> None:
     # engine consume the same selected gameplay profile as Travel.
     app_module.entity_detail_text = profiled_entity_detail_text
     app_module.QuestEngine = ProfileAwareQuestEngine
+
+    # MechanicsContextFrame resolves this module global when a spell is selected. Keep
+    # canonical stacking/mechanics unchanged and compose the same profile projection
+    # used by Knowledge underneath it. This is read-only and idempotent.
+    mechanics_ui.spell_stacking_text = profiled_spell_stacking_text
 
     # Tracking a quest may historically suggest its zone when the log has not supplied
     # one. Evaluate the exact zone the app is about to suggest, not only the quest's
@@ -57,8 +64,8 @@ def install_profile_availability_ui() -> None:
         current_app._suggest_zone_from_quest = _suggest_zone_from_quest
 
     # world_profile_ui owns the application-level selector. Decorate that one global
-    # change callback so the already-built Knowledge and tracked-quest surfaces update
-    # immediately when the player changes server context from any tab.
+    # change callback so already-built Knowledge, tracked-quest and Mechanics surfaces
+    # update immediately when the player changes server context from any tab.
     current_changed = getattr(current_app, "_world_profile_changed", None)
     if current_changed is None or getattr(current_changed, _PROFILE_AVAILABILITY_UI_MARKER, False):
         return
@@ -81,6 +88,17 @@ def install_profile_availability_ui() -> None:
         if callable(refresh_guidance):
             try:
                 refresh_guidance()
+            except Exception:
+                pass
+
+        # Mechanics spell selection is another read-only projection of the same entity.
+        # Re-render it so a profile switch cannot leave a stale Live/P99 availability
+        # block underneath otherwise-current stacking mechanics.
+        mechanics = getattr(self, "mechanics_view", None)
+        refresh_spell = getattr(mechanics, "_spell_selected", None)
+        if callable(refresh_spell):
+            try:
+                refresh_spell()
             except Exception:
                 pass
 

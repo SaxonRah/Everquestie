@@ -87,7 +87,7 @@ class TargetIntelligenceTests(unittest.TestCase):
         self.assertFalse(result.resolved)
         self.assertIsNone(result.entity_id)
 
-    def test_zone_and_player_target_clear_older_npc_context(self):
+    def test_zone_player_and_welcome_boundaries_clear_older_npc_context(self):
         self.db.upsert_entity(kind="npc", name="Orc Pawn", external_id="npc:3001")
         self._event("target_npc", target="Orc Pawn")
         self._event("zone")
@@ -101,6 +101,12 @@ class TargetIntelligenceTests(unittest.TestCase):
         player = current_target_intelligence(self.db)
         self.assertEqual(player.status, "cleared")
         self.assertEqual(player.observed_event_kind, "target_player")
+
+        self._event("target_npc", target="Orc Pawn")
+        self._event("welcome")
+        welcome = current_target_intelligence(self.db)
+        self.assertEqual(welcome.status, "cleared")
+        self.assertEqual(welcome.observed_event_kind, "welcome")
 
     def test_session_boundary_hides_stale_target(self):
         self.db.upsert_entity(kind="npc", name="Old Target", external_id="npc:4001")

@@ -116,12 +116,12 @@ def _expansion_text(data: dict[str, Any]) -> str:
     return ""
 
 
-def _p99_expansion_allowed(expansion: str) -> bool | None:
-    """Classify source expansion text against a Velious-era cap.
+def p99_expansion_allowed(expansion: str) -> bool | None:
+    """Classify explicit source expansion text against the P99 Velious-era cap.
 
-    None means the source string is empty/unknown. Any positive post-Velious expansion
-    statement is enough to keep that zone out of the P99-style route graph. This is a
-    compatibility profile, not a claim that the Live client is a byte-perfect P99 DB.
+    ``None`` means the source string is empty/unknown. The helper is intentionally
+    shared by zone routing and entity lifecycle projection so both surfaces apply the
+    same reviewed era boundary instead of growing separate expansion parsers.
     """
     text = normalize_name(expansion)
     if not text:
@@ -138,6 +138,12 @@ def _p99_expansion_allowed(expansion: str) -> bool | None:
     }:
         return True
     return False
+
+
+# Backward-compatible private spelling for older internal/tests while new entity
+# lifecycle code consumes the public shared helper above.
+def _p99_expansion_allowed(expansion: str) -> bool | None:
+    return p99_expansion_allowed(expansion)
 
 
 def zone_profile_decisions(db: Database, profile_id: str | None = None) -> dict[int, ZoneProfileDecision]:
@@ -223,7 +229,7 @@ def zone_profile_decisions(db: Database, profile_id: str | None = None) -> dict[
                     zone_expansions,
                 )
             else:
-                classified = [_p99_expansion_allowed(value) for value in zone_expansions]
+                classified = [p99_expansion_allowed(value) for value in zone_expansions]
                 known = [value for value in classified if value is not None]
                 if any(value is True for value in known):
                     decision = ZoneProfileDecision(

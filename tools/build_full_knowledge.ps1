@@ -3,23 +3,22 @@
 # ============================================================
 #
 # Builds a fresh EverQuestie knowledge database from:
-#
 #   - Installed EverQuest client
 #   - Local Allakhazam HTTrack mirror
-#   - everquest1-mcp full inventory/details
+#   - everquest1-mcp inventory + structured rich details
 #   - Good's maps
 #   - Brewall maps
 #   - Repository-approved travel supplements
 #
 # Then:
-#
 #   - Finalizes the immutable knowledge snapshot
+#   - Audits MCP inventory + rich details in working and snapshot DBs
 #   - Runs route acceptance
-#   - Requires all acceptance routes to pass
-#   - Writes route/frontier diagnostic reports
+#   - Runs the complete regression suite
+#   - Emits route/frontier reports and snapshot SHA-256
 #
-# Normal EverQuestie users do NOT need these source inputs.
-# They receive only the finalized knowledge snapshot.
+# Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
+# map packs, or a source checkout. Those are builder inputs only.
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -29,52 +28,30 @@ $ErrorActionPreference = "Stop"
 # ------------------------------------------------------------
 
 $ProjectRoot = "C:\Everquestie"
-
 Set-Location $ProjectRoot
-
 
 # ------------------------------------------------------------
 # Source paths
 # ------------------------------------------------------------
 
-# Installed EverQuest
 $EqInstall = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest"
-
-# Local HTTrack Allakhazam mirror
 $AllakhazamMirror = "C:\AllakhazamEverquest\EQ_Allakhazam_DB\everquest.allakhazam.com"
-
-# Builder-only everquest1-mcp checkout
 $McpRepo = "C:\Everquestie\third_party\everquest1-mcp"
-
-# Good's maps
 $GoodsMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Good's Maps"
-
-# Brewall maps
 $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Brewall"
 
-
 # ------------------------------------------------------------
-# Output paths
+# Outputs
 # ------------------------------------------------------------
 
 $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
-
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
-
 $RouteReport = Join-Path $ProjectRoot "build\route-acceptance.json"
-
 $FrontierReport = Join-Path $ProjectRoot "build\provider-travel-frontier.json"
 
-
 # ------------------------------------------------------------
-# Helper: newest file timestamp
+# Helpers
 # ------------------------------------------------------------
-#
-# Returns yyyy-MM-dd using the newest LastWriteTime found anywhere
-# below the supplied directory.
-#
-# This avoids manually maintaining source provenance dates.
-#
 
 function Get-NewestFileDate {
     param(
@@ -89,14 +66,9 @@ function Get-NewestFileDate {
         throw "$SourceName directory does not exist: $Path"
     }
 
-    $Newest = $null
-
-    Get-ChildItem $Path -File -Recurse -ErrorAction Stop | ForEach-Object {
-
-        if (($null -eq $Newest) -or ($_.LastWriteTime -gt $Newest.LastWriteTime)) {
-            $Newest = $_
-        }
-    }
+    $Newest = Get-ChildItem $Path -File -Recurse -ErrorAction Stop |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
 
     if ($null -eq $Newest) {
         throw "$SourceName directory contains no files: $Path"
@@ -105,9 +77,19 @@ function Get-NewestFileDate {
     return $Newest.LastWriteTime.ToString("yyyy-MM-dd")
 }
 
+function Assert-LastExitCode {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Stage
+    )
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Stage failed with exit code $LASTEXITCODE."
+    }
+}
 
 # ------------------------------------------------------------
-# Preflight paths
+# Preflight
 # ------------------------------------------------------------
 
 Write-Host
@@ -125,7 +107,6 @@ $RequiredDirectories = [ordered]@{
 }
 
 foreach ($Entry in $RequiredDirectories.GetEnumerator()) {
-
     if (-not (Test-Path $Entry.Value -PathType Container)) {
         throw "Required input missing: $($Entry.Key) -> $($Entry.Value)"
     }
@@ -134,21 +115,37 @@ foreach ($Entry in $RequiredDirectories.GetEnumerator()) {
     Write-Host ("    {0}" -f $Entry.Value)
 }
 
+$McpDist = Join-Path $McpRepo "dist\index.js"
+if (-not (Test-Path $McpDist -PathType Leaf)) {
+    throw "everquest1-mcp is present but not built: $McpDist"
+}
+
+$Node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $Node) {
+    throw "Node.js was not found on PATH. Node is required only for the builder MCP compile."
+}
+
+$DetailBridge = Join-Path $ProjectRoot "tools\mcp_local_detail_bridge.mjs"
+if (-not (Test-Path $DetailBridge -PathType Leaf)) {
+    throw "Required MCP rich-detail compiler is missing: $DetailBridge"
+}
+
+Write-Host "OK  Node.js"
+Write-Host ("    {0}" -f $Node.Source)
+Write-Host "OK  MCP rich-detail compiler"
+Write-Host ("    {0}" -f $DetailBridge)
 
 # ------------------------------------------------------------
-# Automatically derive all date/version labels
+# Automatic source/build versions
 # ------------------------------------------------------------
 
 Write-Host
 Write-Host "Determining source versions from local files..."
 Write-Host
 
-# Build/release content version uses today's date automatically.
 $BuildDate = Get-Date
-
 $Version = $BuildDate.ToString("yyyy.MM.dd") + "-full"
 
-# Source provenance dates use newest local file timestamps.
 $AllakhazamVersion = Get-NewestFileDate `
     -Path $AllakhazamMirror `
     -SourceName "Allakhazam mirror"
@@ -161,62 +158,23 @@ $BrewallVersion = Get-NewestFileDate `
     -Path $BrewallMaps `
     -SourceName "Brewall maps"
 
-
-# ------------------------------------------------------------
-# Display resolved build configuration
-# ------------------------------------------------------------
-
-Write-Host
 Write-Host "============================================"
 Write-Host " Resolved Build Configuration"
 Write-Host "============================================"
 Write-Host
-
-Write-Host "Build version:"
-Write-Host "  $Version"
-
-Write-Host
-Write-Host "Allakhazam version:"
-Write-Host "  $AllakhazamVersion"
-
-Write-Host
-Write-Host "Good's version:"
-Write-Host "  $GoodsVersion"
-
-Write-Host
-Write-Host "Brewall version:"
-Write-Host "  $BrewallVersion"
-
-Write-Host
-Write-Host "Working DB:"
-Write-Host "  $WorkingDb"
-
-Write-Host
-Write-Host "Final snapshot:"
-Write-Host "  $SnapshotDb"
-
+Write-Host "Build version:      $Version"
+Write-Host "Allakhazam version: $AllakhazamVersion"
+Write-Host "Good's version:     $GoodsVersion"
+Write-Host "Brewall version:    $BrewallVersion"
+Write-Host "Working DB:         $WorkingDb"
+Write-Host "Final snapshot:     $SnapshotDb"
 Write-Host
 
+New-Item -ItemType Directory -Force -Path (Split-Path $WorkingDb -Parent) | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $SnapshotDb -Parent) | Out-Null
 
 # ------------------------------------------------------------
-# Ensure output directories exist
-# ------------------------------------------------------------
-
-New-Item `
-    -ItemType Directory `
-    -Force `
-    -Path (Split-Path $WorkingDb -Parent) |
-    Out-Null
-
-New-Item `
-    -ItemType Directory `
-    -Force `
-    -Path (Split-Path $SnapshotDb -Parent) |
-    Out-Null
-
-
-# ------------------------------------------------------------
-# FULL KNOWLEDGE BUILD
+# Full knowledge build
 # ------------------------------------------------------------
 
 Write-Host
@@ -242,69 +200,34 @@ python .\tools\build_knowledge_db.py `
     --require-route-acceptance `
     --force
 
-if ($LASTEXITCODE -ne 0) {
-    throw "EverQuestie full knowledge build failed with exit code $LASTEXITCODE."
-}
-
+Assert-LastExitCode "EverQuestie full knowledge build"
 
 # ------------------------------------------------------------
-# Sanity check: MCP must actually be present
+# MCP completeness gate
+# ------------------------------------------------------------
+#
+# A FULL build must contain both the broad MCP identity inventory and the
+# structured rich-detail layer. Audit both the mutable builder DB and the
+# finalized artifact so finalization cannot accidentally strip the details.
 # ------------------------------------------------------------
 
 Write-Host
 Write-Host "============================================"
-Write-Host " Verifying MCP Knowledge"
+Write-Host " Verifying MCP Inventory + Rich Details"
 Write-Host "============================================"
 Write-Host
 
-$McpCheck = @'
-import sqlite3
-import sys
+Write-Host "Working database:"
+python .\tools\audit_mcp_knowledge.py $WorkingDb --require-details
+Assert-LastExitCode "Working-DB MCP knowledge audit"
 
-path = sys.argv[1]
-
-conn = sqlite3.connect(path)
-
-row = conn.execute("""
-    SELECT source_name, source_kind
-    FROM source_pages
-    WHERE source_kind='mcp_local_snapshot'
-    LIMIT 1
-""").fetchone()
-
-entities = conn.execute(
-    "SELECT COUNT(*) FROM entities"
-).fetchone()[0]
-
-external_ids = conn.execute(
-    "SELECT COUNT(*) FROM entity_external_ids"
-).fetchone()[0]
-
-sources = conn.execute(
-    "SELECT COUNT(*) FROM source_pages"
-).fetchone()[0]
-
-conn.close()
-
-if row is None:
-    print("ERROR: MCP source is missing from the working knowledge DB.")
-    sys.exit(2)
-
-print("MCP source:", row)
-print("Entities:", entities)
-print("External IDs:", external_ids)
-print("Source pages:", sources)
-'@
-
-$McpCheck | python - $WorkingDb
-
-if ($LASTEXITCODE -ne 0) {
-    throw "MCP verification failed. Refusing to accept incomplete full build."
-}
-
+Write-Host
+Write-Host "Finalized knowledge snapshot:"
+python .\tools\audit_mcp_knowledge.py $SnapshotDb --require-details
+Assert-LastExitCode "Snapshot MCP knowledge audit"
 
 # ------------------------------------------------------------
-# Final independent route acceptance check
+# Final independent route acceptance
 # ------------------------------------------------------------
 
 Write-Host
@@ -318,13 +241,10 @@ python .\tools\audit_route_acceptance.py `
     --full-paths `
     --fail-unreachable
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Finalized knowledge snapshot failed route acceptance."
-}
-
+Assert-LastExitCode "Finalized knowledge snapshot route acceptance"
 
 # ------------------------------------------------------------
-# Run complete regression suite
+# Complete regression suite
 # ------------------------------------------------------------
 
 Write-Host
@@ -337,10 +257,7 @@ python -m unittest discover `
     -s tests `
     -p "test_*.py"
 
-if ($LASTEXITCODE -ne 0) {
-    throw "EverQuestie regression suite failed."
-}
-
+Assert-LastExitCode "EverQuestie regression suite"
 
 # ------------------------------------------------------------
 # Final artifact information
@@ -349,67 +266,47 @@ if ($LASTEXITCODE -ne 0) {
 $WorkingInfo = Get-Item $WorkingDb
 $SnapshotInfo = Get-Item $SnapshotDb
 
-$WorkingMiB = [Math]::Round(
-    $WorkingInfo.Length / 1MB,
-    1
-)
-
-$SnapshotMiB = [Math]::Round(
-    $SnapshotInfo.Length / 1MB,
-    1
-)
-
-$SnapshotHash = (
-    Get-FileHash `
-        -Algorithm SHA256 `
-        $SnapshotDb
-).Hash.ToLowerInvariant()
-
+$WorkingMiB = [Math]::Round($WorkingInfo.Length / 1MB, 1)
+$SnapshotMiB = [Math]::Round($SnapshotInfo.Length / 1MB, 1)
+$SnapshotHash = (Get-FileHash -Algorithm SHA256 $SnapshotDb).Hash.ToLowerInvariant()
 
 Write-Host
 Write-Host "============================================"
 Write-Host " EVERQUESTIE FULL KNOWLEDGE BUILD COMPLETE"
 Write-Host "============================================"
 Write-Host
-
 Write-Host "Version:"
 Write-Host "  $Version"
-
 Write-Host
 Write-Host "Source versions:"
 Write-Host "  Allakhazam : $AllakhazamVersion"
 Write-Host "  Good's     : $GoodsVersion"
 Write-Host "  Brewall    : $BrewallVersion"
-
 Write-Host
 Write-Host "Working database:"
 Write-Host "  $WorkingDb"
 Write-Host "  $WorkingMiB MiB"
-
 Write-Host
 Write-Host "Immutable knowledge snapshot:"
 Write-Host "  $SnapshotDb"
 Write-Host "  $SnapshotMiB MiB"
-
 Write-Host
 Write-Host "Snapshot SHA-256:"
 Write-Host "  $SnapshotHash"
-
 Write-Host
 Write-Host "Reports:"
 Write-Host "  Route acceptance : $RouteReport"
 Write-Host "  Travel frontier  : $FrontierReport"
-
 Write-Host
 Write-Host "Build passed:"
-Write-Host "  EQ client       : included"
-Write-Host "  Allakhazam      : included"
-Write-Host "  MCP             : verified"
-Write-Host "  Good's maps     : included"
-Write-Host "  Brewall maps    : included"
-Write-Host "  Travel manifests: automatically compiled"
-Write-Host "  Route acceptance: passed"
-Write-Host "  Regression tests: passed"
-
+Write-Host "  EQ client        : included"
+Write-Host "  Allakhazam       : included"
+Write-Host "  MCP inventory    : verified"
+Write-Host "  MCP rich details : verified"
+Write-Host "  Good's maps      : included"
+Write-Host "  Brewall maps     : included"
+Write-Host "  Travel manifests : automatically compiled"
+Write-Host "  Route acceptance : passed"
+Write-Host "  Regression tests : passed"
 Write-Host
 Write-Host "============================================"

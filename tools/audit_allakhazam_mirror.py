@@ -49,6 +49,15 @@ def main(argv: list[str] | None = None) -> int:
             "written atomically and parent directories are created as needed."
         ),
     )
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help=(
+            "Return exit code 2 when HTTrack temporary/in-progress files remain. "
+            "Canonical full builds use this so an actively mirrored tree cannot be "
+            "mistaken for a completed source capture."
+        ),
+    )
     args = parser.parse_args(argv)
 
     report = audit_allakhazam_mirror(args.mirror)
@@ -60,6 +69,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(format_allakhazam_mirror_audit(report))
+
+    if args.require_complete and report.temporary_files:
+        print(
+            "Allakhazam mirror is still in progress: "
+            f"{report.temporary_files:,} temporary HTTrack file(s) remain. "
+            "Wait for the mirror to finish before running a canonical full build.",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 

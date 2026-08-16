@@ -4,7 +4,10 @@ import json
 
 from .knowledge_map_choices import KnowledgeMapChoice, KnowledgeRouteChoice
 from .loot_source_navigation import loot_source_navigation
-from .quest_objective_navigation import QuestObjectiveNavigationResult
+from .quest_objective_navigation import (
+    QuestObjectiveNavigationResult,
+    tracked_quest_objective_navigation,
+)
 from .zone_authority import resolve_authoritative_zone
 
 
@@ -175,3 +178,26 @@ def augment_objective_with_reviewed_item_sources(
         )
 
     return base
+
+
+def quest_objective_navigation_with_reviewed_sources(
+    db,
+    quest_id: int,
+    current_zone: str | None,
+    *,
+    step_order: int | None = None,
+) -> QuestObjectiveNavigationResult:
+    """Run the canonical objective projector and its reviewed item-source fallback.
+
+    This is the single public navigation entry point for UI surfaces that need identical
+    source semantics. The underlying quest-objective projection still owns canonical
+    step/zone/target logic; the reviewed-source layer may only improve an otherwise
+    coarse exact loot-item result.
+    """
+    base = tracked_quest_objective_navigation(
+        db,
+        int(quest_id),
+        current_zone,
+        step_order=step_order,
+    )
+    return augment_objective_with_reviewed_item_sources(db, base, current_zone)

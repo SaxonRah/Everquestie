@@ -83,9 +83,9 @@ class _QuestItemLink:
 class ActivityPathwayEngine:
     """Project live player observations into source-backed quest opportunities.
 
-    Direct pathways use exact structured quest-step targets. Graph pathways use only
-    reviewed normalized relationship semantics and require a unique canonical NPC/item
-    identity for the observed name. Names/prose are never fuzzily interpreted.
+    Direct pathways use source-backed exact structured quest-step targets. Graph pathways
+    use only reviewed normalized relationship semantics and require a unique canonical
+    NPC/item identity for the observed name. Names/prose are never fuzzily interpreted.
     Session counters come from writable player state; knowledge remains read-only and a
     suggestion never means a quest is owned.
     """
@@ -164,6 +164,7 @@ class ActivityPathwayEngine:
             FROM quest_steps qs
             JOIN entities e ON e.id=qs.quest_entity_id
             WHERE e.kind='quest'
+              AND qs.source_page_id IS NOT NULL
             ORDER BY qs.quest_entity_id, qs.step_order
             """
         ).fetchall()

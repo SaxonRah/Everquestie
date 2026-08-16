@@ -250,7 +250,7 @@ def activity_cluster_text(
         items = ", ".join(f"{row.label} ×{row.count:,}" for row in summary.top_items)
         parts.append(f"you looted: {items}")
 
-    prefix = f"{summary.zone} — " if summary.zone else ""
+    prefix = f"{summary.zone} — " if summary.zone else "Zone unknown — "
     line = prefix + "; ".join(parts)
     pathways = [" ".join(str(name).split()).strip() for name in pathway_names]
     pathways = [name for name in pathways if name]

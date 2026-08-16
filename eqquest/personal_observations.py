@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -13,6 +14,16 @@ class PersonalObservationCount:
 
 
 @dataclass(frozen=True, slots=True)
+class PersonalObservationZone:
+    zone: str
+    counts: tuple[PersonalObservationCount, ...]
+
+    @property
+    def total(self) -> int:
+        return sum(int(row.count) for row in self.counts)
+
+
+@dataclass(frozen=True, slots=True)
 class PersonalObservationSummary:
     entity_id: int
     entity_kind: str
@@ -22,10 +33,16 @@ class PersonalObservationSummary:
     last_observed: str
     direct_loot: tuple[PersonalObservationCount, ...] = ()
     direct_sources: tuple[PersonalObservationCount, ...] = ()
+    zone_context: tuple[PersonalObservationZone, ...] = ()
 
     @property
     def observed(self) -> bool:
-        return any(row.count > 0 for row in self.counts) or bool(self.direct_loot) or bool(self.direct_sources)
+        return (
+            any(row.count > 0 for row in self.counts)
+            or bool(self.direct_loot)
+            or bool(self.direct_sources)
+            or bool(self.zone_context)
+        )
 
 
 _EVENT_FIELDS: dict[str, tuple[tuple[str, str, str], ...]] = {
@@ -132,7 +149,15 @@ def _merge_time(first: str, last: str, candidate_first: str, candidate_last: str
     return first, last
 
 
-def _top_grouped(db, *, kind: str, match_field: str, labels: tuple[str, ...], group_field: str, limit: int = 8) -> tuple[PersonalObservationCount, ...]:
+def _top_grouped(
+    db,
+    *,
+    kind: str,
+    match_field: str,
+    labels: tuple[str, ...],
+    group_field: str,
+    limit: int = 8,
+) -> tuple[PersonalObservationCount, ...]:
     if not labels:
         return ()
     where, params = _where_labels(match_field, labels)
@@ -151,6 +176,123 @@ def _top_grouped(db, *, kind: str, match_field: str, labels: tuple[str, ...], gr
     return tuple(
         PersonalObservationCount(str(row["label"] or ""), int(row["n"]))
         for row in rows
+    )
+
+
+def _event_zone_counts(
+    db,
+    *,
+    kind: str,
+    match_field: str,
+    labels: tuple[str, ...],
+) -> tuple[PersonalObservationCount, ...]:
+    """Group matching events by the most recent trustworthy logged zone context.
+
+    A `welcome` event is a hard context reset. Events after a fresh Welcome line are not
+    associated with the previous session's final zone unless a later explicit `zone`
+    event establishes the new context. This deliberately leaves some history unlocated
+    rather than carrying a stale zone across sessions.
+    """
+    if not labels:
+        return ()
+    where, params = _where_labels(f"e.{match_field}", labels)
+    rows = db.conn.execute(
+        f"""
+        WITH matched AS (
+            SELECT
+                e.id,
+                (
+                    SELECT b.kind
+                    FROM observed_events b
+                    WHERE b.id < e.id AND b.kind IN ('zone','welcome')
+                    ORDER BY b.id DESC
+                    LIMIT 1
+                ) AS boundary_kind,
+                (
+                    SELECT b.zone
+                    FROM observed_events b
+                    WHERE b.id < e.id AND b.kind IN ('zone','welcome')
+                    ORDER BY b.id DESC
+                    LIMIT 1
+                ) AS context_zone
+            FROM observed_events e
+            WHERE e.kind=? AND {where}
+        )
+        SELECT context_zone AS label, COUNT(*) AS n
+        FROM matched
+        WHERE boundary_kind='zone'
+          AND context_zone IS NOT NULL
+          AND TRIM(context_zone)<>''
+        GROUP BY context_zone COLLATE NOCASE
+        ORDER BY n DESC, context_zone COLLATE NOCASE
+        """,
+        [kind, *params],
+    ).fetchall()
+    return tuple(
+        PersonalObservationCount(str(row["label"] or ""), int(row["n"]))
+        for row in rows
+    )
+
+
+def _zone_context(
+    db,
+    *,
+    kind: str,
+    labels: tuple[str, ...],
+    specs: tuple[tuple[str, str, str], ...],
+    limit: int = 8,
+) -> tuple[PersonalObservationZone, ...]:
+    # The zone entity's own `zone` event establishes context rather than occurring
+    # inside a previous zone, so a second geographic projection would be misleading.
+    if kind == "zone" or not labels:
+        return ()
+
+    by_zone: dict[str, tuple[str, Counter[str]]] = {}
+    action_order: list[str] = []
+    for event_kind, field, action_label in specs:
+        if action_label not in action_order:
+            action_order.append(action_label)
+        for row in _event_zone_counts(
+            db,
+            kind=event_kind,
+            match_field=field,
+            labels=labels,
+        ):
+            key = normalize_name(row.label)
+            if not key:
+                continue
+            zone_label, counter = by_zone.setdefault(key, (row.label, Counter()))
+            counter[action_label] += int(row.count)
+
+    if kind == "npc":
+        direct_label = "Explicit corpse loot"
+        action_order.append(direct_label)
+        for row in _event_zone_counts(
+            db,
+            kind="loot",
+            match_field="actor",
+            labels=labels,
+        ):
+            key = normalize_name(row.label)
+            if not key:
+                continue
+            zone_label, counter = by_zone.setdefault(key, (row.label, Counter()))
+            counter[direct_label] += int(row.count)
+
+    ordered = sorted(
+        by_zone.values(),
+        key=lambda pair: (-sum(pair[1].values()), pair[0].casefold()),
+    )[: max(0, int(limit))]
+    return tuple(
+        PersonalObservationZone(
+            zone=zone_label,
+            counts=tuple(
+                PersonalObservationCount(action, int(counter[action]))
+                for action in action_order
+                if int(counter.get(action, 0)) > 0
+            ),
+        )
+        for zone_label, counter in ordered
     )
 
 
@@ -213,6 +355,7 @@ def personal_observation_summary(db, entity_id: int) -> PersonalObservationSumma
         last_observed=last,
         direct_loot=direct_loot,
         direct_sources=direct_sources,
+        zone_context=_zone_context(db, kind=kind, labels=labels, specs=specs),
     )
 
 
@@ -244,6 +387,24 @@ def personal_observation_text(db, entity_id: int) -> str:
         lines.append(f"  First logged: {first}")
     if last:
         lines.append(f"  Last logged: {last}")
+
+    if summary.zone_context:
+        lines += [
+            "",
+            "  Logged zone context:",
+        ]
+        for zone in summary.zone_context:
+            actions = "; ".join(
+                f"{row.label} ×{row.count:,}" for row in zone.counts
+            )
+            lines.append(f"    • {zone.zone} — {actions}")
+        lines.append(
+            "  Zone context comes only from explicit logged zone entries; a new Welcome line "
+            "clears stale context until another zone entry is logged."
+        )
+        lines.append(
+            "  This is personal log geography, not a canonical spawn/drop/location claim."
+        )
 
     if summary.direct_loot:
         lines += [

@@ -10,6 +10,11 @@ from .target_intelligence import (
     target_intelligence_compact_text,
     target_intelligence_detail_text,
 )
+from .target_quest_connections import (
+    TargetQuestConnection,
+    target_quest_connection_text,
+    target_quest_connections,
+)
 
 
 _TARGET_INTELLIGENCE_MARKER = "_everquestie_target_intelligence_ui"
@@ -64,8 +69,57 @@ def install_target_intelligence_ui() -> None:
             command=self._target_intelligence_details,
         ).pack(side="left", padx=(6, 0))
 
+        ttk.Label(
+            panel,
+            text="Exact source-backed quest connections",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 2))
+
+        self.target_quest_tree = ttk.Treeview(
+            panel,
+            columns=("connection", "status"),
+            show="tree headings",
+            selectmode="browse",
+            height=3,
+        )
+        self.target_quest_tree.heading("#0", text="Quest")
+        self.target_quest_tree.heading("connection", text="Target connection")
+        self.target_quest_tree.heading("status", text="Quest status")
+        self.target_quest_tree.column("#0", width=360, minwidth=180, stretch=True)
+        self.target_quest_tree.column("connection", width=160, minwidth=120, stretch=False)
+        self.target_quest_tree.column("status", width=150, minwidth=110, stretch=False)
+        self.target_quest_tree.grid(row=2, column=0, sticky="ew")
+        quest_scroll = ttk.Scrollbar(
+            panel,
+            orient="vertical",
+            command=self.target_quest_tree.yview,
+        )
+        quest_scroll.grid(row=2, column=1, sticky="ns")
+        self.target_quest_tree.configure(yscrollcommand=quest_scroll.set)
+        self.target_quest_tree.bind(
+            "<Double-1>", lambda _event: self._target_intelligence_view_quest()
+        )
+
+        quest_buttons = ttk.Frame(panel)
+        quest_buttons.grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Button(
+            quest_buttons,
+            text="View quest",
+            command=self._target_intelligence_view_quest,
+        ).pack(side="left")
+        ttk.Button(
+            quest_buttons,
+            text="Track quest",
+            command=self._target_intelligence_track_quest,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            quest_buttons,
+            text="Why linked?",
+            command=self._target_intelligence_why_quest,
+        ).pack(side="left", padx=(6, 0))
+
         self._target_intelligence_value: TargetIntelligence | None = None
         self._target_intelligence_signature = None
+        self._target_quest_connections_by_item: dict[str, TargetQuestConnection] = {}
         self._refresh_target_intelligence(force=True)
 
     def _target_intelligence_view(self) -> None:
@@ -168,6 +222,51 @@ def install_target_intelligence_ui() -> None:
             target_intelligence_detail_text(value),
         )
 
+    def _selected_target_quest_connection(self) -> TargetQuestConnection | None:
+        tree = getattr(self, "target_quest_tree", None)
+        if tree is None:
+            return None
+        selected = tree.selection()
+        if not selected:
+            return None
+        return getattr(self, "_target_quest_connections_by_item", {}).get(selected[0])
+
+    def _target_intelligence_view_quest(self) -> None:
+        connection = _selected_target_quest_connection(self)
+        if connection is None:
+            self.status.set("Select an exact Target Intelligence quest connection first.")
+            return
+        opener = getattr(self, "_open_knowledge_entity_exact", None)
+        if callable(opener):
+            opener(int(connection.quest_id))
+        else:
+            self._map_entity_selected(int(connection.quest_id))
+
+    def _target_intelligence_track_quest(self) -> None:
+        connection = _selected_target_quest_connection(self)
+        if connection is None:
+            self.status.set("Select an exact Target Intelligence quest connection first.")
+            return
+        if connection.tracked:
+            self.status.set(f"{connection.quest_name} is already tracked.")
+            return
+        self._track_and_reconcile(
+            int(connection.quest_id),
+            announce="TARGET INTELLIGENCE | tracking selected quest",
+        )
+        self._refresh_guidance()
+        self._refresh_activity_pathways(force=True)
+
+    def _target_intelligence_why_quest(self) -> None:
+        connection = _selected_target_quest_connection(self)
+        if connection is None:
+            self.status.set("Select an exact Target Intelligence quest connection first.")
+            return
+        messagebox.showinfo(
+            "Target Intelligence — Quest Connection",
+            target_quest_connection_text(connection),
+        )
+
     def _refresh_target_intelligence(self, *, force: bool = False) -> None:
         status = getattr(self, "target_intelligence_status", None)
         if status is None:
@@ -178,6 +277,11 @@ def install_target_intelligence_ui() -> None:
             after_event_id=int(
                 getattr(self, "_activity_session_start_event_id", 0) or 0
             ),
+        )
+        quest_connections = (
+            target_quest_connections(self.db, int(value.entity_id))
+            if value.resolved and value.entity_id is not None
+            else ()
         )
         signature = (
             value.status,
@@ -198,9 +302,44 @@ def install_target_intelligence_ui() -> None:
             value.known_zones,
             value.personal_observed_slain,
             value.personal_targeted,
+            tuple(
+                (
+                    connection.quest_id,
+                    connection.relation,
+                    connection.tracked,
+                    connection.profile_status,
+                    connection.profile_reason,
+                    connection.evidence,
+                )
+                for connection in quest_connections
+            ),
         )
         if force or signature != getattr(self, "_target_intelligence_signature", None):
             status.set(target_intelligence_compact_text(value))
+
+            tree = getattr(self, "target_quest_tree", None)
+            if tree is not None:
+                previous = tree.selection()
+                previous_key = previous[0] if previous else None
+                tree.delete(*tree.get_children(""))
+                self._target_quest_connections_by_item = {}
+                for connection in quest_connections:
+                    iid = f"target-quest:{connection.quest_id}:{connection.relation}"
+                    state = "tracked" if connection.tracked else connection.profile_status
+                    if not state:
+                        state = "unknown"
+                    tree.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        text=connection.quest_name,
+                        values=(connection.relation_label, state),
+                    )
+                    self._target_quest_connections_by_item[iid] = connection
+                    if iid == previous_key:
+                        tree.selection_set(iid)
+                        tree.focus(iid)
+
             self._target_intelligence_signature = signature
         self._target_intelligence_value = value
 
@@ -215,6 +354,10 @@ def install_target_intelligence_ui() -> None:
     current_app._target_intelligence_view = _target_intelligence_view
     current_app._target_intelligence_navigate = _target_intelligence_navigate
     current_app._target_intelligence_details = _target_intelligence_details
+    current_app._selected_target_quest_connection = _selected_target_quest_connection
+    current_app._target_intelligence_view_quest = _target_intelligence_view_quest
+    current_app._target_intelligence_track_quest = _target_intelligence_track_quest
+    current_app._target_intelligence_why_quest = _target_intelligence_why_quest
     current_app._refresh_target_intelligence = _refresh_target_intelligence
     current_app._refresh_activity_pathways = _refresh_activity_pathways
     setattr(current_app, _TARGET_INTELLIGENCE_MARKER, True)

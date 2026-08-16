@@ -21,6 +21,17 @@ class ZoneOpportunityRuntimeTests(unittest.TestCase):
 
             builder = Database(working)
             try:
+                source = builder.upsert_source_page(
+                    url="https://everquest.allakhazam.com/db/quest.html?quest=opportunity-runtime",
+                    title="Opportunity Quest",
+                    entity_type="quest",
+                    sha256="sha-opportunity-runtime",
+                    plain_text="reviewed structured quest objective",
+                    raw_html="<html></html>",
+                    source_name="Allakhazam",
+                    source_kind="local_mirror",
+                    source_key="quest:opportunity-runtime",
+                )
                 builder.upsert_entity(
                     kind="zone",
                     name="Opportunity Zone",
@@ -38,6 +49,7 @@ class ZoneOpportunityRuntimeTests(unittest.TestCase):
                     "Defeat the opportunity target",
                     zone="Opportunity Zone",
                     match={"event": "kill", "npc": "Opportunity Target"},
+                    source_page_id=source,
                 )
             finally:
                 builder.close()

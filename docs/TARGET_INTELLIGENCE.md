@@ -44,9 +44,34 @@ Relationship counts are counts of distinct related canonical entities, not count
 
 Provider candidate/unresolved geography remains evidence in full Knowledge but is not promoted to a compact gameplay location.
 
+## Exact quest connections
+
+The generic compact summary can say that a target is related to quests, but player actions need exact quest identity. The Live panel therefore lists source-backed quest rows for the resolved canonical NPC when the relationship is one of these reviewed semantics:
+
+- `started_by` — **quest starter**;
+- `objective_turn_in_to` — **turn-in NPC**;
+- `objective_speak` — **speak objective**;
+- `objective_kill` — **kill objective**.
+
+Every row must retain a relationship `source_page_id`. Multiple provenance rows for the same canonical quest + relationship are collapsed into one player-facing semantic row rather than counted as multiple quests.
+
+Gameplay profile policy is applied to each connected quest:
+
+- definitively profile-blocked quests are omitted;
+- profile-unknown quests remain visible and labeled rather than guessed available;
+- tracked quests remain visible and sort first because they may be immediately relevant to work the player already chose.
+
+The target observation never tracks a quest automatically.
+
+Quest actions are explicit:
+
+- **View quest** — open the exact canonical quest ID in Knowledge;
+- **Track quest** — opt in to the existing tracking/reconciliation workflow;
+- **Why linked?** — show the exact relationship type, retained source-backed evidence, quest source, tracking state and profile decision.
+
 ## Live actions
 
-The **Target Intelligence** panel exposes explicit actions:
+The **Target Intelligence** panel exposes explicit target actions:
 
 - **View target** — open the exact canonical NPC in Knowledge;
 - **Navigate** — project that same exact NPC through the existing safe Knowledge location layer;
@@ -60,6 +85,8 @@ The **Target Intelligence** panel exposes explicit actions:
 - provider candidate/unresolved coordinates stay non-actionable;
 - Travel still owns route computation and route evidence.
 
+The quest relationship table and NPC navigation are deliberately separate claims: a quest edge can explain why the NPC matters, but it never supplies a coordinate.
+
 ## Refresh ownership
 
 Target Intelligence does not run its own permanent SQLite polling loop. The UI decorates the existing Activity Intelligence refresh and reuses `_activity_session_start_event_id`.
@@ -72,14 +99,15 @@ That means one activity cadence owns:
 - Recent Loot Relevance;
 - Target Intelligence.
 
-Starting monitoring resets the shared session boundary, and gameplay-profile refreshes flow through the same activity refresh chain.
+Starting monitoring resets the shared session boundary, and gameplay-profile refreshes flow through the same activity refresh chain. Quest tracking from the Target Intelligence panel also forces the normal activity refresh so tracked/profile labels cannot remain stale.
 
 ## Runtime split
 
 In packaged mode:
 
 - target/consider/zone/session observations live in writable `everquestie-user.sqlite3`;
-- NPC identity, relationships, locations and profile evidence come from immutable `everquestie-knowledge.sqlite3`;
+- NPC identity, quest relationships, locations and profile evidence come from immutable `everquestie-knowledge.sqlite3`;
+- only the explicit Track quest action writes player quest state;
 - no source access, knowledge write or schema change occurs at runtime.
 
-Breadth should increase automatically as completed builder sources add more exact NPC relationships and safe locations to future shipped snapshots.
+Breadth should increase automatically as completed builder sources add more exact NPC/quest relationships and safe locations to future shipped snapshots.

@@ -98,9 +98,12 @@ The cluster:
 - summarizes repeated mobs observed slain and items the player looted;
 - stays quiet for one-off activity;
 - names only already-surfaced, non-dismissed Potential Pathways whose exact evidence overlaps the cluster;
+- can show faction-standing messages that occurred in the same current-zone segment;
 - continues to describe generic kill lines as `observed slain`, not guaranteed personal kills.
 
-The initial noise threshold is deliberately conservative: at least three relevant kill/loot observations are required, plus either a repeated subject or at least five total relevant observations.
+The initial noise threshold is deliberately conservative: at least three relevant kill/loot observations are required, plus either a repeated subject or at least five total relevant observations. Faction messages do **not** contribute to this threshold or to pathway ranking.
+
+Faction context is deliberately temporal rather than causal. A line such as `Guards of Qeynos better ×2` means those faction messages were logged during the same current activity segment. EverQuestie does not infer that a displayed mob, item, quest, or other activity caused those faction changes unless a future reviewed source explicitly proves that relationship.
 
 ## Personal observations in Knowledge
 
@@ -115,7 +118,7 @@ In packaged mode:
 - observations are read from `everquestie-user.sqlite3`;
 - quest/entity/relationship knowledge is read from the immutable `everquestie-knowledge.sqlite3` snapshot;
 - session dismissal is in-memory UI state only;
-- the pathway, activity-cluster, recap, and personal-observation projections perform no knowledge writes.
+- the pathway, activity-cluster, recap, faction-context and personal-observation projections perform no knowledge writes.
 
 Regression coverage hashes finalized knowledge in packaged-mode activity/personal-history tests and verifies that no knowledge WAL/SHM sidecars are created.
 
@@ -123,10 +126,10 @@ Regression coverage hashes finalized knowledge in packaged-mode activity/persona
 
 Future slices can build on the same evidence model without changing its trust boundary:
 
-1. richer faction context, clearly labeled as contemporaneous observation unless canonical causality is known;
-2. optional persistent snooze/ignore state if session-only dismissal proves insufficient;
-3. longer-term encounter statistics that remain explicitly personal observations rather than canonical rates;
-4. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed;
-5. profile-aware nearby-opportunity summaries as richer quest/NPC/item coverage arrives from the completed mirrors.
+1. optional persistent snooze/ignore state if session-only dismissal proves insufficient;
+2. longer-term encounter statistics that remain explicitly personal observations rather than canonical rates;
+3. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed;
+4. profile-aware nearby-opportunity summaries as richer quest/NPC/item coverage arrives from the completed mirrors;
+5. source-backed faction causality only where a reviewed provider explicitly supplies it.
 
 The completed Allakhazam DB/wiki mirror should increase the breadth of these pathways substantially, but Activity Pathways itself remains source-agnostic: it consumes normalized EverQuestie knowledge rather than crawling or querying providers at runtime.

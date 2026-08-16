@@ -15,6 +15,7 @@ class RuntimeBootstrapTests(unittest.TestCase):
             "install_map_loading_policy",
             "install_knowledge_coverage_ui",
             "install_packaged_ui_policy",
+            "install_objective_reviewed_item_sources_ui",
             "install_knowledge_relationship_navigation_ui",
             "install_travel_output_ui",
             "install_world_profile_ui",

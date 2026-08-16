@@ -13,9 +13,10 @@
 # Then:
 #   - Finalizes the immutable knowledge snapshot
 #   - Audits MCP inventory + rich details in working and snapshot DBs
+#   - Audits direct gameplay-profile lifecycle coverage
 #   - Runs route acceptance
 #   - Runs the complete regression suite
-#   - Emits route/frontier reports and snapshot SHA-256
+#   - Emits route/frontier/lifecycle reports and snapshot SHA-256
 #
 # Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
 # map packs, or a source checkout. Those are builder inputs only.
@@ -48,6 +49,7 @@ $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
 $RouteReport = Join-Path $ProjectRoot "build\route-acceptance.json"
 $FrontierReport = Join-Path $ProjectRoot "build\provider-travel-frontier.json"
+$LifecycleReport = Join-Path $ProjectRoot "build\profile-lifecycle-audit.json"
 
 # ------------------------------------------------------------
 # Helpers
@@ -227,6 +229,31 @@ python .\tools\audit_mcp_knowledge.py $SnapshotDb --require-details
 Assert-LastExitCode "Snapshot MCP knowledge audit"
 
 # ------------------------------------------------------------
+# Profile lifecycle coverage
+# ------------------------------------------------------------
+#
+# This is a coverage artifact rather than a release-failure gate. The corpus can be
+# complete enough to ship while some entity kinds still have undetermined lifecycle.
+# Persist the JSON so each full build can measure whether source enrichment improved
+# direct zone/NPC/quest/item/etc. era evidence without guessing from locations/prose.
+# ------------------------------------------------------------
+
+Write-Host
+Write-Host "============================================"
+Write-Host " Profile Lifecycle Coverage"
+Write-Host "============================================"
+Write-Host
+
+python .\tools\audit_profile_lifecycle.py $SnapshotDb
+Assert-LastExitCode "Snapshot profile lifecycle audit"
+
+python .\tools\audit_profile_lifecycle.py `
+    $SnapshotDb `
+    --json `
+    --output $LifecycleReport
+Assert-LastExitCode "Profile lifecycle JSON report"
+
+# ------------------------------------------------------------
 # Final independent route acceptance
 # ------------------------------------------------------------
 
@@ -295,18 +322,20 @@ Write-Host "Snapshot SHA-256:"
 Write-Host "  $SnapshotHash"
 Write-Host
 Write-Host "Reports:"
-Write-Host "  Route acceptance : $RouteReport"
-Write-Host "  Travel frontier  : $FrontierReport"
+Write-Host "  Route acceptance  : $RouteReport"
+Write-Host "  Travel frontier   : $FrontierReport"
+Write-Host "  Profile lifecycle : $LifecycleReport"
 Write-Host
 Write-Host "Build passed:"
-Write-Host "  EQ client        : included"
-Write-Host "  Allakhazam       : included"
-Write-Host "  MCP inventory    : verified"
-Write-Host "  MCP rich details : verified"
-Write-Host "  Good's maps      : included"
-Write-Host "  Brewall maps     : included"
-Write-Host "  Travel manifests : automatically compiled"
-Write-Host "  Route acceptance : passed"
-Write-Host "  Regression tests : passed"
+Write-Host "  EQ client         : included"
+Write-Host "  Allakhazam        : included"
+Write-Host "  MCP inventory     : verified"
+Write-Host "  MCP rich details  : verified"
+Write-Host "  Profile lifecycle : audited"
+Write-Host "  Good's maps       : included"
+Write-Host "  Brewall maps      : included"
+Write-Host "  Travel manifests  : automatically compiled"
+Write-Host "  Route acceptance  : passed"
+Write-Host "  Regression tests  : passed"
 Write-Host
 Write-Host "============================================"

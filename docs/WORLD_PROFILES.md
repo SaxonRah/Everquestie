@@ -25,19 +25,53 @@ The current implementation is deliberately conservative about what the existing 
 - Classic, Kunark, and Velious expansion evidence is accepted;
 - a zone with no compiled era statement is not silently labelled Classic or post-Velious. It remains routeable with `era_unknown` status until stronger lifecycle evidence is compiled.
 
-This is therefore a **P99-style routing compatibility profile over the current EverQuestie corpus**, not a claim that a Live EverQuest installation contains a byte-perfect Project 1999 dataset.
+This is therefore a **P99-style compatibility profile over the current EverQuestie corpus**, not a claim that a Live EverQuest installation contains a byte-perfect Project 1999 dataset.
 
-A complete server-specific knowledge experience will eventually need the same profile boundary applied to additional facts such as quests, NPC availability, item eras, spells, class/level rules, tradeskills, and mechanics. The profile ID introduced here is intentionally global user state so those projections can reuse it rather than inventing independent server selectors.
+## Profile-aware Knowledge
+
+Knowledge remains a view of the complete shipped corpus. Selecting P99-style does **not** hide or delete Live-era records.
+
+The selected entity detail now includes a `Gameplay profile availability` section. The projection uses only direct canonical world evidence that is already safe elsewhere in EverQuestie:
+
+- the entity's canonical zone field when it resolves authoritatively;
+- canonicalized location evidence;
+- explicit normalized zone relationships such as `occurs_in`, `starts_in`, and `found_in`;
+- structured quest-step zone fields for quests.
+
+Zone identities are definitive because the world-profile layer already owns zone lifecycle policy.
+
+For quests and NPCs, if every directly evidenced canonical zone is blocked by the selected profile, Knowledge may report `OUTSIDE PROFILE`.
+
+For portable entity kinds such as items and spells, an out-of-profile known location is **not** enough to declare the entity unavailable. The corpus may be missing another acquisition, vendor, drop, recipe, or era-specific source. Those cases remain `UNDETERMINED` until stronger lifecycle/expansion evidence is compiled.
+
+If direct evidence spans both allowed and blocked zones, Knowledge reports `MIXED / UNDETERMINED` rather than guessing an era.
+
+This distinction is intentional: profile compatibility is a sourced projection, not a blacklist.
+
+## Profile-aware tracked quest guidance
+
+Quest tracking and observed progress remain writable player state and are never discarded merely because the selected profile disagrees with the quest's known world evidence.
+
+When an active structured quest step points at a canonical zone that is blocked by the selected profile, Live guidance:
+
+- retains the objective text and progress;
+- does not emit the old `Travel from ... to ...` recommendation for that blocked destination;
+- explains that the destination is outside the selected gameplay profile;
+- continues to process matching observed log events.
+
+This matters for custom servers, stale profile choices, and real-world server differences: the log is evidence that the player did something, so EverQuestie preserves it instead of rewriting history to satisfy a profile setting.
+
+A reviewed classic destination such as `North Freeport` remains usable under the P99-style profile even though the same identity is excluded from Live.
 
 ## Unrestricted / custom profile
 
-`Unrestricted / custom` traverses every confirmed canonical travel edge in the finalized knowledge graph regardless of era.
+`Unrestricted / custom` traverses every confirmed canonical travel edge in the finalized knowledge graph regardless of era and treats compiled entities as available for compatibility projection.
 
 It is useful for:
 
 - topology diagnostics;
 - custom/private server configurations that intentionally mix eras;
-- inspecting whether a route failure in another profile is caused by profile availability rather than missing compiled evidence.
+- inspecting whether a route or entity warning in another profile is caused by profile availability rather than missing compiled evidence.
 
 Unrestricted mode still does **not** invent reverse edges, fuzzy zone identities, or unconfirmed travel.
 
@@ -71,6 +105,8 @@ Travel exposes a `Gameplay profile` selector. Changing it:
 - persists the new user preference;
 - invalidates any cached route;
 - requires route recalculation before `Map next hop` can continue;
+- immediately re-renders the currently selected Knowledge entity when possible;
+- immediately refreshes tracked-quest guidance;
 - leaves the knowledge snapshot unchanged.
 
 Route output is explicitly labelled with the profile. The same Travel owner is used by direct Travel queries, Knowledge → Travel handoffs, and Live tracked-objective navigation.
@@ -84,4 +120,10 @@ The initial reviewed override set is intentionally small:
 - `Guild Lobby` — excluded from Classic/P99-style;
 - `Guild Hall` — excluded from Classic/P99-style.
 
-These overrides are runtime availability statements, not entity aliases or deletions. Expand them only with reviewed lifecycle/server evidence; do not add ad-hoc blacklist entries merely to make a route look plausible.
+These overrides are runtime availability statements, not entity aliases or deletions. Expand them only with reviewed lifecycle/server evidence; do not add ad-hoc blacklist entries merely to make a route or entity look plausible.
+
+## Next lifecycle work
+
+The same global profile ID can now be reused by deeper server-aware projections. The next high-value evidence is explicit lifecycle/expansion availability for quests, NPCs, items, spells, tradeskills, class/level rules, and mechanics.
+
+Until those facts are compiled, EverQuestie should prefer `UNDETERMINED` over making a confident server-era claim from incomplete evidence.

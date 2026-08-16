@@ -20,10 +20,22 @@ class FullBuildLifecycleReportTests(unittest.TestCase):
 
             db = Database(database)
             try:
+                source = db.upsert_source_page(
+                    url="test://allakhazam/lifecycle-fixture",
+                    title="Lifecycle Fixture",
+                    entity_type="npc",
+                    sha256="lifecycle-fixture",
+                    plain_text="",
+                    raw_html="",
+                    source_name="Allakhazam",
+                    source_kind="local_mirror",
+                    source_key="npc:lifecycle-fixture",
+                )
                 db.upsert_entity(
                     kind="npc",
                     name="Lifecycle Fixture",
                     external_id="npc:lifecycle-fixture",
+                    source_page_id=source,
                     data={"expansion": "Original"},
                 )
             finally:
@@ -50,6 +62,7 @@ class FullBuildLifecycleReportTests(unittest.TestCase):
             self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
             payload = json.loads(raw.decode("utf-8"))
             self.assertEqual(payload["entities_with_expansion_evidence"], 1)
+            self.assertEqual(payload["rejected_lifecycle_candidates"], 0)
             self.assertEqual(payload["p99_available_direct"], 1)
             self.assertEqual(sha256(database.read_bytes()).hexdigest(), before)
             self.assertFalse(Path(str(database) + "-wal").exists())

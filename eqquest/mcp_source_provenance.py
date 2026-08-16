@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
-import re
 import sqlite3
 import subprocess
 from typing import Any
 
-
-MCP_RELATIVE_PATH = Path("third_party") / "everquest1-mcp"
-MCP_LOCK_RELATIVE_PATH = Path("third_party") / "everquest1-mcp.lock.json"
-MCP_EXPECTED_REMOTE = "https://github.com/ArtSabintsev/everquest1-mcp.git"
+from .mcp_source_lock import (
+    MCP_EXPECTED_REMOTE,
+    MCP_RELATIVE_PATH,
+    inspect_local_mcp_source_lock,
+    normalize_git_remote,
+    read_mcp_source_lock,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,67 +103,10 @@ def _read_snapshot_metadata(snapshot: Path) -> tuple[str, str, str, str]:
         conn.close()
 
 
-def _package_version(mcp_path: Path) -> str:
-    package = mcp_path / "package.json"
-    if not package.is_file():
-        return ""
-    try:
-        payload = json.loads(package.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    return str(payload.get("version") or "").strip()
-
-
-def _normalize_remote(value: str) -> str:
-    value = str(value or "").strip()
-    if value.endswith("/"):
-        value = value[:-1]
-    if value.endswith(".git"):
-        value = value[:-4]
-    return value.casefold()
-
-
 def _compare(left: str, right: str) -> bool | None:
     if not left or not right:
         return None
     return left.casefold() == right.casefold()
-
-
-def _read_repository_lock(
-    project: Path,
-) -> tuple[str, bool, bool, str, str, str, str]:
-    lock_path = (project / MCP_LOCK_RELATIVE_PATH).resolve()
-    if not lock_path.is_file():
-        return str(lock_path), False, False, "lock file is missing", "", "", ""
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return str(lock_path), True, False, f"invalid JSON: {exc}", "", "", ""
-    if not isinstance(payload, dict):
-        return str(lock_path), True, False, "lock root must be a JSON object", "", "", ""
-
-    schema_version = payload.get("schema_version")
-    repository = str(payload.get("repository") or "").strip()
-    commit = str(payload.get("commit") or "").strip().casefold()
-    package_version = str(payload.get("package_version") or "").strip()
-    errors: list[str] = []
-    if schema_version != 1:
-        errors.append("schema_version must be 1")
-    if not repository:
-        errors.append("repository is missing")
-    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-        errors.append("commit must be a full 40-character Git SHA")
-    if not package_version:
-        errors.append("package_version is missing")
-    return (
-        str(lock_path),
-        True,
-        not errors,
-        "; ".join(errors),
-        commit,
-        repository,
-        package_version,
-    )
 
 
 def audit_mcp_source_provenance(
@@ -173,24 +117,13 @@ def audit_mcp_source_provenance(
 ) -> MCPSourceProvenance:
     snapshot = Path(snapshot_path).expanduser().resolve()
     project = Path(project_root).expanduser().resolve()
-    local = (
-        Path(mcp_path).expanduser().resolve()
-        if mcp_path is not None
-        else (project / MCP_RELATIVE_PATH).resolve()
-    )
-
     snapshot_commit, snapshot_version, inventory_version, detail_version = (
         _read_snapshot_metadata(snapshot)
     )
-    (
-        lock_path,
-        lock_present,
-        lock_valid,
-        lock_error,
-        lock_commit,
-        lock_remote,
-        lock_version,
-    ) = _read_repository_lock(project)
+
+    lock_read = read_mcp_source_lock(project)
+    lock = lock_read.lock
+    local_status = inspect_local_mcp_source_lock(project, mcp_path=mcp_path)
 
     parent_is_git = bool(_run_git(["rev-parse", "--is-inside-work-tree"], project))
     gitlink_commit = ""
@@ -205,55 +138,48 @@ def audit_mcp_source_provenance(
                 gitlink_present = True
                 gitlink_commit = prefix[2]
 
-    local_present = (local / "package.json").is_file()
-    local_is_git = False
-    local_commit = ""
-    local_remote = ""
-    if local_present:
-        local_is_git = bool(_run_git(["rev-parse", "--is-inside-work-tree"], local))
-        if local_is_git:
-            local_commit = _run_git(["rev-parse", "HEAD"], local)
-            local_remote = _run_git(["remote", "get-url", "origin"], local)
-    local_version = _package_version(local) if local_present else ""
+    lock_commit = lock.commit if lock is not None else ""
+    lock_remote = lock.repository if lock is not None else ""
+    lock_version = lock.package_version if lock is not None else ""
+    snapshot_matches_lock = _compare(snapshot_commit, lock_commit)
+    local_matches_lock = local_status.commit_matches_lock
+    local_version_matches_lock = local_status.package_version_matches_lock
+    lock_remote_approved = (
+        normalize_git_remote(lock_remote) == normalize_git_remote(MCP_EXPECTED_REMOTE)
+        if lock_remote
+        else None
+    )
 
+    local_commit = local_status.commit
+    local_remote = local_status.remote
+    local_version = local_status.package_version
     local_matches_snapshot = _compare(local_commit, snapshot_commit)
     gitlink_matches_snapshot = _compare(gitlink_commit, snapshot_commit)
     local_matches_gitlink = _compare(local_commit, gitlink_commit)
     remote_match = (
-        _normalize_remote(local_remote) == _normalize_remote(MCP_EXPECTED_REMOTE)
+        normalize_git_remote(local_remote) == normalize_git_remote(MCP_EXPECTED_REMOTE)
         if local_remote
         else None
     )
-    snapshot_matches_lock = _compare(snapshot_commit, lock_commit) if lock_valid else None
-    local_matches_lock = _compare(local_commit, lock_commit) if lock_valid else None
-    local_version_matches_lock = _compare(local_version, lock_version) if lock_valid else None
-    lock_remote_approved = (
-        _normalize_remote(lock_remote) == _normalize_remote(MCP_EXPECTED_REMOTE)
-        if lock_valid and lock_remote
-        else None
-    )
 
-    if lock_present and not lock_valid:
+    if lock_read.present and not lock_read.valid:
         lock_state = "repository_lock_invalid"
-    elif lock_valid and lock_remote_approved is False:
-        lock_state = "repository_lock_remote_unapproved"
-    elif lock_valid and snapshot_matches_lock is False:
+    elif lock is not None and snapshot_matches_lock is False:
         lock_state = "repository_lock_differs_from_snapshot"
-    elif lock_valid and local_matches_lock is False:
+    elif lock is not None and local_matches_lock is False:
         lock_state = "local_checkout_differs_from_repository_lock"
-    elif lock_valid and local_version_matches_lock is False:
+    elif lock is not None and local_version_matches_lock is False:
         lock_state = "local_version_differs_from_repository_lock"
     elif (
-        lock_valid
+        lock is not None
         and snapshot_matches_lock is True
-        and local_matches_lock is True
-        and local_version_matches_lock is True
+        and local_status.ok
         and remote_match is True
     ):
         lock_state = "reproducibly_locked"
-    elif lock_valid and snapshot_matches_lock is True:
+    elif lock is not None and snapshot_matches_lock is True:
         lock_state = "snapshot_matches_repository_lock_local_unavailable"
-    elif lock_valid:
+    elif lock is not None:
         lock_state = "repository_lock_present_snapshot_unknown"
     elif gitlink_present and snapshot_commit and gitlink_matches_snapshot is True:
         lock_state = "snapshot_matches_parent_gitlink"
@@ -271,10 +197,10 @@ def audit_mcp_source_provenance(
         snapshot_inventory_source_version=inventory_version,
         snapshot_detail_source_version=detail_version,
         project_root=str(project),
-        repository_lock_path=lock_path,
-        repository_lock_present=lock_present,
-        repository_lock_valid=lock_valid,
-        repository_lock_error=lock_error,
+        repository_lock_path=str(lock_read.path),
+        repository_lock_present=lock_read.present,
+        repository_lock_valid=lock_read.valid,
+        repository_lock_error=lock_read.error,
         repository_lock_commit=lock_commit,
         repository_lock_remote=lock_remote,
         repository_lock_version=lock_version,
@@ -285,9 +211,9 @@ def audit_mcp_source_provenance(
         parent_is_git_checkout=parent_is_git,
         parent_gitlink_present=gitlink_present,
         parent_gitlink_commit=gitlink_commit,
-        local_mcp_path=str(local),
-        local_mcp_present=local_present,
-        local_mcp_is_git_checkout=local_is_git,
+        local_mcp_path=str(local_status.mcp_path),
+        local_mcp_present=local_status.checkout_present,
+        local_mcp_is_git_checkout=local_status.git_checkout,
         local_mcp_commit=local_commit,
         local_mcp_remote=local_remote,
         local_mcp_version=local_version,

@@ -110,14 +110,15 @@ class MCPRichDetailTests(unittest.TestCase):
         fake = _FakeDetailProcess(self.fake_messages())
         status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
 
-        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+        with patch("eqquest.sources.mcp_detail_records.mcp_status", return_value=status), patch(
             "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
         ):
             compiler.import_details(capture, result)
 
         entity = self.db.entity_by_namespaced_external_id("eqmcp:spells", "42")
         self.assertIsNotNone(entity)
-        detail = self.db.entity_detail(int(entity["id"]))
+        entity_id = int(entity["id"])
+        detail = self.db.entity_detail(entity_id)
         self.assertIsNotNone(detail)
         self.assertEqual("mcp-json", detail["detail_format"])
         payload = json.loads(detail["detail_json"])
@@ -128,11 +129,100 @@ class MCPRichDetailTests(unittest.TestCase):
         self.assertEqual(1, result.detail_imported_by_kind["spell"])
         self.assertEqual("2026-08-15T18:00:00Z", self.db.get_meta("eq_mcp_detail_last_compile"))
 
+        raw = self.db.conn.execute(
+            "SELECT * FROM mcp_detail_records WHERE system='spells' AND external_id='42'"
+        ).fetchone()
+        self.assertIsNotNone(raw)
+        self.assertEqual(entity_id, int(raw["entity_id"]))
+        self.assertEqual(125, json.loads(raw["detail_json"])["mana"])
+
         source = self.db.conn.execute(
             "SELECT * FROM source_pages WHERE id=?", (result.detail_source_page_id,)
         ).fetchone()
         self.assertEqual("mcp_local_details", source["source_kind"])
         self.assertEqual("structured-local-details-v1", source["source_key"])
+
+    def test_many_zone_source_ids_survive_one_canonical_entity(self) -> None:
+        snapshot = {
+            "timestamp": "2026-08-15T18:00:00Z",
+            "eqPath": str(self.eq),
+            "systems": {
+                "zones": {
+                    "count": 2,
+                    "names": {"1": "Shared Zone", "2": "Shared Zone"},
+                }
+            },
+        }
+        capture = MCPSnapshotCapture(
+            eq_path=self.eq,
+            mcp_path=self.mcp,
+            snapshot=snapshot,
+            raw_json=json.dumps(snapshot, sort_keys=True),
+            mcp_version="1.2.1",
+            mcp_commit="abcdef0123456789",
+        )
+        compiler = MCPLocalSnapshotCompiler(self.db)
+        result = compiler.import_capture(capture)
+        fake = _FakeDetailProcess(
+            [
+                {"type": "system_start", "system": "zones", "kind": "zone", "total": 2},
+                {
+                    "type": "record",
+                    "system": "zones",
+                    "kind": "zone",
+                    "external_id": "1",
+                    "name": "Shared Zone",
+                    "getter": "getLocalZone",
+                    "record": {"id": "1", "name": "Shared Zone", "shortName": "shared_a"},
+                },
+                {
+                    "type": "record",
+                    "system": "zones",
+                    "kind": "zone",
+                    "external_id": "2",
+                    "name": "Shared Zone",
+                    "getter": "getLocalZone",
+                    "record": {"id": "2", "name": "Shared Zone", "shortName": "shared_b"},
+                },
+                {"type": "system_done", "system": "zones", "kind": "zone", "imported": 2, "errors": 0, "total": 2},
+            ]
+        )
+        status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
+
+        with patch("eqquest.sources.mcp_detail_records.mcp_status", return_value=status), patch(
+            "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
+        ):
+            compiler.import_details(capture, result)
+
+        first = self.db.entity_by_namespaced_external_id("eqmcp:zones", "1")
+        second = self.db.entity_by_namespaced_external_id("eqmcp:zones", "2")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(int(first["id"]), int(second["id"]))
+        entity_id = int(first["id"])
+
+        self.assertEqual(2, result.detail_imported_by_kind["zone"])
+        self.assertEqual(
+            2,
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM mcp_detail_records WHERE kind='zone'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            1,
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM entity_details WHERE entity_id=?",
+                (entity_id,),
+            ).fetchone()[0],
+        )
+        external_ids = {
+            str(row["external_id"])
+            for row in self.db.conn.execute(
+                "SELECT external_id FROM mcp_detail_records WHERE entity_id=? ORDER BY external_id",
+                (entity_id,),
+            ).fetchall()
+        }
+        self.assertEqual({"1", "2"}, external_ids)
 
     def test_identical_detail_snapshot_reuses_compiled_rows(self) -> None:
         capture = self.capture()
@@ -140,7 +230,7 @@ class MCPRichDetailTests(unittest.TestCase):
         first = compiler.import_capture(capture)
         fake = _FakeDetailProcess(self.fake_messages())
         status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
-        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+        with patch("eqquest.sources.mcp_detail_records.mcp_status", return_value=status), patch(
             "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
         ):
             compiler.import_details(capture, first)
@@ -181,7 +271,7 @@ class MCPRichDetailTests(unittest.TestCase):
         )
         status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
 
-        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+        with patch("eqquest.sources.mcp_detail_records.mcp_status", return_value=status), patch(
             "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
         ):
             with self.assertRaisesRegex(MCPError, "zero records"):
@@ -202,7 +292,7 @@ class MCPRichDetailTests(unittest.TestCase):
         )
         status = SimpleNamespace(ready=True, node="node", summary=lambda: "ready")
 
-        with patch("eqquest.sources.mcp_snapshot.mcp_status", return_value=status), patch(
+        with patch("eqquest.sources.mcp_detail_records.mcp_status", return_value=status), patch(
             "eqquest.sources.mcp_snapshot.subprocess.Popen", return_value=fake
         ):
             with self.assertRaisesRegex(MCPError, "missing required rich-detail getter"):

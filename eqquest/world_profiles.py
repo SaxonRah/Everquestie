@@ -183,12 +183,18 @@ def set_active_world_profile(db: Database, profile_id: str) -> WorldProfile:
 
 
 def reviewed_expansion_key(expansion: str) -> str | None:
-    """Return one reviewed chronological expansion key for exact source text."""
-    text = normalize_name(expansion)
+    """Return one reviewed chronological expansion key for exact source text or key."""
+    raw = str(expansion or "").strip().casefold()
+    if not raw:
+        return None
+    # Profile definitions use stable canonical keys such as ``planes_of_power``. Check
+    # that namespace before normalizing human source/display text so underscores cannot
+    # be erased or reinterpreted by the general entity-name normalizer.
+    if raw in _EXPANSION_ORDER:
+        return raw
+    text = normalize_name(raw)
     if not text or text in _EXPANSION_UNKNOWN_MARKERS:
         return None
-    if text in _EXPANSION_ORDER:
-        return text
     return _EXPANSION_KEY_BY_LABEL.get(text)
 
 
@@ -228,12 +234,15 @@ def _profile_cap_label(profile: WorldProfile) -> str:
     if profile.expansion_cap_label:
         return profile.expansion_cap_label
     if profile.expansion_cap:
-        return _EXPANSION_DISPLAY.get(profile.expansion_cap, profile.expansion_cap)
+        key = reviewed_expansion_key(profile.expansion_cap)
+        if key is not None:
+            return _EXPANSION_DISPLAY.get(key, profile.expansion_cap)
+        return profile.expansion_cap
     return "configured expansion cap"
 
 
 def _post_cap_status(profile: WorldProfile, *, override: bool = False) -> str:
-    cap = str(profile.expansion_cap or "cap").strip().casefold().replace("-", "_").replace(" ", "_")
+    cap = reviewed_expansion_key(profile.expansion_cap or "") or str(profile.expansion_cap or "cap").strip().casefold().replace("-", "_").replace(" ", "_")
     suffix = "_override" if override else ""
     return f"post_{cap}{suffix}"
 
@@ -334,7 +343,7 @@ def zone_profile_decisions(
                     False,
                     profile.excluded_zone_status,
                     profile.excluded_zone_reason
-                    or "zone is excluded from this Live availability profile",
+                    or "historical/retired identity is not active in the default Live profile",
                     zone_expansions,
                 )
             else:

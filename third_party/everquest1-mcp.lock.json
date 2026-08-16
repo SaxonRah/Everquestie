@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "everquest1-mcp",
+  "repository": "https://github.com/ArtSabintsev/everquest1-mcp.git",
+  "commit": "bd8a423a255d866b23df6cecaa1d79bc67232154",
+  "package_version": "1.2.1",
+  "provenance": "Exact everquest1-mcp producer recorded by the known-good EverQuestie rich knowledge snapshot."
+}

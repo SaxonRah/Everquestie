@@ -11,7 +11,7 @@ Normal play, log parsing, maps, Knowledge, local Search, quest progress, and the
 Preferences are intentionally field-specific rather than "one source wins everything":
 
 - **EverQuest client files:** preferred for client IDs, spell mechanics, local progression tables, zone identity, and other mechanics physically shipped with the selected client.
-- **Allakhazam local mirror:** quest walkthroughs/objectives, NPC/item/zone relationships, community locations and other world/quest evidence after the user explicitly imports a completed local mirror.
+- **Allakhazam local mirror:** quest walkthroughs/objectives, NPC/item/zone relationships, community locations, and reviewed structured lifecycle fields after the builder explicitly imports a completed local mirror.
 - **Good/Brewall/EQ map files:** geometry, labels and map POIs for the selected map pack.
 - **Explicit online search:** temporary lookup results. They are not silently inserted into SQLite.
 
@@ -19,11 +19,20 @@ Preferences are intentionally field-specific rather than "one source wins everyt
 
 A field name such as `expansion` or `era` is not automatically gameplay-profile evidence. Direct lifecycle use is approved at the combination of **source + entity kind + field + parser semantics**.
 
-Current reviewed direct lifecycle fields are the explicit structured Allakhazam local-mirror values normalized by EverQuestie: NPC/zone/item `Expansion` and quest `Era`. They are accepted because the parser reads a labeled source field rather than inferring an era from names, dates, levels, locations, or prose.
+Current reviewed direct lifecycle fields are explicit structured Allakhazam local-mirror values:
+
+- NPC and zone `Expansion`;
+- item metadata `Expansion`;
+- quest `Era`;
+- spell `Quick Facts → Expansion`.
+
+The first three continue to live on their source-owned normalized entities. Spell lifecycle uses the source-granular `entity_lifecycle_records` surface because the canonical spell identity/detail is owned by client/MCP data. This prevents one Allakhazam lifecycle fact from replacing the spell's canonical primary source or rich mechanics detail.
+
+Allakhazam spell lifecycle attaches to a canonical `eqclient:spell` only when **both** the numeric spell ID and normalized spell name match exactly. A matching number alone, name-only match, fuzzy match, substring, or level-derived approximation is never sufficient. If canonical identity is not available yet, the source record remains unattached and can be reconciled later; provider order therefore does not decide whether the source fact is preserved.
 
 Canonical rich-detail JSON is fail-closed for lifecycle use until a source/field combination is separately reviewed. This is particularly important for `everquest1-mcp`: the repository-locked 1.2.1 local spell parser does not supply a direct spell expansion field, and its expansion grouping helper explicitly approximates eras from class minimum-level ranges. Those groups are useful reference output but are not direct spell lifecycle evidence.
 
-The lifecycle audit reports rejected lifecycle-looking candidates separately. This makes source drift visible without allowing an upstream schema change to silently alter Live/P99/TLP behavior.
+The lifecycle audit reports rejected lifecycle-looking candidates separately and resolves reviewed source-granular spell records only through the same exact identity rule used at runtime. This makes source drift visible without allowing an upstream schema change to silently alter Live/P99/TLP behavior.
 
 ## Conflicts
 
@@ -33,4 +42,4 @@ Only conflicts between lifecycle statements that individually pass the reviewed 
 
 ## Mirror safety
 
-Mirror import is manual. EverQuestie does not watch, scan, index, or modify configured HTTrack mirror directories in the background. In-progress `*.tmp` files are ignored by the manual Allakhazam importer.
+Mirror import is manual. EverQuestie does not watch, scan, index, or modify configured HTTrack mirror directories in the background. In-progress `*.tmp` files are ignored by the manual Allakhazam importer. Spell lifecycle compilation reads only recognized spell pages already present in the explicitly selected mirror; packaged runtime never fetches or rescans them.

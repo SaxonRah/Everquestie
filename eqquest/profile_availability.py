@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import Database
+from .entity_lifecycle import (
+    EntityExpansionEvidence,
+    entity_lifecycle_decision,
+)
 from .locations import location_evidence_for_entity
 from .quest_engine import Guidance, QuestEngine
 from .world_profiles import (
@@ -33,6 +37,7 @@ class EntityProfileDecision:
     status: str
     reason: str
     zones: tuple[ProfileZoneEvidence, ...] = ()
+    expansion_evidence: tuple[EntityExpansionEvidence, ...] = ()
 
     @property
     def available(self) -> bool:
@@ -98,6 +103,30 @@ def _zone_evidence_ids(db: Database, entity_id: int, kind: str) -> dict[int, set
     return result
 
 
+def _profile_zones(
+    db: Database,
+    entity_id: int,
+    kind: str,
+    profile_id: str,
+) -> tuple[ProfileZoneEvidence, ...]:
+    sources = _zone_evidence_ids(db, entity_id, kind)
+    zones: list[ProfileZoneEvidence] = []
+    for zone_id in sorted(sources):
+        decision = zone_profile_decision(db, zone_id, profile_id)
+        source_text = ", ".join(sorted(sources[zone_id], key=str.casefold))
+        zones.append(
+            ProfileZoneEvidence(
+                zone_id,
+                decision.zone_name,
+                source_text,
+                bool(decision.allowed),
+                decision.status,
+                decision.reason,
+            )
+        )
+    return tuple(zones)
+
+
 def entity_profile_decision(
     db: Database,
     entity_id: int,
@@ -105,12 +134,15 @@ def entity_profile_decision(
 ) -> EntityProfileDecision:
     """Project one knowledge entity through the active gameplay profile.
 
-    This is intentionally conservative. Zone identities use the definitive zone
-    profile policy. Quests and NPCs may be marked outside-profile only when every
-    directly evidenced canonical zone is blocked. Other entity kinds (items, spells,
-    etc.) are not declared nonexistent merely because their currently known locations
-    are outside the selected profile; their compatibility remains undetermined until
-    stronger lifecycle/expansion evidence is compiled.
+    Decision precedence is deliberate:
+
+    1. zone entities use the definitive zone lifecycle policy;
+    2. explicit entity expansion/era fields are direct lifecycle evidence;
+    3. canonical world-location evidence is a conservative fallback.
+
+    Direct expansion evidence can therefore classify portable content such as a spell
+    or item without pretending its currently known drop/vendor location defines when it
+    was introduced. Conflicting direct expansion statements remain undetermined.
     """
     entity = db.entity(int(entity_id))
     profile = world_profile(profile_id or active_world_profile_id(db))
@@ -124,6 +156,7 @@ def entity_profile_decision(
             "missing",
             "entity is not present in local knowledge",
             (),
+            (),
         )
 
     entity_id = int(entity["id"])
@@ -131,6 +164,7 @@ def entity_profile_decision(
     name = str(entity["name"] or "")
 
     if profile.profile_id == "unrestricted":
+        lifecycle = entity_lifecycle_decision(db, entity_id, profile.profile_id)
         return EntityProfileDecision(
             entity_id,
             kind,
@@ -140,6 +174,7 @@ def entity_profile_decision(
             "available",
             "unrestricted/custom profile retains all compiled knowledge",
             (),
+            lifecycle.evidence,
         )
 
     if kind == "zone":
@@ -161,22 +196,36 @@ def entity_profile_decision(
             "available" if decision.allowed else "blocked",
             decision.reason,
             (zone,),
+            (),
         )
 
-    sources = _zone_evidence_ids(db, entity_id, kind)
-    zones: list[ProfileZoneEvidence] = []
-    for zone_id in sorted(sources):
-        decision = zone_profile_decision(db, zone_id, profile.profile_id)
-        source_text = ", ".join(sorted(sources[zone_id], key=str.casefold))
-        zones.append(
-            ProfileZoneEvidence(
-                zone_id,
-                decision.zone_name,
-                source_text,
-                bool(decision.allowed),
-                decision.status,
-                decision.reason,
-            )
+    lifecycle = entity_lifecycle_decision(db, entity_id, profile.profile_id)
+    zones = _profile_zones(db, entity_id, kind, profile.profile_id)
+
+    if lifecycle.status == "conflict":
+        return EntityProfileDecision(
+            entity_id,
+            kind,
+            name,
+            profile.profile_id,
+            None,
+            "mixed",
+            lifecycle.reason,
+            zones,
+            lifecycle.evidence,
+        )
+
+    if lifecycle.compatibility is not None:
+        return EntityProfileDecision(
+            entity_id,
+            kind,
+            name,
+            profile.profile_id,
+            lifecycle.compatibility,
+            "available" if lifecycle.compatibility else "blocked",
+            lifecycle.reason,
+            zones,
+            lifecycle.evidence,
         )
 
     if not zones:
@@ -187,8 +236,9 @@ def entity_profile_decision(
             profile.profile_id,
             None,
             "unknown",
-            "no direct canonical zone evidence currently proves profile availability",
+            "no direct lifecycle or canonical zone evidence currently proves profile availability",
             (),
+            lifecycle.evidence,
         )
 
     allowed = [zone for zone in zones if zone.allowed]
@@ -203,7 +253,8 @@ def entity_profile_decision(
             True,
             "available",
             "all directly evidenced canonical zones are available in this profile",
-            tuple(zones),
+            zones,
+            lifecycle.evidence,
         )
 
     if allowed and blocked:
@@ -215,7 +266,8 @@ def entity_profile_decision(
             None,
             "mixed",
             "direct world evidence spans both available and blocked zones; entity-era compatibility is not inferred",
-            tuple(zones),
+            zones,
+            lifecycle.evidence,
         )
 
     # All known direct canonical zones are blocked. For quests/NPCs, those world ties
@@ -231,7 +283,8 @@ def entity_profile_decision(
             False,
             "blocked",
             "all directly evidenced canonical zones are outside the selected gameplay profile",
-            tuple(zones),
+            zones,
+            lifecycle.evidence,
         )
 
     return EntityProfileDecision(
@@ -242,7 +295,8 @@ def entity_profile_decision(
         None,
         "unknown",
         "known direct zone evidence is outside the profile, but that does not prove this entity kind is unavailable",
-        tuple(zones),
+        zones,
+        lifecycle.evidence,
     )
 
 
@@ -269,6 +323,10 @@ def entity_profile_lines(
         f"  Status: {state}",
         f"  Reason: {decision.reason}",
     ]
+    for evidence in decision.expansion_evidence:
+        lines.append(
+            f"  • Direct expansion: {evidence.expansion} | {evidence.source_label} | {evidence.origin}"
+        )
     for zone in decision.zones:
         state_text = "available" if zone.allowed else "blocked"
         lines.append(
@@ -348,7 +406,7 @@ class ProfileAwareQuestEngine(QuestEngine):
 
             if not warning and quest_decision.blocked:
                 warning = (
-                    f"Gameplay profile: {profile.label}. Known quest world evidence is outside this profile. "
+                    f"Gameplay profile: {profile.label}. Known quest lifecycle/world evidence is outside this profile. "
                     "EverQuestie will keep tracking observed progress rather than discarding player state. "
                     f"Reason: {quest_decision.reason}"
                 )

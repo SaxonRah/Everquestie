@@ -156,6 +156,21 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
         self.assertEqual(payload["spell_pages_missing_expansion"], 1)
         self.assertFalse(any(path.suffix in {".db", ".sqlite", ".sqlite3"} for path in self.root.rglob("*")))
 
+    def test_output_writes_atomic_json_artifact_and_creates_parent_directory(self):
+        output = self.root.parent / "reports" / "nested" / "allakhazam-mirror-audit.json"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main([str(self.root), "--output", str(output)])
+
+        self.assertEqual(code, 0)
+        self.assertTrue(output.is_file())
+        self.assertFalse(output.with_name(output.name + ".tmp").exists())
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(payload["pages_by_kind"]["spell"], 2)
+        self.assertEqual(payload["spell_pages_with_expansion"], 1)
+        self.assertIn("EverQuestie Allakhazam mirror inventory audit", stdout.getvalue())
+        self.assertFalse(any(path.suffix in {".db", ".sqlite", ".sqlite3"} for path in self.root.rglob("*")))
+
     def test_missing_folder_fails_cleanly(self):
         with self.assertRaises(FileNotFoundError):
             audit_allakhazam_mirror(self.root / "missing")

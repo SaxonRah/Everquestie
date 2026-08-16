@@ -17,6 +17,7 @@ class SessionActivitySummary:
     after_event_id: int
     event_count: int
     zones: tuple[str, ...]
+    starting_zone: str
     current_zone: str
     mobs_observed_slain: int
     unique_mobs_observed_slain: int
@@ -61,10 +62,22 @@ def _top(counter: Counter[str], labels: dict[str, str], limit: int) -> tuple[Ses
     )
 
 
+def _append_zone(zones: list[str], seen: set[str], value: str | None) -> None:
+    zone = " ".join(str(value or "").split()).strip()
+    if not zone:
+        return
+    key = normalize_name(zone)
+    if not key or key in seen:
+        return
+    seen.add(key)
+    zones.append(zone)
+
+
 def session_activity_summary(
     db,
     after_event_id: int,
     *,
+    starting_zone: str | None = None,
     current_zone: str | None = None,
     pathway_count: int = 0,
     top_limit: int = 5,
@@ -94,6 +107,9 @@ def session_activity_summary(
 
     zones: list[str] = []
     seen_zones: set[str] = set()
+    start = " ".join(str(starting_zone or "").split()).strip()
+    _append_zone(zones, seen_zones, start)
+
     faction_up = 0
     faction_down = 0
     deaths = 0
@@ -106,11 +122,7 @@ def session_activity_summary(
     for row in rows:
         kind = str(row["kind"] or "").casefold()
         if kind == "zone":
-            zone = " ".join(str(row["zone"] or "").split()).strip()
-            key = normalize_name(zone) if zone else ""
-            if key and key not in seen_zones:
-                seen_zones.add(key)
-                zones.append(zone)
+            _append_zone(zones, seen_zones, row["zone"])
         elif kind == "kill":
             _counter_add(mob_counts, mob_labels, row["actor"])
         elif kind == "loot":
@@ -135,10 +147,7 @@ def session_activity_summary(
             merchant_sales += 1
 
     current = " ".join(str(current_zone or "").split()).strip()
-    if current:
-        key = normalize_name(current)
-        if key and key not in seen_zones:
-            zones.append(current)
+    _append_zone(zones, seen_zones, current)
 
     factions = tuple(
         faction_labels.get(key, key)
@@ -151,6 +160,7 @@ def session_activity_summary(
         after_event_id=int(after_event_id),
         event_count=len(rows),
         zones=tuple(zones),
+        starting_zone=start,
         current_zone=current,
         mobs_observed_slain=sum(mob_counts.values()),
         unique_mobs_observed_slain=len(mob_counts),

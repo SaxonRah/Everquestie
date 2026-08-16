@@ -24,14 +24,7 @@ def install_target_intelligence_ui() -> None:
         return
 
     current_build_live = current_app._build_live
-    current_start = current_app._start
-    current_stop = current_app._stop
-
-    def _latest_observed_event_id(self) -> int:
-        row = self.db.conn.execute(
-            "SELECT COALESCE(MAX(id),0) AS event_id FROM observed_events"
-        ).fetchone()
-        return int(row["event_id"] or 0) if row is not None else 0
+    current_refresh_pathways = current_app._refresh_activity_pathways
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -71,10 +64,9 @@ def install_target_intelligence_ui() -> None:
             command=self._target_intelligence_details,
         ).pack(side="left", padx=(6, 0))
 
-        self._target_intelligence_session_start_event_id = _latest_observed_event_id(self)
         self._target_intelligence_value: TargetIntelligence | None = None
         self._target_intelligence_signature = None
-        self.after(400, self._target_intelligence_tick)
+        self._refresh_target_intelligence(force=True)
 
     def _target_intelligence_view(self) -> None:
         value = getattr(self, "_target_intelligence_value", None)
@@ -168,7 +160,7 @@ def install_target_intelligence_ui() -> None:
             value = current_target_intelligence(
                 self.db,
                 after_event_id=int(
-                    getattr(self, "_target_intelligence_session_start_event_id", 0) or 0
+                    getattr(self, "_activity_session_start_event_id", 0) or 0
                 ),
             )
         messagebox.showinfo(
@@ -184,7 +176,7 @@ def install_target_intelligence_ui() -> None:
         value = current_target_intelligence(
             self.db,
             after_event_id=int(
-                getattr(self, "_target_intelligence_session_start_event_id", 0) or 0
+                getattr(self, "_activity_session_start_event_id", 0) or 0
             ),
         )
         signature = (
@@ -198,6 +190,7 @@ def install_target_intelligence_ui() -> None:
             value.level_min,
             value.level_max,
             value.profile_status,
+            value.profile_reason,
             tuple(
                 (row.label, row.other_kind, row.count, row.examples)
                 for row in value.relationships
@@ -211,29 +204,17 @@ def install_target_intelligence_ui() -> None:
             self._target_intelligence_signature = signature
         self._target_intelligence_value = value
 
-    def _target_intelligence_tick(self) -> None:
-        self._refresh_target_intelligence()
-        self.after(400, self._target_intelligence_tick)
-
-    def _start(self) -> None:
-        current_start(self)
-        if getattr(self, "tailer", None) is not None:
-            self._target_intelligence_session_start_event_id = _latest_observed_event_id(self)
-            self._target_intelligence_signature = None
-            self._target_intelligence_value = None
-            self._refresh_target_intelligence(force=True)
-
-    def _stop(self) -> None:
-        current_stop(self)
-        if hasattr(self, "target_intelligence_status"):
-            self._refresh_target_intelligence(force=True)
+    def _refresh_activity_pathways(self, *, force: bool = False) -> None:
+        # Activity Pathways already owns the monitoring-session boundary and refresh
+        # cadence. Reuse that one activity pass rather than running a second permanent
+        # SQLite polling loop just for the current target.
+        current_refresh_pathways(self, force=force)
+        _refresh_target_intelligence(self, force=force)
 
     current_app._build_live = _build_live
     current_app._target_intelligence_view = _target_intelligence_view
     current_app._target_intelligence_navigate = _target_intelligence_navigate
     current_app._target_intelligence_details = _target_intelligence_details
     current_app._refresh_target_intelligence = _refresh_target_intelligence
-    current_app._target_intelligence_tick = _target_intelligence_tick
-    current_app._start = _start
-    current_app._stop = _stop
+    current_app._refresh_activity_pathways = _refresh_activity_pathways
     setattr(current_app, _TARGET_INTELLIGENCE_MARKER, True)

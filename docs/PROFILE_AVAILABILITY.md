@@ -19,7 +19,7 @@ Profile availability has two evidence layers, in order:
 1. **reviewed direct entity lifecycle evidence** — explicit top-level `expansion`, `expansion_name`, or `era` fields whose source + entity kind + field + parser semantics have been approved for lifecycle use;
 2. **canonical world evidence fallback** — authoritative zones, safe canonical locations, explicit normalized zone relationships, and structured quest-step zones.
 
-This order matters. A Classic item that also drops in a modern Live zone is still old content if a reviewed explicit source expansion field says `Classic`; its modern drop location does not redefine when it was introduced. Conversely, a modern NPC with reviewed post-Velious expansion evidence is not made P99-compatible merely because another source places it in an older zone.
+This order matters. A Classic item that also drops in a modern Live zone is still old content if a reviewed explicit source expansion field says `Classic`; its modern drop location does not redefine when it was introduced. Conversely, a modern NPC with reviewed post-cap expansion evidence is not made compatible with an older expansion-capped profile merely because another source places it in an older zone.
 
 A lifecycle-looking key is not evidence by name alone. Expansion words in descriptions, names, dates, nested arbitrary metadata, free-form prose, source-less normalized rows, or unreviewed structured-detail fields are not promoted into lifecycle truth.
 
@@ -42,7 +42,9 @@ A future MCP/source revision must be reviewed at the field/parser-semantic level
 
 ## Conflicting direct lifecycle evidence
 
-If two **reviewed** direct source statements land on opposite sides of the P99 Velious boundary, EverQuestie reports `MIXED / UNDETERMINED` instead of picking a preferred source silently.
+If two **reviewed** direct source statements land on opposite sides of the active expansion-capped profile's boundary, EverQuestie reports `MIXED / UNDETERMINED` instead of picking a preferred source silently.
+
+P99 is currently the only visible expansion-capped profile, so its active boundary is Velious. The classifier itself is profile-owned and can support a future reviewed Luclin/PoP/TLP cap without changing the lifecycle source-trust rules.
 
 Reviewed direct lifecycle evidence is stronger than location fallback, but conflicting reviewed direct lifecycle evidence is not resolved by location.
 
@@ -84,14 +86,25 @@ python .\tools\audit_profile_lifecycle.py .\dist\everquestie-knowledge.sqlite3
 python .\tools\audit_profile_lifecycle.py .\dist\everquestie-knowledge.sqlite3 --json
 ```
 
+The default remains the current P99/Velious cap for release compatibility. An expansion-capped profile can also be selected explicitly:
+
+```powershell
+python .\tools\audit_profile_lifecycle.py .\dist\everquestie-knowledge.sqlite3 --profile p99 --json
+```
+
+The audit intentionally rejects `live` and `unrestricted`: origin expansion alone is not a Live retirement statement, and unrestricted has no era cap. Future reviewed expansion-capped profiles can reuse the same audit with their profile ID.
+
 The audit opens SQLite with `mode=ro&immutable=1` and reports:
 
+- the audited profile and expansion cap;
 - entities with reviewed direct expansion/era evidence;
 - accepted evidence rows by entity/source kind;
 - lifecycle-looking candidate fields rejected by source policy;
 - rejected candidate counts by source kind and policy reason;
 - common reviewed expansion values;
-- direct P99 available/blocked/conflict counts.
+- direct available/blocked/conflict/undetermined counts for the selected expansion-capped profile.
+
+For the default P99 report, legacy `p99_*` JSON fields remain as aliases so existing build/report consumers do not break while the generic `available_direct`, `blocked_direct`, `conflict`, and `undetermined_direct` fields become the canonical schema.
 
 It deliberately excludes locations and prose so the report answers how much strong lifecycle evidence is already in the shipped corpus while making untrusted lifecycle-looking source drift visible.
 

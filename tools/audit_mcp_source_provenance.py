@@ -19,7 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Compare an EverQuestie snapshot's recorded MCP producer commit with "
-            "the local MCP checkout and parent-repository gitlink state. Read-only."
+            "the tracked repository source lock, local MCP checkout, and legacy "
+            "parent-gitlink state. Read-only."
         )
     )
     parser.add_argument("snapshot", help="EverQuestie knowledge snapshot")

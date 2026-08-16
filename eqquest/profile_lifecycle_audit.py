@@ -19,6 +19,7 @@ class LifecycleKindCoverage:
     p99_available: int
     p99_blocked: int
     p99_conflict: int
+    p99_undetermined: int
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -29,6 +30,7 @@ class LifecycleKindCoverage:
             "p99_available": self.p99_available,
             "p99_blocked": self.p99_blocked,
             "p99_conflict": self.p99_conflict,
+            "p99_undetermined": self.p99_undetermined,
         }
 
 
@@ -40,9 +42,11 @@ class LifecycleAuditSummary:
     p99_available_direct: int
     p99_blocked_direct: int
     p99_conflict: int
+    p99_undetermined_direct: int
     by_kind: tuple[LifecycleKindCoverage, ...]
     by_source_kind: tuple[tuple[str, int], ...]
     by_expansion: tuple[tuple[str, int], ...]
+    by_unclassified_expansion: tuple[tuple[str, int], ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +56,7 @@ class LifecycleAuditSummary:
             "p99_available_direct": self.p99_available_direct,
             "p99_blocked_direct": self.p99_blocked_direct,
             "p99_conflict": self.p99_conflict,
+            "p99_undetermined_direct": self.p99_undetermined_direct,
             "by_kind": [row.as_dict() for row in self.by_kind],
             "by_source_kind": [
                 {"source_kind": key, "evidence_rows": count}
@@ -60,6 +65,10 @@ class LifecycleAuditSummary:
             "by_expansion": [
                 {"expansion": key, "evidence_rows": count}
                 for key, count in self.by_expansion
+            ],
+            "by_unclassified_expansion": [
+                {"expansion": key, "evidence_rows": count}
+                for key, count in self.by_unclassified_expansion
             ],
         }
 
@@ -153,12 +162,15 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
     kind_available: Counter[str] = Counter()
     kind_blocked: Counter[str] = Counter()
     kind_conflict: Counter[str] = Counter()
+    kind_undetermined: Counter[str] = Counter()
     source_kinds: Counter[str] = Counter()
     expansions: Counter[str] = Counter()
+    unclassified_expansions: Counter[str] = Counter()
 
     available = 0
     blocked = 0
     conflict = 0
+    undetermined = 0
     evidence_rows = 0
 
     for entity_id, records in evidence_by_entity.items():
@@ -173,7 +185,9 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
             source_kinds[source_kind] += 1
             expansions[expansion] += 1
             value = p99_expansion_allowed(expansion)
-            if value is not None:
+            if value is None:
+                unclassified_expansions[expansion] += 1
+            else:
                 classified.append(bool(value))
 
         if any(classified) and any(not value for value in classified):
@@ -185,6 +199,9 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
         elif classified and all(not value for value in classified):
             blocked += 1
             kind_blocked[kind] += 1
+        else:
+            undetermined += 1
+            kind_undetermined[kind] += 1
 
     kinds = tuple(
         LifecycleKindCoverage(
@@ -195,6 +212,7 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
             kind_available[kind],
             kind_blocked[kind],
             kind_conflict[kind],
+            kind_undetermined[kind],
         )
         for kind in sorted(kind_entities)
     )
@@ -206,9 +224,13 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
         p99_available_direct=available,
         p99_blocked_direct=blocked,
         p99_conflict=conflict,
+        p99_undetermined_direct=undetermined,
         by_kind=kinds,
         by_source_kind=tuple(sorted(source_kinds.items(), key=lambda item: (-item[1], item[0]))),
         by_expansion=tuple(sorted(expansions.items(), key=lambda item: (-item[1], item[0].casefold()))),
+        by_unclassified_expansion=tuple(
+            sorted(unclassified_expansions.items(), key=lambda item: (-item[1], item[0].casefold()))
+        ),
     )
 
 
@@ -223,7 +245,8 @@ def profile_lifecycle_audit_text(db) -> str:
             "P99 direct lifecycle decisions: "
             f"available={summary.p99_available_direct:,} "
             f"blocked={summary.p99_blocked_direct:,} "
-            f"conflict={summary.p99_conflict:,}"
+            f"conflict={summary.p99_conflict:,} "
+            f"undetermined={summary.p99_undetermined_direct:,}"
         ),
         "",
         "Coverage by entity kind:",
@@ -234,13 +257,19 @@ def profile_lifecycle_audit_text(db) -> str:
         lines.append(
             f"  {row.kind}: entities={row.entities:,} with_evidence={row.with_expansion_evidence:,} "
             f"evidence_rows={row.evidence_rows:,} p99_available={row.p99_available:,} "
-            f"p99_blocked={row.p99_blocked:,} conflict={row.p99_conflict:,}"
+            f"p99_blocked={row.p99_blocked:,} conflict={row.p99_conflict:,} "
+            f"undetermined={row.p99_undetermined:,}"
         )
 
     if summary.by_source_kind:
         lines.extend(["", "Evidence rows by source kind:"])
         for source_kind, count in summary.by_source_kind:
             lines.append(f"  {source_kind}: {count:,}")
+
+    if summary.by_unclassified_expansion:
+        lines.extend(["", "Unclassified explicit expansion values:"])
+        for expansion, count in summary.by_unclassified_expansion[:30]:
+            lines.append(f"  {expansion}: {count:,}")
 
     if summary.by_expansion:
         lines.extend(["", "Most common explicit expansion values:"])
@@ -251,6 +280,7 @@ def profile_lifecycle_audit_text(db) -> str:
         [
             "",
             "Boundary: only explicit top-level expansion/expansion_name/era fields are counted.",
+            "Only reviewed expansion labels cross the P99 boundary; unrecognized values remain undetermined.",
             "Locations, prose, names, dates, and fuzzy inference are excluded from this audit.",
         ]
     )

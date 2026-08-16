@@ -343,7 +343,7 @@ def zone_profile_decisions(
                     False,
                     profile.excluded_zone_status,
                     profile.excluded_zone_reason
-                    or "historical/retired identity is not active in the default Live profile",
+                    or "zone is excluded from this Live availability profile",
                     zone_expansions,
                 )
             else:

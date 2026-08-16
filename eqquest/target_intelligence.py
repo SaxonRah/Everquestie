@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 
 from .db import normalize_name
@@ -96,33 +95,34 @@ def _resolve_exact_npc(db, observed_name: str):
 
 
 def _relationship_summaries(context, *, limit: int = 6) -> tuple[TargetRelationshipSummary, ...]:
-    groups: dict[tuple[str, str], Counter[str]] = {}
+    # One relationship can legitimately have multiple source/evidence rows. The live
+    # count means distinct related canonical entities, not number of provenance records.
+    groups: dict[tuple[str, str], dict[int, str]] = {}
     for fact in context.relationships:
-        # Only source-backed canonical relationships qualify for the compact live strip.
-        # A relationship without a source page is still visible in full Knowledge, but
-        # Target Intelligence should not turn an unprovenanced edge into a live prompt.
+        # Only source-backed relationships qualify for the compact live strip. Full
+        # Knowledge remains the place to inspect all relationships and provenance.
         if fact.source_page_id is None:
             continue
         key = (fact.label, fact.other_kind)
-        counter = groups.setdefault(key, Counter())
+        related = groups.setdefault(key, {})
         name = " ".join(str(fact.display_other_name or fact.other_name or "").split()).strip()
-        if name:
-            counter[name] += 1
+        related.setdefault(int(fact.display_other_entity_id), name)
 
     rows: list[TargetRelationshipSummary] = []
-    for (label, other_kind), counter in groups.items():
+    for (label, other_kind), related in groups.items():
         examples = tuple(
             name
-            for name, _count in sorted(
-                counter.items(),
-                key=lambda pair: (-int(pair[1]), pair[0].casefold()),
-            )[:3]
-        )
+            for _entity_id, name in sorted(
+                related.items(),
+                key=lambda pair: (pair[1].casefold(), int(pair[0])),
+            )
+            if name
+        )[:3]
         rows.append(
             TargetRelationshipSummary(
                 label=label,
                 other_kind=other_kind,
-                count=sum(counter.values()),
+                count=len(related),
                 examples=examples,
             )
         )
@@ -140,9 +140,11 @@ def _known_zones(context, *, limit: int = 4) -> tuple[str, ...]:
     names: list[str] = []
     seen: set[str] = set()
     for location in context.locations:
-        zone = " ".join(
-            str(location.gameplay_zone_name or location.original_zone_name or "").split()
-        ).strip()
+        # Candidate/unresolved provider geography is evidence, but it must not be
+        # presented as a compact gameplay location. Require canonical/linked projection.
+        if location.gameplay_zone_entity_id is None:
+            continue
+        zone = " ".join(str(location.gameplay_zone_name or "").split()).strip()
         key = normalize_name(zone)
         if not key or key in seen:
             continue

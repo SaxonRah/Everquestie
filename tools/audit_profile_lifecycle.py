@@ -29,12 +29,21 @@ def open_read_only(path: str | Path) -> sqlite3.Connection:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit explicit entity expansion/era evidence already compiled into an "
-            "EverQuestie SQLite knowledge database. The DB is opened read-only and "
-            "immutable; no source folders, MCP process, or network access is used."
+            "Audit reviewed explicit entity expansion/era evidence already compiled into an "
+            "EverQuestie SQLite knowledge database against one expansion-capped gameplay "
+            "profile. The DB is opened read-only and immutable; no source folders, MCP "
+            "process, or network access is used."
         )
     )
     parser.add_argument("database", help="Builder or finalized EverQuestie SQLite knowledge DB")
+    parser.add_argument(
+        "--profile",
+        default="p99",
+        help=(
+            "Expansion-capped gameplay profile ID to audit (default: p99). "
+            "Live/unrestricted are intentionally rejected because this audit measures era caps."
+        ),
+    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -52,15 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     conn = open_read_only(args.database)
     try:
         db = SimpleNamespace(conn=conn)
-        if args.json:
-            payload = json.dumps(
-                profile_lifecycle_audit(db).as_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        else:
-            payload = profile_lifecycle_audit_text(db)
+        try:
+            if args.json:
+                payload = json.dumps(
+                    profile_lifecycle_audit(db, args.profile).as_dict(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            else:
+                payload = profile_lifecycle_audit_text(db, args.profile)
+        except ValueError as exc:
+            parser.error(str(exc))
     finally:
         conn.close()
 

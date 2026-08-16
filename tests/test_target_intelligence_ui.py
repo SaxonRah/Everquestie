@@ -33,26 +33,29 @@ class TargetIntelligenceUITests(unittest.TestCase):
         install_target_intelligence_ui()
         self.assertIs(app_cls._refresh_activity_pathways, after)
 
-    def test_target_related_quest_view_uses_exact_canonical_quest_id(self):
-        from eqquest import app as app_module
-
-        install_activity_pathways_ui()
-        install_target_intelligence_ui()
-        app_cls = app_module.EverQuestieApp
+    def _relevance(self, *, tracked: bool = False) -> TargetQuestRelevance:
         reason = TargetQuestReason(
             path_kind="direct",
             relation="objective_kill",
             label="Kill objective",
             priority=3,
         )
-        relevance = TargetQuestRelevance(
+        return TargetQuestRelevance(
             quest_id=4242,
             quest_name="Exact Quest",
-            tracked=False,
+            tracked=tracked,
             profile_status="available",
             profile_reason="available",
             reasons=(reason,),
         )
+
+    def test_target_related_quest_view_uses_exact_canonical_quest_id(self):
+        from eqquest import app as app_module
+
+        install_activity_pathways_ui()
+        install_target_intelligence_ui()
+        app_cls = app_module.EverQuestieApp
+        relevance = self._relevance()
         opened: list[int] = []
         fake = SimpleNamespace(
             target_quest_tree=SimpleNamespace(selection=lambda: ("quest:4242",)),
@@ -64,6 +67,29 @@ class TargetIntelligenceUITests(unittest.TestCase):
         app_cls._target_quest_view_selected(fake)
 
         self.assertEqual(opened, [4242])
+
+    def test_already_tracked_target_quest_does_not_reconcile_again(self):
+        from eqquest import app as app_module
+
+        install_activity_pathways_ui()
+        install_target_intelligence_ui()
+        app_cls = app_module.EverQuestieApp
+        relevance = self._relevance(tracked=True)
+        status: list[str] = []
+        track_calls: list[int] = []
+        fake = SimpleNamespace(
+            target_quest_tree=SimpleNamespace(selection=lambda: ("quest:4242",)),
+            _target_quest_by_item={"quest:4242": relevance},
+            status=SimpleNamespace(set=lambda text: status.append(str(text))),
+            _track_and_reconcile=lambda quest_id, **_kwargs: track_calls.append(int(quest_id)),
+            _refresh_guidance=lambda: None,
+            _refresh_activity_pathways=lambda **_kwargs: None,
+        )
+
+        app_cls._target_quest_track_selected(fake)
+
+        self.assertEqual(track_calls, [])
+        self.assertEqual(status, ["Exact Quest is already tracked."])
 
 
 if __name__ == "__main__":

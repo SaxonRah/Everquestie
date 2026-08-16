@@ -21,7 +21,8 @@ const GETTERS = {
   // Combat-ability identities come from the client db-string system and are NOT
   // spell IDs. Upstream itself correlates them to spell mechanics by exact name.
   // getLocalSpellByName has a fuzzy fallback, so resolveCombatAbility verifies the
-  // returned spell name before accepting the enrichment.
+  // returned spell name before accepting enrichment. Abilities with no exact spell
+  // counterpart still emit a structured identity record instead of disappearing.
   combatAbilities: {
     getter: 'getLocalSpellByName',
     kind: 'combat_ability',
@@ -47,6 +48,25 @@ function exactName(value) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+function combatAbilityFallback(externalId, name, reason, extra = {}) {
+  return {
+    id: String(externalId),
+    abilityId: String(externalId),
+    name,
+    spellId: null,
+    spellName: null,
+    identityJoin: {
+      method: 'no_exact_spell_match',
+      reason,
+      combatAbilityId: String(externalId),
+      combatAbilityName: name,
+      matchedSpellId: null,
+      matchedSpellName: null,
+      ...extra,
+    },
+  };
+}
+
 async function resolveRecord(local, spec, externalId, name) {
   const getter = local[spec.getter];
   if (typeof getter !== 'function') {
@@ -54,32 +74,59 @@ async function resolveRecord(local, spec, externalId, name) {
   }
 
   if (spec.resolver === 'combat_ability_exact_name') {
-    const spell = await getter(name);
-    if (spell === null || spell === undefined) return { record: null, reason: 'not_found' };
-    const spellName = spell && typeof spell === 'object' ? spell.name : '';
-    if (!spellName || exactName(spellName) !== exactName(name)) {
-      return { record: null, reason: 'non_exact_spell_name_match_rejected' };
-    }
-    const spellId = spell && typeof spell === 'object' ? spell.id : null;
-    return {
-      record: {
-        ...spell,
-        // Preserve the combat-ability namespace as the record identity. The spell
-        // ID remains explicit enrichment evidence rather than replacing that ID.
-        id: String(externalId),
-        abilityId: String(externalId),
-        name,
-        spellId: spellId === null || spellId === undefined ? null : String(spellId),
-        spellName,
-        identityJoin: {
-          method: 'exact_case_insensitive_name',
-          combatAbilityId: String(externalId),
-          combatAbilityName: name,
-          matchedSpellId: spellId === null || spellId === undefined ? null : String(spellId),
-          matchedSpellName: spellName,
+    try {
+      const spell = await getter(name);
+      if (spell === null || spell === undefined) {
+        return {
+          record: combatAbilityFallback(externalId, name, 'not_found'),
+        };
+      }
+      const spellName = spell && typeof spell === 'object' ? spell.name : '';
+      if (!spellName || exactName(spellName) !== exactName(name)) {
+        const rejectedSpellId = spell && typeof spell === 'object' ? spell.id : null;
+        return {
+          record: combatAbilityFallback(
+            externalId,
+            name,
+            'non_exact_spell_name_match_rejected',
+            {
+              rejectedSpellId:
+                rejectedSpellId === null || rejectedSpellId === undefined
+                  ? null
+                  : String(rejectedSpellId),
+              rejectedSpellName: spellName || null,
+            },
+          ),
+        };
+      }
+      const spellId = spell && typeof spell === 'object' ? spell.id : null;
+      return {
+        record: {
+          ...spell,
+          // Preserve the combat-ability namespace as the record identity. The spell
+          // ID remains explicit enrichment evidence rather than replacing that ID.
+          id: String(externalId),
+          abilityId: String(externalId),
+          name,
+          spellId: spellId === null || spellId === undefined ? null : String(spellId),
+          spellName,
+          identityJoin: {
+            method: 'exact_case_insensitive_name',
+            combatAbilityId: String(externalId),
+            combatAbilityName: name,
+            matchedSpellId:
+              spellId === null || spellId === undefined ? null : String(spellId),
+            matchedSpellName: spellName,
+          },
         },
-      },
-    };
+      };
+    } catch (error) {
+      return {
+        record: combatAbilityFallback(externalId, name, 'lookup_error', {
+          lookupError: error instanceof Error ? error.message : String(error),
+        }),
+      };
+    }
   }
 
   const record = await getter(String(externalId));

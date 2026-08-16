@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import hashlib
 import html as html_lib
+from pathlib import Path
 import urllib.parse
 
 from .allakhazam import (
     ALLA_HOST,
+    ENTITY_KINDS,
     AllakhazamImporter,
     HtmlNode,
+    ImportResult,
+    MiniDOMParser,
+    MirrorImportResult,
+    VisibleTextParser,
     extract_canonical_url,
     is_allakhazam_url,
+)
+from .db import normalize_name
+from .entity_lifecycle_records import (
+    clear_lifecycle_records_for_source,
+    upsert_lifecycle_record,
 )
 
 
@@ -17,6 +29,7 @@ _DB_LINK_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("item", ("item", "id"), "item.html"),
     ("npc", ("id",), "npc.html"),
     ("zone", ("zone", "zstrat", "id"), "zone.html"),
+    ("spell", ("spell",), "spell.html"),
 )
 
 
@@ -96,14 +109,118 @@ def normalize_allakhazam_mirror_href(href: str, source_url: str) -> str:
     )
 
 
+def _spell_numeric_id(url: str) -> str:
+    if not is_allakhazam_url(url):
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.path.casefold().endswith("/db/spell.html"):
+        return ""
+    value = (urllib.parse.parse_qs(parsed.query).get("spell") or [""])[0]
+    text = str(value or "").strip()
+    return text if text.isdigit() else ""
+
+
+def _walk_nodes(nodes: list[HtmlNode]) -> list[HtmlNode]:
+    out: list[HtmlNode] = []
+    for node in nodes:
+        out.append(node)
+        out.extend(node.descendants())
+    return out
+
+
+def _quick_facts_segment(root: HtmlNode) -> list[HtmlNode]:
+    """Return only DOM nodes structurally following the Quick Facts heading.
+
+    Spell comments and description prose can contain the word "expansion". Lifecycle
+    extraction therefore fails closed unless the page exposes a Quick Facts heading and
+    an exact Expansion label inside that structural section.
+    """
+    heading = next(
+        (
+            node
+            for node in root.descendants()
+            if node.tag in {"h2", "h3", "h4"}
+            and normalize_name(node.text()) == "quick facts"
+        ),
+        None,
+    )
+    if heading is None or heading.parent is None:
+        return []
+    siblings = heading.parent.children
+    try:
+        start = siblings.index(heading) + 1
+    except ValueError:
+        return []
+    segment: list[HtmlNode] = []
+    for sibling in siblings[start:]:
+        if not isinstance(sibling, HtmlNode):
+            continue
+        if sibling.tag in {"h2", "h3", "h4"}:
+            break
+        segment.append(sibling)
+    return _walk_nodes(segment)
+
+
+def _image_label(node: HtmlNode) -> str:
+    for image in ([node] if node.tag == "img" else []) + list(node.descendants("img")):
+        for key in ("alt", "title"):
+            value = " ".join(str(image.attrs.get(key, "")).split()).strip()
+            if value and normalize_name(value) not in {"image", "spell icon"}:
+                return value
+    return ""
+
+
+def _quick_facts_expansion(root: HtmlNode) -> str:
+    nodes = _quick_facts_segment(root)
+    if not nodes:
+        return ""
+    for node in nodes:
+        text = " ".join(node.text().split()).strip()
+        folded = text.casefold()
+        if folded.startswith("expansion:") and len(text) <= 160:
+            remainder = text.split(":", 1)[1].strip()
+            if remainder:
+                return remainder
+            image_value = _image_label(node)
+            if image_value:
+                return image_value
+        if text.rstrip(":").strip().casefold() != "expansion":
+            continue
+
+        container = node.parent
+        if container is not None:
+            container_text = " ".join(container.text().split()).strip()
+            if container_text.casefold().startswith("expansion:") and len(container_text) <= 160:
+                remainder = container_text.split(":", 1)[1].strip()
+                if remainder:
+                    return remainder
+            image_value = _image_label(container)
+            if image_value:
+                return image_value
+            try:
+                siblings = container.children
+                position = siblings.index(node)
+            except (ValueError, AttributeError):
+                siblings = []
+                position = -1
+            if position >= 0:
+                for sibling in siblings[position + 1 : position + 4]:
+                    if isinstance(sibling, str):
+                        value = " ".join(sibling.split()).strip()
+                    else:
+                        value = " ".join(sibling.text().split()).strip() or _image_label(sibling)
+                    if value and value.casefold() != "expansion:":
+                        return value
+    return ""
+
+
 class AllakhazamMirrorImporter(AllakhazamImporter):
     """Allakhazam importer with HTTrack recovery plus explicit lifecycle fields.
 
-    The base importer remains the parser/normalizer owner. This subclass changes
-    anchor URL presentation while a mirror page is being extracted and preserves a
-    small set of explicit source lifecycle fields needed by server-profile projection.
-    It does not derive lifecycle from dates, names, locations, walkthrough prose, or
-    other indirect evidence.
+    The base importer remains the parser/normalizer owner for quest/NPC/item/zone pages.
+    This subclass changes mirror anchor presentation, preserves reviewed lifecycle fields,
+    and handles spell Quick Facts without turning Allakhazam spell IDs into canonical
+    client identity by assumption.
     """
 
     def __init__(self, db):
@@ -119,10 +236,14 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
         kind_hint: str | None = None,
         name_hint: str | None = None,
     ):
-        previous = self._mirror_source_url
-        self._mirror_source_url = (
+        resolved_source = (
             str(source_url or "").strip() or extract_canonical_url(raw) or ""
         )
+        if _spell_numeric_id(resolved_source):
+            return self._import_spell_html(raw, html_path, resolved_source)
+
+        previous = self._mirror_source_url
+        self._mirror_source_url = resolved_source
         try:
             return super()._import_html_text(
                 raw,
@@ -133,6 +254,138 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
             )
         finally:
             self._mirror_source_url = previous
+
+    def _import_spell_html(self, raw: str, html_path, source_url: str) -> ImportResult:
+        spell_id = _spell_numeric_id(source_url)
+        if not spell_id:
+            raise ValueError("Allakhazam spell page is missing a numeric spell ID")
+
+        visible = VisibleTextParser()
+        visible.feed(raw)
+        dom = MiniDOMParser()
+        dom.feed(raw)
+        source_name = self._source_entity_name(dom.root, visible.title, "spell")
+        if not source_name:
+            raise ValueError("Allakhazam spell page has no source spell name")
+
+        digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+        source_key = f"spell:{spell_id}"
+        source_page_id = self.db.upsert_source_page(
+            url=source_url,
+            title=visible.title,
+            entity_type="spell",
+            sha256=digest,
+            plain_text=visible.text,
+            raw_html=raw,
+            source_name="Allakhazam",
+            source_kind="local_mirror",
+            source_key=source_key,
+            local_path=str(Path(html_path).resolve()),
+        )
+        clear_lifecycle_records_for_source(self.db, source_page_id)
+
+        canonical = self.db.entity_by_namespaced_external_id("eqclient:spell", spell_id)
+        canonical_id: int | None = None
+        if canonical is not None and normalize_name(str(canonical["name"] or "")) == normalize_name(source_name):
+            canonical_id = int(canonical["id"])
+            self.db.link_entity_source(canonical_id, source_page_id, role="lifecycle")
+            self.db.add_external_id(
+                canonical_id,
+                "allakhazam:spell",
+                source_key,
+                source_page_id=source_page_id,
+            )
+
+        expansion = _quick_facts_expansion(dom.root)
+        if expansion:
+            upsert_lifecycle_record(
+                self.db,
+                source_page_id=source_page_id,
+                entity_kind="spell",
+                source_external_id=source_key,
+                source_entity_name=source_name,
+                field_name="expansion",
+                field_value=expansion,
+                evidence="Allakhazam spell Quick Facts / Expansion",
+                entity_id=canonical_id,
+            )
+
+        # ImportResult predates source records that can intentionally remain unattached.
+        # A zero entity_id means the source fact was preserved but awaits exact post-
+        # provider reconciliation; provider summaries use source_page_id/kind/counts.
+        return ImportResult(
+            source_page_id=source_page_id,
+            entity_id=canonical_id or 0,
+            kind="spell",
+            name=source_name,
+            external_id=source_key,
+            sha256=digest,
+        )
+
+    def import_mirror(self, folder: str | Path) -> MirrorImportResult:
+        """Incrementally compile recognized local HTTrack pages, including spell facts."""
+        root = Path(folder)
+        if not root.is_dir():
+            raise ValueError(f"Allakhazam mirror directory does not exist: {root}")
+
+        recognized_entity_types = set(ENTITY_KINDS) | {"spell"}
+        summary = MirrorImportResult()
+        with self.db.batch():
+            for path in sorted(root.rglob("*.htm*")):
+                if path.name.lower().endswith(".tmp"):
+                    summary.ignored += 1
+                    continue
+                try:
+                    raw = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    summary.read_errors += 1
+                    continue
+
+                canonical = extract_canonical_url(raw)
+                if not canonical or not is_allakhazam_url(canonical):
+                    summary.ignored += 1
+                    continue
+
+                digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+                existing = self.db.conn.execute(
+                    """
+                    SELECT id, sha256, entity_type
+                    FROM source_pages
+                    WHERE url=? AND source_name='Allakhazam'
+                    """,
+                    (canonical,),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["sha256"] == digest
+                    and existing["entity_type"] in recognized_entity_types
+                ):
+                    summary.unchanged += 1
+                    continue
+
+                try:
+                    result = self._import_html_text(raw, path, canonical)
+                except ValueError:
+                    summary.ignored += 1
+                    continue
+                summary.imported.append(result)
+        return summary
+
+    def rebuild_imported_pages(self) -> list[ImportResult]:
+        """Rebuild legacy recognized pages plus stored Allakhazam spell lifecycle pages."""
+        results = super().rebuild_imported_pages()
+        for page in self.db.source_pages():
+            if page["source_name"] != "Allakhazam" or page["entity_type"] != "spell":
+                continue
+            source_url = str(page["url"] or "")
+            if not _spell_numeric_id(source_url):
+                continue
+            raw = str(page["raw_html"] or "")
+            if not raw:
+                continue
+            path = str(page["local_path"] or "allakhazam-spell.html")
+            results.append(self._import_spell_html(raw, path, source_url))
+        return results
 
     def _anchors(self, node: HtmlNode) -> list[tuple[str, str]]:
         anchors = super()._anchors(node)
@@ -155,7 +408,7 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
         key: str,
         value: str | None,
     ) -> None:
-        """Merge one explicit source lifecycle field onto the canonical source entity."""
+        """Merge one legacy source-owned lifecycle field onto its source entity."""
         cleaned = " ".join(str(value or "").split()).strip()
         if not cleaned:
             return

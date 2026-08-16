@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from .db import Database, normalize_name
-from .world_profiles import p99_expansion_allowed
+from .world_profiles import profile_expansion_allowed, world_profile
 
 
 LIFECYCLE_FIELD_KEYS = ("expansion", "expansion_name", "era")
@@ -317,60 +317,69 @@ def entity_expansion_evidence(
     )
 
 
+def _post_cap_status(cap: str) -> str:
+    token = str(cap or "cap").strip().casefold().replace("-", "_").replace(" ", "_")
+    return f"post_{token}"
+
+
 def entity_lifecycle_decision(
     db: Database,
     entity_id: int,
     profile_id: str,
 ) -> EntityLifecycleDecision:
-    """Classify only reviewed direct entity lifecycle evidence for one profile.
+    """Classify reviewed direct entity lifecycle evidence for one gameplay profile.
 
-    Live does not currently use expansion alone as a retirement statement: knowing that
-    content originated in Classic does not prove it still exists on Live. Unrestricted
-    accepts everything. P99 can use a reviewed explicit expansion/era field because the
-    profile has a positive Classic-through-Velious era boundary.
+    Live does not currently use origin expansion alone as a retirement statement.
+    Unrestricted accepts all compiled knowledge. Any profile configured with an
+    ``expansion_cap`` can classify reviewed direct lifecycle evidence against that cap;
+    the current P99 profile is simply the first such profile (Velious).
     """
     entity = db.entity(int(entity_id))
     kind = str(entity["kind"] or "") if entity is not None else ""
     name = str(entity["name"] or "") if entity is not None else f"entity {entity_id}"
-    profile = str(profile_id or "live").strip().casefold()
+    profile = world_profile(profile_id)
     evidence = entity_expansion_evidence(db, int(entity_id))
 
-    if profile == "unrestricted":
+    if profile.availability_mode == "unrestricted":
         return EntityLifecycleDecision(
             int(entity_id),
             kind,
             name,
-            profile,
+            profile.profile_id,
             True,
             "available",
             "unrestricted/custom profile retains all compiled knowledge",
             evidence,
         )
 
-    if profile != "p99" or not evidence:
+    if profile.availability_mode != "expansion_cap" or not profile.expansion_cap or not evidence:
         return EntityLifecycleDecision(
             int(entity_id),
             kind,
             name,
-            profile,
+            profile.profile_id,
             None,
             "unknown",
             (
                 "expansion evidence alone is not a Live retirement statement"
-                if profile == "live" and evidence
+                if profile.availability_mode == "live" and evidence
                 else "no reviewed direct entity expansion evidence is currently compiled"
             ),
             evidence,
         )
 
-    classified = [p99_expansion_allowed(item.expansion) for item in evidence]
+    cap_label = profile.expansion_cap_label or profile.expansion_cap
+    classified = [
+        profile_expansion_allowed(profile.profile_id, item.expansion)
+        for item in evidence
+    ]
     known = [value for value in classified if value is not None]
     if not known:
         return EntityLifecycleDecision(
             int(entity_id),
             kind,
             name,
-            profile,
+            profile.profile_id,
             None,
             "unknown",
             "reviewed entity expansion evidence is present but not classifiable",
@@ -381,10 +390,10 @@ def entity_lifecycle_decision(
             int(entity_id),
             kind,
             name,
-            profile,
+            profile.profile_id,
             None,
             "conflict",
-            "reviewed direct source expansion statements disagree across the P99 Velious boundary",
+            f"reviewed direct source expansion statements disagree across the {cap_label} boundary",
             evidence,
         )
     if all(value is True for value in known):
@@ -392,19 +401,19 @@ def entity_lifecycle_decision(
             int(entity_id),
             kind,
             name,
-            profile,
+            profile.profile_id,
             True,
             "available",
-            "reviewed direct entity expansion evidence places this content at or before Velious",
+            f"reviewed direct entity expansion evidence places this content at or before {cap_label}",
             evidence,
         )
     return EntityLifecycleDecision(
         int(entity_id),
         kind,
         name,
-        profile,
+        profile.profile_id,
         False,
-        "post_velious",
-        "reviewed direct entity expansion evidence places this content after Velious",
+        _post_cap_status(profile.expansion_cap),
+        f"reviewed direct entity expansion evidence places this content after {cap_label}",
         evidence,
     )

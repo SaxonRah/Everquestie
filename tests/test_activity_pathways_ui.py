@@ -65,6 +65,7 @@ class ActivityPathwaysUITests(unittest.TestCase):
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_view_selected", None)))
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_track_selected", None)))
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_navigate_contact", None)))
+        self.assertTrue(callable(getattr(app_cls, "_activity_pathway_navigate_match", None)))
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_explain_selected", None)))
 
     def test_view_uses_exact_quest_id_handoff(self):
@@ -167,6 +168,124 @@ class ActivityPathwaysUITests(unittest.TestCase):
         with patch("eqquest.activity_pathways_ui.pathway_contact_navigation", return_value=result):
             self.app_module.EverQuestieApp._activity_pathway_navigate_contact(fake)
         self.assertIn("No safely mapped", fake.status.value)
+
+    def test_navigate_match_uses_exact_direct_step_and_map_owner(self):
+        fake = self._fake()
+        mapped: list[tuple] = []
+        fake._focus_navigation_map_target = lambda *args: mapped.append(tuple(args))
+        choice = SimpleNamespace(
+            zone_name="Current Zone",
+            x=70.0,
+            y=80.0,
+            z=9.0,
+            map_label="Token Source (reviewed loot source)",
+            location_entity_name="Token Source",
+        )
+        result = SimpleNamespace(
+            map_ready=True,
+            route_ready=False,
+            map_choices=(choice,),
+            route_choices=(),
+            quest_name="Suggested Quest",
+            current_zone_name="Current Zone",
+            reason="ready",
+        )
+
+        with patch(
+            "eqquest.activity_pathways_ui.quest_objective_navigation_with_reviewed_sources",
+            return_value=result,
+        ) as navigation:
+            self.app_module.EverQuestieApp._activity_pathway_navigate_match(fake)
+
+        navigation.assert_called_once_with(
+            fake.db,
+            4242,
+            "Current Zone",
+            step_order=1,
+        )
+        self.assertEqual(
+            mapped,
+            [("Current Zone", 70.0, 80.0, 9.0, "Token Source (reviewed loot source)")],
+        )
+        self.assertIn("exact matched objective", fake.status.value.casefold())
+
+    def test_multiple_direct_matches_require_explicit_evidence_choice(self):
+        fake = self._fake()
+        second = PathwayEvidence(
+            "kill",
+            "Second Mob",
+            3,
+            5,
+            "Defeat Second Mob",
+            "Second Zone",
+        )
+        suggestion = PathwaySuggestion(
+            quest_id=4242,
+            quest_name="Suggested Quest",
+            score=110,
+            evidence=(self.suggestion.evidence[0], second),
+            profile_status="unknown",
+        )
+        fake._activity_pathway_by_item = {"pathway:4242": suggestion}
+        result = SimpleNamespace(
+            map_ready=False,
+            route_ready=False,
+            map_choices=(),
+            route_choices=(),
+            quest_name="Suggested Quest",
+            current_zone_name="Current Zone",
+            reason="Active objective has no safe exact coordinate.",
+        )
+
+        with patch(
+            "eqquest.activity_pathways_ui.ask_pathway_objective_evidence",
+            return_value=second,
+        ) as choose, patch(
+            "eqquest.activity_pathways_ui.quest_objective_navigation_with_reviewed_sources",
+            return_value=result,
+        ) as navigation:
+            self.app_module.EverQuestieApp._activity_pathway_navigate_match(fake)
+
+        choose.assert_called_once_with(fake, suggestion)
+        navigation.assert_called_once_with(
+            fake.db,
+            4242,
+            "Current Zone",
+            step_order=5,
+        )
+        self.assertIn("Matched objective", fake.status.value)
+
+    def test_graph_only_pathway_cannot_be_promoted_to_structured_step_navigation(self):
+        fake = self._fake()
+        graph = PathwaySuggestion(
+            quest_id=4242,
+            quest_name="Graph Suggested Quest",
+            score=50,
+            evidence=(
+                PathwayEvidence(
+                    event_kind="kill",
+                    subject="Observed Mob",
+                    observed_count=2,
+                    step_order=0,
+                    step_description="",
+                    step_zone="",
+                    path_kind="mob_drop_quest",
+                    related_item="Quest Item",
+                    relationship_evidence="reviewed chain",
+                ),
+            ),
+            profile_status="unknown",
+        )
+        fake._activity_pathway_by_item = {"pathway:4242": graph}
+
+        with patch(
+            "eqquest.activity_pathways_ui.quest_objective_navigation_with_reviewed_sources"
+        ) as navigation:
+            self.app_module.EverQuestieApp._activity_pathway_navigate_match(fake)
+
+        navigation.assert_not_called()
+        self.assertIn("relationship chain", fake.status.value)
+        self.assertIn("no exact structured matched step", fake.status.value)
 
 
 if __name__ == "__main__":

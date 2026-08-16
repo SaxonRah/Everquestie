@@ -69,7 +69,7 @@ class MapReconcileAccelerationTests(unittest.TestCase):
                     name="Repeated Name",
                     merge_by_name=True,
                 )
-                db.add_entity_alias(entity_id, "Repeated Name")
+                db.add_alias(entity_id, "Repeated Name")
                 catalog = MapCatalog(db)
                 with db.batch():
                     db.conn.execute(

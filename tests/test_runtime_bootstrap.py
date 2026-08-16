@@ -25,6 +25,7 @@ class RuntimeBootstrapTests(unittest.TestCase):
             "install_zone_opportunities_ui",
             "install_loot_relevance_ui",
             "install_target_intelligence_ui",
+            "install_target_known_drops_ui",
             "install_runtime_mode_ui",
         ]
 

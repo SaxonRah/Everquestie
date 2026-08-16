@@ -4,14 +4,21 @@ Activity Pathways turns the live EverQuest log into a conservative discovery sur
 
 The feature does **not** invent quests, infer undocumented relationships, or assume a suggested quest is currently owned. It projects player observations through structured knowledge that is already present in the shipped database.
 
-## First supported signals
+## Supported signals
 
-The initial implementation uses two exact log-derived signals:
+The direct implementation uses two exact log-derived signals:
 
 - `kill` observations matched to a structured quest step with an exact NPC target;
 - `loot` observations matched to a structured quest step with an exact item target.
 
-Quest-step prose is never searched for mob or item names. A description mentioning an NPC without a structured NPC target is not enough to create a pathway.
+The graph layer also supports reviewed source-backed chains:
+
+- looted item → `objective_turn_in_item` → quest;
+- observed NPC slain → `drops_from` item → `objective_loot` or `objective_turn_in_item` → quest.
+
+Every graph relationship must retain source-page provenance. Graph chains also require the observed NPC/item name or alias to resolve to exactly one canonical entity of that kind. If two canonical NPCs or items share the same observed name, EverQuestie leaves the chain unresolved rather than choosing one.
+
+Quest-step prose is never searched for mob or item names. A description mentioning an NPC without a structured NPC target is not enough to create a direct pathway, and arbitrary relationship names are not accepted as graph semantics.
 
 Generic EQ kill messages can describe a mob slain by another visible player or group member, so Activity Pathways describes those as **observed slain** rather than claiming every death was the player's personal kill. Loot messages are direct player observations.
 
@@ -21,13 +28,13 @@ EverQuestie already writes parsed log events to the writable user-state database
 
 This prevents yesterday's kills and loot from appearing as current activity while preserving the existing event history for quest reconciliation and future session analytics.
 
-No new user-state schema is required for the initial feature.
+No new user-state schema is required for the current feature.
 
 ## Knowledge boundary
 
 The shipped knowledge database remains immutable at runtime.
 
-The opportunity index is built lazily after the first relevant session observation and uses only structured `quest_steps.match_json` targets. Exact entity-backed targets can use canonical entity names/aliases; literal targets use exact normalized text.
+The opportunity indexes are built lazily after the first relevant session observation. Direct matching uses structured `quest_steps.match_json` targets. Graph matching uses only the reviewed normalized relationship semantics listed above. Exact entity-backed targets can use canonical entity names/aliases; literal direct targets use exact normalized text.
 
 Already tracked quests are omitted because normal quest Guidance owns those. Quests definitively outside the active gameplay/server profile are also omitted. Unknown lifecycle evidence remains unknown rather than being guessed away.
 
@@ -37,10 +44,13 @@ Ranking is a relevance aid, not a probability or recommendation model.
 
 Current signals are intentionally simple:
 
-- loot objective matches start stronger than generic kill observations;
-- repeated exact observations increase the signal, with a bounded repeat bonus;
-- an exact current-zone match adds a small contextual bonus;
-- multiple exact objectives supporting the same quest accumulate.
+- direct loot objective matches start strongest;
+- direct kill objectives follow;
+- possessing an explicit turn-in item is a strong secondary signal;
+- mob → drop → quest chains are useful but deliberately weaker than direct observed objectives;
+- repeated exact observations increase the signal, with bounded repeat bonuses;
+- an exact current-zone match adds a small contextual bonus to direct objectives;
+- multiple independent exact signals supporting the same quest accumulate.
 
 The UI labels the resulting strength as `new`, `medium`, or `high`; these labels mean strength of observed evidence only.
 
@@ -50,7 +60,7 @@ The Live-tab **Potential Pathways** panel provides:
 
 - **View quest** — exact entity-ID handoff to Knowledge;
 - **Track quest** — explicit opt-in to existing tracking/reconciliation;
-- **Why this?** — lists the exact session observation and structured quest objective that produced the suggestion.
+- **Why this?** — lists the exact session observation and structured objective/relationship chain that produced the suggestion.
 
 Simply seeing or selecting a pathway never changes tracked quest state or quest progress.
 
@@ -59,7 +69,7 @@ Simply seeing or selecting a pathway never changes tracked quest state or quest 
 In packaged mode:
 
 - observations are read from `everquestie-user.sqlite3`;
-- quest/entity knowledge is read from the immutable `everquestie-knowledge.sqlite3` snapshot;
+- quest/entity/relationship knowledge is read from the immutable `everquestie-knowledge.sqlite3` snapshot;
 - the pathway engine performs no knowledge writes.
 
 Regression coverage hashes the finalized knowledge snapshot before/after a packaged pathway observation and verifies that no knowledge WAL/SHM sidecars are created.
@@ -68,12 +78,11 @@ Regression coverage hashes the finalized knowledge snapshot before/after a packa
 
 Future slices can build on the same evidence model without changing its trust boundary:
 
-1. item → quest relationships beyond direct objective steps;
-2. NPC → dropped item → quest chains when all graph edges are source-backed;
-3. quest starter / turn-in NPC map and Travel actions;
-4. faction-change context correlated with nearby activity, clearly labeled as observation unless canonical causality is known;
-5. session summaries (zones visited, mobs observed slain, loot, faction changes, quest progress);
-6. personal encounter/drop history stored only in user state;
-7. camp/activity clustering based on repeated observations, labeled as inferred session context rather than canonical knowledge.
+1. quest starter / turn-in NPC map and Travel actions;
+2. faction-change context correlated with nearby activity, clearly labeled as observation unless canonical causality is known;
+3. session summaries (zones visited, mobs observed slain, loot, faction changes, quest progress);
+4. personal encounter/drop history stored only in user state;
+5. camp/activity clustering based on repeated observations, labeled as inferred session context rather than canonical knowledge;
+6. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed.
 
 The completed Allakhazam DB/wiki mirror should increase the breadth of these pathways substantially, but Activity Pathways itself remains source-agnostic: it consumes normalized EverQuestie knowledge rather than crawling or querying providers at runtime.

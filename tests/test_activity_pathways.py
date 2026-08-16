@@ -16,10 +16,25 @@ class ActivityPathwayEngineTests(unittest.TestCase):
     def _db(self, root: str) -> Database:
         return Database(Path(root) / "working.sqlite3")
 
+    @staticmethod
+    def _source(db: Database, key: str) -> int:
+        return db.upsert_source_page(
+            url=f"https://everquest.allakhazam.com/db/quest.html?quest={key}",
+            title=f"Activity pathway source {key}",
+            entity_type="quest",
+            sha256=f"sha-{key}",
+            plain_text="reviewed structured quest objective",
+            raw_html="<html></html>",
+            source_name="Allakhazam",
+            source_kind="local_mirror",
+            source_key=f"quest:{key}",
+        )
+
     def test_kill_and_loot_activity_aggregate_into_exact_quest_pathway(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
+                page = self._source(db, "bloodsaber")
                 quest = db.upsert_entity(kind="quest", name="Bloodsaber Investigation")
                 db.add_quest_step(
                     quest,
@@ -27,6 +42,7 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                     "Defeat Bloodsabers",
                     zone="Qeynos Catacombs",
                     match={"event": "kill", "npc": "a bloodsaber", "count": 10},
+                    source_page_id=page,
                 )
                 db.add_quest_step(
                     quest,
@@ -34,6 +50,7 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                     "Recover a Bloodsaber Blade",
                     zone="Qeynos Catacombs",
                     match={"event": "loot", "item": "Bloodsaber Blade", "count": 1},
+                    source_page_id=page,
                 )
 
                 engine = ActivityPathwayEngine(db)
@@ -59,16 +76,41 @@ class ActivityPathwayEngineTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_unprovenanced_structured_step_never_becomes_direct_pathway(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                quest = db.upsert_entity(kind="quest", name="Unsourced Local Guess")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Loot an Unsourced Token",
+                    zone="Test Zone",
+                    match={"event": "loot", "item": "Unsourced Token"},
+                    source_page_id=None,
+                )
+                db.add_event(Event(kind="loot", raw="loot", item="Unsourced Token"))
+
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0)
+                engine.refresh_observations()
+
+                self.assertEqual(engine.suggestions("Test Zone"), [])
+            finally:
+                db.close()
+
     def test_session_boundary_ignores_old_observations(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
+                page = self._source(db, "fresh")
                 quest = db.upsert_entity(kind="quest", name="Fresh Session Quest")
                 db.add_quest_step(
                     quest,
                     1,
                     "Loot the fresh token",
                     match={"event": "loot", "item": "Fresh Token"},
+                    source_page_id=page,
                 )
                 db.add_event(Event(kind="loot", raw="old", item="Fresh Token"))
 
@@ -87,6 +129,7 @@ class ActivityPathwayEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
+                page = self._source(db, "prose")
                 db.upsert_entity(kind="npc", name="a suspicious rat")
                 quest = db.upsert_entity(kind="quest", name="Prose Only Quest")
                 db.add_quest_step(
@@ -94,6 +137,7 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                     1,
                     "Kill a suspicious rat somewhere nearby",
                     match={"event": "kill"},
+                    source_page_id=page,
                 )
                 db.add_event(Event(kind="kill", raw="kill", actor="a suspicious rat"))
 
@@ -108,12 +152,14 @@ class ActivityPathwayEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
+                page = self._source(db, "tracked")
                 quest = db.upsert_entity(kind="quest", name="Already Tracked")
                 db.add_quest_step(
                     quest,
                     1,
                     "Loot the tracked token",
                     match={"event": "loot", "item": "Tracked Token"},
+                    source_page_id=page,
                 )
                 db.track_quest(quest)
                 db.add_event(Event(kind="loot", raw="loot", item="Tracked Token"))
@@ -129,6 +175,8 @@ class ActivityPathwayEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
+                frequent_page = self._source(db, "frequent")
+                single_page = self._source(db, "single")
                 frequent = db.upsert_entity(kind="quest", name="Frequent Quest")
                 single = db.upsert_entity(kind="quest", name="Single Quest")
                 db.add_quest_step(
@@ -136,12 +184,14 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                     1,
                     "Defeat repeated mob",
                     match={"event": "kill", "npc": "repeated mob"},
+                    source_page_id=frequent_page,
                 )
                 db.add_quest_step(
                     single,
                     1,
                     "Defeat single mob",
                     match={"event": "kill", "npc": "single mob"},
+                    source_page_id=single_page,
                 )
                 for _ in range(5):
                     db.add_event(Event(kind="kill", raw="kill", actor="repeated mob"))
@@ -165,12 +215,14 @@ class ActivityPathwayEngineTests(unittest.TestCase):
 
             builder = Database(working)
             try:
+                page = self._source(builder, "packaged")
                 quest = builder.upsert_entity(kind="quest", name="Packaged Pathway Quest")
                 builder.add_quest_step(
                     quest,
                     1,
                     "Loot a Packaged Token",
                     match={"event": "loot", "item": "Packaged Token"},
+                    source_page_id=page,
                 )
             finally:
                 builder.close()

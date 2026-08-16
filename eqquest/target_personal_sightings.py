@@ -123,9 +123,9 @@ def target_personal_sighting_text(target_name: str, row: TargetPersonalSighting)
     if row.actionable:
         lines += [
             "",
-            "This canonical zone can be handed to Travel as a destination because the "
-            "logged zone token resolved conservatively. The destination is still labeled "
-            "personal history: it is not being written into canonical NPC spawn knowledge.",
+            "This canonical zone can be used as a personal-history destination in Travel "
+            "because the logged zone token resolved conservatively. It is not being written "
+            "into canonical NPC spawn knowledge.",
         ]
     else:
         lines += [

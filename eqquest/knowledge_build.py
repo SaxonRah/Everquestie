@@ -148,7 +148,7 @@ def _run_allakhazam_mirror(
                 [(source_version, page_id) for page_id in imported_page_ids],
             )
 
-    kinds = {"quest": 0, "npc": 0, "item": 0, "zone": 0}
+    kinds = {"quest": 0, "npc": 0, "item": 0, "zone": 0, "spell": 0}
     relationships = discovered = quest_steps = locations = 0
     for result in summary.imported:
         if result.kind in kinds:
@@ -167,6 +167,7 @@ def _run_allakhazam_mirror(
         "npcs": kinds["npc"],
         "items": kinds["item"],
         "zones": kinds["zone"],
+        "spells": kinds["spell"],
         "relationships": relationships,
         "discovered_entities": discovered,
         "quest_steps": quest_steps,

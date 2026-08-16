@@ -66,6 +66,61 @@ class ActivityClusterTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_welcome_discards_prior_zone_and_clears_stale_zone_label(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                db.add_event(Event(kind="zone", raw="zone", zone="Old Zone"))
+                for _ in range(4):
+                    db.add_event(Event(kind="kill", raw="old kill", actor="Old Mob"))
+                db.add_event(Event(kind="welcome", raw="Welcome to EverQuest!"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="new kill", actor="Unlocated Mob"))
+
+                # Deliberately pass stale caller state. The explicit Welcome boundary is
+                # stronger evidence and must prevent the old zone from owning new rows.
+                summary = activity_cluster_summary(db, 0, current_zone="Old Zone")
+
+                self.assertTrue(summary.active)
+                self.assertEqual(summary.zone, "")
+                self.assertEqual(summary.mobs_observed_slain, 3)
+                self.assertEqual(summary.top_mobs[0].label, "Unlocated Mob")
+                text = activity_cluster_text(summary)
+                self.assertIn("Zone unknown", text)
+                self.assertIn("Unlocated Mob ×3", text)
+                self.assertNotIn("Old Zone", text)
+                self.assertNotIn("Old Mob", text)
+            finally:
+                db.close()
+
+    def test_zone_entry_after_welcome_restores_new_cluster_geography(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                db.add_event(Event(kind="zone", raw="zone", zone="Old Zone"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="old kill", actor="Old Mob"))
+                db.add_event(Event(kind="welcome", raw="Welcome to EverQuest!"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="unlocated kill", actor="Between Mob"))
+                db.add_event(Event(kind="zone", raw="zone", zone="New Zone"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="new kill", actor="New Mob"))
+
+                summary = activity_cluster_summary(db, 0, current_zone="Old Zone")
+
+                self.assertTrue(summary.active)
+                self.assertEqual(summary.zone, "New Zone")
+                self.assertEqual(summary.mobs_observed_slain, 3)
+                self.assertEqual(summary.top_mobs[0].label, "New Mob")
+                text = activity_cluster_text(summary)
+                self.assertIn("New Zone", text)
+                self.assertIn("New Mob ×3", text)
+                self.assertNotIn("Old Mob", text)
+                self.assertNotIn("Between Mob", text)
+            finally:
+                db.close()
+
     def test_one_off_events_stay_quiet(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = Database(Path(tempdir) / "working.sqlite3")

@@ -7,7 +7,7 @@ from typing import Any
 
 from .db import normalize_name
 from .entity_lifecycle import lifecycle_field, lifecycle_field_policy
-from .world_profiles import p99_expansion_allowed
+from .world_profiles import profile_expansion_allowed, world_profile
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,35 +16,66 @@ class LifecycleKindCoverage:
     entities: int
     with_expansion_evidence: int
     evidence_rows: int
-    p99_available: int
-    p99_blocked: int
-    p99_conflict: int
-    p99_undetermined: int
+    profile_available: int
+    profile_blocked: int
+    profile_conflict: int
+    profile_undetermined: int
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
+    # Compatibility properties for callers written when the audit was P99-only.
+    @property
+    def p99_available(self) -> int:
+        return self.profile_available
+
+    @property
+    def p99_blocked(self) -> int:
+        return self.profile_blocked
+
+    @property
+    def p99_conflict(self) -> int:
+        return self.profile_conflict
+
+    @property
+    def p99_undetermined(self) -> int:
+        return self.profile_undetermined
+
+    def as_dict(self, *, include_p99_aliases: bool = False) -> dict[str, Any]:
+        result = {
             "kind": self.kind,
             "entities": self.entities,
             "with_expansion_evidence": self.with_expansion_evidence,
             "evidence_rows": self.evidence_rows,
-            "p99_available": self.p99_available,
-            "p99_blocked": self.p99_blocked,
-            "p99_conflict": self.p99_conflict,
-            "p99_undetermined": self.p99_undetermined,
+            "profile_available": self.profile_available,
+            "profile_blocked": self.profile_blocked,
+            "profile_conflict": self.profile_conflict,
+            "profile_undetermined": self.profile_undetermined,
         }
+        if include_p99_aliases:
+            result.update(
+                {
+                    "p99_available": self.profile_available,
+                    "p99_blocked": self.profile_blocked,
+                    "p99_conflict": self.profile_conflict,
+                    "p99_undetermined": self.profile_undetermined,
+                }
+            )
+        return result
 
 
 @dataclass(frozen=True, slots=True)
 class LifecycleAuditSummary:
+    profile_id: str
+    profile_label: str
+    expansion_cap: str
+    expansion_cap_label: str
     total_entities: int
     entities_with_expansion_evidence: int
     evidence_rows: int
     rejected_lifecycle_candidates: int
     entities_with_rejected_lifecycle_candidates: int
-    p99_available_direct: int
-    p99_blocked_direct: int
-    p99_conflict: int
-    p99_undetermined_direct: int
+    available_direct: int
+    blocked_direct: int
+    conflict: int
+    undetermined_direct: int
     by_kind: tuple[LifecycleKindCoverage, ...]
     by_source_kind: tuple[tuple[str, int], ...]
     by_expansion: tuple[tuple[str, int], ...]
@@ -52,18 +83,43 @@ class LifecycleAuditSummary:
     by_rejected_source_kind: tuple[tuple[str, int], ...]
     by_rejected_reason: tuple[tuple[str, int], ...]
 
+    # Compatibility properties for existing P99-default builder/report callers.
+    @property
+    def p99_available_direct(self) -> int:
+        return self.available_direct
+
+    @property
+    def p99_blocked_direct(self) -> int:
+        return self.blocked_direct
+
+    @property
+    def p99_conflict(self) -> int:
+        return self.conflict
+
+    @property
+    def p99_undetermined_direct(self) -> int:
+        return self.undetermined_direct
+
     def as_dict(self) -> dict[str, Any]:
-        return {
+        include_p99_aliases = self.profile_id == "p99"
+        result: dict[str, Any] = {
+            "profile_id": self.profile_id,
+            "profile_label": self.profile_label,
+            "expansion_cap": self.expansion_cap,
+            "expansion_cap_label": self.expansion_cap_label,
             "total_entities": self.total_entities,
             "entities_with_expansion_evidence": self.entities_with_expansion_evidence,
             "evidence_rows": self.evidence_rows,
             "rejected_lifecycle_candidates": self.rejected_lifecycle_candidates,
             "entities_with_rejected_lifecycle_candidates": self.entities_with_rejected_lifecycle_candidates,
-            "p99_available_direct": self.p99_available_direct,
-            "p99_blocked_direct": self.p99_blocked_direct,
-            "p99_conflict": self.p99_conflict,
-            "p99_undetermined_direct": self.p99_undetermined_direct,
-            "by_kind": [row.as_dict() for row in self.by_kind],
+            "available_direct": self.available_direct,
+            "blocked_direct": self.blocked_direct,
+            "conflict": self.conflict,
+            "undetermined_direct": self.undetermined_direct,
+            "by_kind": [
+                row.as_dict(include_p99_aliases=include_p99_aliases)
+                for row in self.by_kind
+            ],
             "by_source_kind": [
                 {"source_kind": key, "evidence_rows": count}
                 for key, count in self.by_source_kind
@@ -85,6 +141,16 @@ class LifecycleAuditSummary:
                 for key, count in self.by_rejected_reason
             ],
         }
+        if include_p99_aliases:
+            result.update(
+                {
+                    "p99_available_direct": self.available_direct,
+                    "p99_blocked_direct": self.blocked_direct,
+                    "p99_conflict": self.conflict,
+                    "p99_undetermined_direct": self.undetermined_direct,
+                }
+            )
+        return result
 
 
 def _json_object(raw: Any) -> dict[str, Any]:
@@ -95,13 +161,31 @@ def _json_object(raw: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
-    """Measure reviewed direct lifecycle coverage with set-based knowledge reads.
+def _audit_profile(profile_id: str):
+    profile = world_profile(profile_id)
+    if profile.profile_id != str(profile_id or "").strip().casefold():
+        raise ValueError(f"unknown gameplay profile: {profile_id}")
+    if profile.availability_mode != "expansion_cap" or not profile.expansion_cap:
+        raise ValueError(
+            f"gameplay profile '{profile.profile_id}' is not an expansion-capped profile"
+        )
+    return profile
+
+
+def profile_lifecycle_audit(db, profile_id: str = "p99") -> LifecycleAuditSummary:
+    """Measure reviewed direct lifecycle coverage for one expansion-capped profile.
 
     Lifecycle-looking fields are passed through the same source policy used at runtime.
     Rejected candidates are counted separately so source drift is visible without being
     promoted into gameplay-profile truth.
+
+    The default remains ``p99`` for build/report compatibility. Live is intentionally
+    not accepted here because origin expansion alone is not a Live retirement fact;
+    unrestricted is not an era boundary either.
     """
+    profile = _audit_profile(profile_id)
+    cap_label = profile.expansion_cap_label or profile.expansion_cap or "expansion cap"
+
     entity_rows = db.conn.execute(
         """
         SELECT e.id,e.kind,e.data_json,e.source_page_id,
@@ -125,8 +209,6 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
 
     kind_entities: Counter[str] = Counter()
     entity_kind: dict[int, str] = {}
-    # Runtime deduplication key: normalized lifecycle text, surface/origin, source page,
-    # and exact top-level lifecycle field.
     evidence_by_entity: dict[
         int,
         dict[tuple[str, str, int | None, str], tuple[str, str]],
@@ -241,7 +323,7 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
         for expansion, source_kind in values:
             source_kinds[source_kind] += 1
             expansions[expansion] += 1
-            value = p99_expansion_allowed(expansion)
+            value = profile_expansion_allowed(profile.profile_id, expansion)
             if value is None:
                 unclassified_expansions[expansion] += 1
             else:
@@ -282,15 +364,19 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
     )
 
     return LifecycleAuditSummary(
+        profile_id=profile.profile_id,
+        profile_label=profile.label,
+        expansion_cap=str(profile.expansion_cap),
+        expansion_cap_label=cap_label,
         total_entities=len(entity_rows),
         entities_with_expansion_evidence=len(evidence_by_entity),
         evidence_rows=evidence_rows,
         rejected_lifecycle_candidates=rejected_candidates,
         entities_with_rejected_lifecycle_candidates=len(rejected_by_entity),
-        p99_available_direct=available,
-        p99_blocked_direct=blocked,
-        p99_conflict=conflict,
-        p99_undetermined_direct=undetermined,
+        available_direct=available,
+        blocked_direct=blocked,
+        conflict=conflict,
+        undetermined_direct=undetermined,
         by_kind=kinds,
         by_source_kind=tuple(
             sorted(source_kinds.items(), key=lambda item: (-item[1], item[0]))
@@ -313,10 +399,13 @@ def profile_lifecycle_audit(db) -> LifecycleAuditSummary:
     )
 
 
-def profile_lifecycle_audit_text(db) -> str:
-    summary = profile_lifecycle_audit(db)
+def profile_lifecycle_audit_text(db, profile_id: str = "p99") -> str:
+    summary = profile_lifecycle_audit(db, profile_id)
+    decision_label = "P99" if summary.profile_id == "p99" else summary.profile_label
     lines = [
         "EverQuestie direct entity lifecycle audit",
+        f"Gameplay profile: {summary.profile_label} [{summary.profile_id}]",
+        f"Expansion cap: {summary.expansion_cap_label}",
         f"Entities: {summary.total_entities:,}",
         f"Entities with reviewed expansion/era evidence: {summary.entities_with_expansion_evidence:,}",
         f"Reviewed direct expansion evidence rows: {summary.evidence_rows:,}",
@@ -326,11 +415,11 @@ def profile_lifecycle_audit_text(db) -> str:
             f"{summary.entities_with_rejected_lifecycle_candidates:,} entities"
         ),
         (
-            "P99 direct lifecycle decisions: "
-            f"available={summary.p99_available_direct:,} "
-            f"blocked={summary.p99_blocked_direct:,} "
-            f"conflict={summary.p99_conflict:,} "
-            f"undetermined={summary.p99_undetermined_direct:,}"
+            f"{decision_label} direct lifecycle decisions: "
+            f"available={summary.available_direct:,} "
+            f"blocked={summary.blocked_direct:,} "
+            f"conflict={summary.conflict:,} "
+            f"undetermined={summary.undetermined_direct:,}"
         ),
         "",
         "Coverage by entity kind:",
@@ -338,11 +427,21 @@ def profile_lifecycle_audit_text(db) -> str:
     for row in summary.by_kind:
         if row.with_expansion_evidence <= 0:
             continue
+        if summary.profile_id == "p99":
+            decision_counts = (
+                f"p99_available={row.profile_available:,} "
+                f"p99_blocked={row.profile_blocked:,} conflict={row.profile_conflict:,} "
+                f"undetermined={row.profile_undetermined:,}"
+            )
+        else:
+            decision_counts = (
+                f"profile_available={row.profile_available:,} "
+                f"profile_blocked={row.profile_blocked:,} conflict={row.profile_conflict:,} "
+                f"undetermined={row.profile_undetermined:,}"
+            )
         lines.append(
             f"  {row.kind}: entities={row.entities:,} with_evidence={row.with_expansion_evidence:,} "
-            f"evidence_rows={row.evidence_rows:,} p99_available={row.p99_available:,} "
-            f"p99_blocked={row.p99_blocked:,} conflict={row.p99_conflict:,} "
-            f"undetermined={row.p99_undetermined:,}"
+            f"evidence_rows={row.evidence_rows:,} {decision_counts}"
         )
 
     if summary.by_source_kind:
@@ -376,7 +475,10 @@ def profile_lifecycle_audit_text(db) -> str:
             "Boundary: field presence alone is not lifecycle evidence; source + field + parser semantics must be reviewed.",
             "Only explicit top-level fields accepted by the shared lifecycle source policy are counted as direct evidence.",
             "Rejected lifecycle-looking fields remain diagnostic candidates and do not affect gameplay profiles.",
-            "Only reviewed expansion labels cross the P99 boundary; unrecognized accepted values remain undetermined.",
+            (
+                f"Only reviewed expansion labels cross the {summary.expansion_cap_label} boundary for "
+                f"{summary.profile_label}; unrecognized accepted values remain undetermined."
+            ),
             "Locations, prose, names, dates, nested metadata, and fuzzy inference are excluded from this audit.",
         ]
     )

@@ -86,6 +86,7 @@ class ActivityClusterTests(unittest.TestCase):
                 self.assertEqual(summary.mobs_observed_slain, 3)
                 self.assertEqual(summary.top_mobs[0].label, "Unlocated Mob")
                 text = activity_cluster_text(summary)
+                self.assertIn("Zone unknown", text)
                 self.assertIn("Unlocated Mob ×3", text)
                 self.assertNotIn("Old Zone", text)
                 self.assertNotIn("Old Mob", text)

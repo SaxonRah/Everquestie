@@ -11,6 +11,7 @@
 #   - Repository-approved travel supplements
 #
 # Then:
+#   - Requires the Allakhazam HTTrack mirror to be complete before DB construction
 #   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
 #   - Audits MCP inventory + rich details in working and snapshot DBs
@@ -140,13 +141,16 @@ Write-Host "OK  MCP rich-detail compiler"
 Write-Host ("    {0}" -f $DetailBridge)
 
 # ------------------------------------------------------------
-# Allakhazam mirror inventory audit
+# Allakhazam mirror inventory + completion gate
 # ------------------------------------------------------------
 #
-# Capture what the completed local mirror actually contains before the expensive DB
-# build starts. This is intentionally diagnostic rather than a completeness gate: no
-# reviewed minimum number of spell or lifecycle pages exists yet. The JSON artifact
-# lets a later lifecycle audit distinguish source-capture gaps from reconciliation gaps.
+# Capture what the local mirror actually contains before the expensive DB build starts.
+# A canonical full build must never compile from an HTTrack tree that is still active:
+# .tmp files are crawler-owned in-progress state and should become completed HTML when
+# the mirror finishes. The ordinary audit CLI remains diagnostic by default; this full
+# build opts into --require-complete and stops before DB construction while any .tmp
+# pages remain. Coverage counts themselves remain diagnostic rather than arbitrary
+# minimum spell/item/NPC/quest thresholds.
 # ------------------------------------------------------------
 
 Write-Host
@@ -157,8 +161,9 @@ Write-Host
 
 python .\tools\audit_allakhazam_mirror.py `
     $AllakhazamMirror `
-    --output $MirrorAuditReport
-Assert-LastExitCode "Allakhazam mirror inventory audit"
+    --output $MirrorAuditReport `
+    --require-complete
+Assert-LastExitCode "Allakhazam completed-mirror inventory audit"
 
 # ------------------------------------------------------------
 # Automatic source/build versions
@@ -352,7 +357,7 @@ Write-Host "  Profile lifecycle  : $LifecycleReport"
 Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
-Write-Host "  Allakhazam mirror  : audited + included"
+Write-Host "  Allakhazam mirror  : completed + audited + included"
 Write-Host "  MCP inventory      : verified"
 Write-Host "  MCP rich details   : verified"
 Write-Host "  Profile lifecycle  : audited"

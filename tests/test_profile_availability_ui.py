@@ -13,10 +13,9 @@ from eqquest.world_profiles import set_active_world_profile
 class ProfileAvailabilityUITests(unittest.TestCase):
     def test_installer_rebinds_app_profile_surfaces(self):
         from eqquest import app as app_module
-        from eqquest import route_guidance_ui as travel_ui
         from eqquest.world_profile_ui import install_world_profile_ui
 
-        # The production launcher installs world-profile Travel ownership first.
+        # The production launcher installs global world-profile ownership first.
         install_world_profile_ui()
         install_profile_availability_ui()
 
@@ -24,7 +23,7 @@ class ProfileAvailabilityUITests(unittest.TestCase):
         self.assertIs(app_module.entity_detail_text, profiled_entity_detail_text)
         self.assertTrue(
             getattr(
-                travel_ui.RouteGuidanceFrame._world_profile_changed,
+                app_module.EverQuestieApp._world_profile_changed,
                 "_everquestie_profile_availability_ui",
                 False,
             )

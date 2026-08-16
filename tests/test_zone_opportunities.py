@@ -17,7 +17,21 @@ class ZoneOpportunityTests(unittest.TestCase):
             external_namespace="eqclient:zone",
         )
 
+    def _source(self, db: Database, key: str) -> int:
+        return db.upsert_source_page(
+            url=f"https://everquest.allakhazam.com/db/quest.html?quest={key}",
+            title=f"Zone opportunity source {key}",
+            entity_type="quest",
+            sha256=f"sha-{key}",
+            plain_text="reviewed structured quest objective",
+            raw_html="<html></html>",
+            source_name="Allakhazam",
+            source_kind="local_mirror",
+            source_key=f"quest:{key}",
+        )
+
     def _quest(self, db: Database, name: str, external_id: str, zone: str, steps: int = 1) -> int:
+        source = self._source(db, external_id.replace(":", "-"))
         quest = db.upsert_entity(kind="quest", name=name, external_id=external_id)
         for order in range(1, steps + 1):
             db.add_quest_step(
@@ -26,6 +40,7 @@ class ZoneOpportunityTests(unittest.TestCase):
                 f"Objective {order} in {zone}",
                 zone=zone,
                 match={"event": "kill", "npc": f"Mob {order}"},
+                source_page_id=source,
             )
         return quest
 
@@ -44,10 +59,34 @@ class ZoneOpportunityTests(unittest.TestCase):
                 self.assertEqual([step.step_order for step in rows[0].steps], [1, 2])
                 self.assertEqual(rows[0].primary_step_order, 1)
                 self.assertFalse(rows[0].activity_match)
-                self.assertIn("2 structured objectives", rows[0].primary_reason)
+                self.assertIn("2 source-backed structured objectives", rows[0].primary_reason)
                 text = zone_opportunity_text(rows[0])
                 self.assertIn("Why here", text)
+                self.assertIn("source-backed compiled structured quest data", text)
                 self.assertIn("does not mean the quest is currently owned", text)
+            finally:
+                db.close()
+
+    def test_unprovenanced_current_zone_step_never_becomes_zone_opportunity(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                self._zone(db, "Test Zone", "9000")
+                quest = db.upsert_entity(
+                    kind="quest",
+                    name="Unsourced Local Quest",
+                    external_id="quest:unsourced-local",
+                )
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Unsourced objective in Test Zone",
+                    zone="Test Zone",
+                    match={"event": "kill", "npc": "Unsourced Mob"},
+                    source_page_id=None,
+                )
+
+                self.assertEqual(zone_opportunities(db, "Test Zone"), ())
             finally:
                 db.close()
 

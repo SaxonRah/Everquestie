@@ -5,22 +5,45 @@ _PROFILE_AVAILABILITY_UI_MARKER = "_everquestie_profile_availability_ui"
 _PROFILE_QUEST_ZONE_MARKER = "_everquestie_profile_quest_zone_policy"
 
 
+def player_knowledge_detail_text(
+    db,
+    entity_id: int,
+    *,
+    include_source_text: bool = False,
+) -> str:
+    """Render player-facing Knowledge detail without raw source-page dumps.
+
+    The underlying knowledge renderer deliberately retains an opt-in raw-source
+    snapshot for builder/debug callers. The normal Knowledge pane should instead show
+    canonical/entity-specific projections plus provenance. Shared client support files
+    such as dbstr_us.txt and ZoneNames.txt are whole-file source records, so dumping
+    their plain text beneath one selected entity is noisy and frequently repetitive.
+
+    ``include_source_text`` is accepted for signature compatibility with the legacy
+    app callback, which historically passed ``True``. It is intentionally ignored at
+    this player-facing boundary; direct diagnostic callers can still request source
+    text from :func:`eqquest.knowledge.entity_detail_text`.
+    """
+    from .profile_availability import profiled_entity_detail_text
+
+    return profiled_entity_detail_text(db, int(entity_id), include_source_text=False)
+
+
 def install_profile_availability_ui() -> None:
     """Project the global gameplay profile into player-facing knowledge surfaces."""
     from . import app as app_module
     from . import mechanics_context_ui as mechanics_ui
     from .mechanics_profile_availability import profiled_spell_stacking_text
-    from .profile_availability import (
-        ProfileAwareQuestEngine,
-        profiled_entity_detail_text,
-    )
+    from .profile_availability import ProfileAwareQuestEngine
     from .world_profiles import active_world_profile_id, world_profile, zone_profile_decision
     from .zone_authority import resolve_authoritative_zone
 
     # app.py imported these names directly. Rebinding its runtime globals keeps the
     # legacy/source UI builder intact while making normal entity detail and the quest
-    # engine consume the same selected gameplay profile as Travel.
-    app_module.entity_detail_text = profiled_entity_detail_text
+    # engine consume the same selected gameplay profile as Travel. Raw source-page
+    # snapshots remain available to explicit diagnostics but are not dumped into the
+    # normal Knowledge pane.
+    app_module.entity_detail_text = player_knowledge_detail_text
     app_module.QuestEngine = ProfileAwareQuestEngine
 
     # MechanicsContextFrame resolves this module global when a spell is selected. Keep

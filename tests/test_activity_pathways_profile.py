@@ -15,6 +15,17 @@ class ActivityPathwayProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             db = Database(Path(tempdir) / "working.sqlite3")
             try:
+                page = db.upsert_source_page(
+                    url="https://everquest.allakhazam.com/db/quest.html?quest=modern-hub",
+                    title="Modern Hub Opportunity",
+                    entity_type="quest",
+                    sha256="sha-modern-hub",
+                    plain_text="reviewed structured quest objective",
+                    raw_html="<html></html>",
+                    source_name="Allakhazam",
+                    source_kind="local_mirror",
+                    source_key="quest:modern-hub",
+                )
                 db.upsert_entity(
                     kind="zone",
                     name="Plane of Knowledge",
@@ -28,6 +39,7 @@ class ActivityPathwayProfileTests(unittest.TestCase):
                     "Loot a Modern Hub Token",
                     zone="Plane of Knowledge",
                     match={"event": "loot", "item": "Modern Hub Token"},
+                    source_page_id=page,
                 )
                 db.add_event(Event(kind="loot", raw="loot", item="Modern Hub Token"))
 

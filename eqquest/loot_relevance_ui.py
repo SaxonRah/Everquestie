@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
+from .loot_turn_in_navigation import loot_turn_in_navigation
 
 
 _LOOT_RELEVANCE_MARKER = "_everquestie_loot_relevance_ui"
@@ -87,6 +88,11 @@ def install_loot_relevance_ui() -> None:
         ).pack(side="left", padx=(6, 0))
         ttk.Button(
             buttons,
+            text="Navigate turn-in",
+            command=self._loot_relevance_navigate_turn_in,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
             text="Why relevant?",
             command=self._loot_relevance_explain,
         ).pack(side="left", padx=(6, 0))
@@ -138,6 +144,83 @@ def install_loot_relevance_ui() -> None:
         )
         self._refresh_guidance()
         self._refresh_activity_pathways(force=True)
+
+    def _loot_relevance_navigate_turn_in(self) -> None:
+        selected = _selected_loot_relevance(self)
+        if selected is None:
+            self.status.set("Select a Recent Loot Relevance row first.")
+            return
+        _item, use = selected
+        if use.relation != "objective_turn_in_item":
+            self.status.set(
+                f"{use.quest_name}: the selected relationship is {use.relation_label}, not an explicit turn-in item."
+            )
+            return
+
+        result = loot_turn_in_navigation(
+            self.db,
+            int(use.quest_id),
+            self.state_model.current_zone,
+        )
+        if result.map_ready:
+            if len(result.map_choices) == 1:
+                choice = result.map_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_map_choice
+
+                choice = ask_knowledge_map_choice(
+                    self,
+                    result.quest_name,
+                    self.state_model.current_zone or "current zone",
+                    result.map_choices,
+                )
+                if choice is None:
+                    self.status.set("Turn-in location selection cancelled.")
+                    return
+            self._focus_navigation_map_target(
+                choice.zone_name,
+                choice.x,
+                choice.y,
+                choice.z,
+                choice.map_label,
+            )
+            self.status.set(
+                f"Mapped explicit turn-in contact {choice.location_entity_name} for {result.quest_name}."
+            )
+            return
+
+        if result.route_ready:
+            if len(result.route_choices) == 1:
+                choice = result.route_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_route_choice
+
+                choice = ask_knowledge_route_choice(
+                    self,
+                    result.quest_name,
+                    self.state_model.current_zone or "current zone",
+                    result.route_choices,
+                )
+                if choice is None:
+                    self.status.set("Turn-in route selection cancelled.")
+                    return
+            travel = getattr(self, "travel_tab", None)
+            if travel is None or not hasattr(travel, "route_to_zone"):
+                self.status.set("Travel routing is not connected in this application surface.")
+                return
+            self.notebook.select(self.travel_tab)
+            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
+            if routed:
+                self.status.set(
+                    f"Travel route opened to {choice.zone_name} for {choice.route_label}."
+                )
+            else:
+                self.status.set(
+                    f"No confirmed route to {choice.zone_name} is currently available; see Travel for details."
+                )
+            return
+
+        self.status.set(result.reason)
 
     def _loot_relevance_explain(self) -> None:
         selected = _selected_loot_relevance(self)
@@ -237,6 +320,7 @@ def install_loot_relevance_ui() -> None:
     current_app._loot_relevance_view_item = _loot_relevance_view_item
     current_app._loot_relevance_view_quest = _loot_relevance_view_quest
     current_app._loot_relevance_track_quest = _loot_relevance_track_quest
+    current_app._loot_relevance_navigate_turn_in = _loot_relevance_navigate_turn_in
     current_app._loot_relevance_explain = _loot_relevance_explain
     current_app._refresh_loot_relevance = _refresh_loot_relevance
     current_app._refresh_activity_pathways = _refresh_activity_pathways

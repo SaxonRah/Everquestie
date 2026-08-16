@@ -93,7 +93,7 @@ def install_target_intelligence_ui() -> None:
         self.target_quest_tree.heading("state", text="State")
         self.target_quest_tree.column("#0", width=300, minwidth=180, stretch=True)
         self.target_quest_tree.column("relevance", width=490, minwidth=240, stretch=True)
-        self.target_quest_tree.column("state", width=115, minwidth=90, stretch=False)
+        self.target_quest_tree.column("state", width=155, minwidth=110, stretch=False)
         self.target_quest_tree.grid(row=2, column=0, sticky="ew")
         scroll = ttk.Scrollbar(panel, orient="vertical", command=self.target_quest_tree.yview)
         scroll.grid(row=2, column=1, sticky="ns")
@@ -293,9 +293,17 @@ def install_target_intelligence_ui() -> None:
             )
             return
 
-        status.set(
-            "Exact source-backed quest relevance for this target. Nothing is auto-tracked."
-        )
+        progress_rows = sum(1 for relevance in rows if relevance.tracked_progress_label)
+        if progress_rows:
+            status.set(
+                f"{progress_rows} tracked quest objective(s) correspond to this exact target; "
+                "progress is live player state. Other rows are source-backed relevance only."
+            )
+        else:
+            status.set(
+                "Exact source-backed quest relevance for this target. Nothing is auto-tracked."
+            )
+
         for relevance in rows:
             item_id = f"quest:{relevance.quest_id}"
             self._target_quest_by_item[item_id] = relevance
@@ -303,6 +311,8 @@ def install_target_intelligence_ui() -> None:
             if len(relevance.reasons) > 1:
                 reason += f" + {len(relevance.reasons) - 1} more"
             state = "tracked" if relevance.tracked else "untracked"
+            if relevance.tracked_progress_label:
+                state += f" / {relevance.tracked_progress_label}"
             if relevance.profile_status not in {"", "available"}:
                 state += f" / {relevance.profile_status}"
             tree.insert(
@@ -350,9 +360,12 @@ def install_target_intelligence_ui() -> None:
         self._target_intelligence_value = value
 
         profile_id = active_world_profile_id(self.db)
+        engine = getattr(self, "activity_pathway_engine", None)
+        observation_cursor = int(getattr(engine, "_last_event_id", 0) or 0)
         relevance_key = (
             int(value.entity_id) if value.resolved and value.entity_id is not None else None,
             profile_id,
+            observation_cursor,
         )
         if force or relevance_key != getattr(self, "_target_quest_relevance_key", None):
             rows = (

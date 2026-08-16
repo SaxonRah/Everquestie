@@ -55,9 +55,30 @@ Actions are explicit:
 - **View item** — exact item-ID handoff to Knowledge;
 - **View quest** — exact quest-ID handoff to Knowledge;
 - **Track quest** — opt in to the existing quest tracking/reconciliation workflow;
+- **Navigate turn-in** — only for an explicit `objective_turn_in_item`; locate that same quest's source-backed `objective_turn_in_to` NPC and hand its independently sourced safe location to Map or its canonical remote zone to Travel;
 - **Why relevant?** — display the source-backed relationship evidence.
 
-Simply seeing or viewing an item never changes quest state.
+Simply seeing, viewing or navigating an item never changes quest state.
+
+## Turn-in navigation boundary
+
+`Navigate turn-in` deliberately requires two separate source-backed claims:
+
+1. the selected item is an explicit `objective_turn_in_item` for the selected quest;
+2. that same quest has an explicit `objective_turn_in_to` NPC.
+
+The quest relationship selects the relevant NPC. It does **not** provide coordinates. NPC position must independently survive the existing Knowledge location/actionability rules before it can become a Map or Travel target.
+
+Consequences:
+
+- a quest starter is never substituted for a missing turn-in NPC;
+- another quest's turn-in NPC for the same item is never substituted;
+- provider candidate/unresolved coordinates remain non-actionable;
+- ambiguous or unknown current zone identity is not guessed;
+- a known turn-in NPC without a safe compiled location remains visible as a knowledge gap rather than becoming an invented target;
+- remote safe contacts become canonical Travel destination zones; Travel still owns route computation and evidence.
+
+This is intentionally the same safety boundary used by normal Knowledge → Map/Travel actions rather than a parallel navigation implementation.
 
 ## Important negative result
 
@@ -70,6 +91,8 @@ The absence can mean any of the following:
 - canonical item identity is ambiguous;
 - the relevant quest is outside the selected gameplay profile;
 - no reviewed source-backed relationship exists yet.
+
+Likewise, if `Navigate turn-in` cannot act, EverQuestie is not saying the quest has no turn-in NPC. It means the current compiled knowledge does not have both the reviewed contact relationship and a safe actionable location for that exact contact.
 
 This distinction becomes especially important while the approved Allakhazam DB/wiki mirrors are still completing.
 

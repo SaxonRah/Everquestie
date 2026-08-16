@@ -247,8 +247,10 @@ Write-Host
 python .\tools\audit_profile_lifecycle.py $SnapshotDb
 Assert-LastExitCode "Snapshot profile lifecycle audit"
 
-python .\tools\audit_profile_lifecycle.py $SnapshotDb --json |
-    Set-Content -Path $LifecycleReport -Encoding utf8
+python .\tools\audit_profile_lifecycle.py `
+    $SnapshotDb `
+    --json `
+    --output $LifecycleReport
 Assert-LastExitCode "Profile lifecycle JSON report"
 
 # ------------------------------------------------------------

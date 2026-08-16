@@ -37,7 +37,14 @@ class EntityLifecycleTests(unittest.TestCase):
         self.db.close()
         self.tempdir.cleanup()
 
-    def _source(self, key: str, *, kind: str = "local_mirror") -> int:
+    def _source(
+        self,
+        key: str,
+        *,
+        kind: str = "local_mirror",
+        name: str | None = None,
+    ) -> int:
+        source_name = name or ("Allakhazam" if kind == "local_mirror" else "Lifecycle test source")
         return self.db.upsert_source_page(
             url=f"test://{key}",
             title=key,
@@ -45,7 +52,7 @@ class EntityLifecycleTests(unittest.TestCase):
             sha256=key,
             plain_text="",
             raw_html="",
-            source_name="Lifecycle test source",
+            source_name=source_name,
             source_kind=kind,
             source_key=key,
         )
@@ -59,8 +66,8 @@ class EntityLifecycleTests(unittest.TestCase):
             source_page_id=source,
             data={"expansion": "The Serpent's Spine"},
         )
-        # The location is deliberately classic-looking. Explicit entity lifecycle is
-        # stronger than where the current corpus happens to place the NPC.
+        # The location is deliberately classic-looking. Explicit reviewed entity
+        # lifecycle is stronger than where the current corpus happens to place the NPC.
         self.db.add_location(
             npc,
             zone_entity_id=self.classic,
@@ -77,8 +84,9 @@ class EntityLifecycleTests(unittest.TestCase):
         self.assertIn("after Velious", decision.reason)
         self.assertEqual(decision.expansion_evidence[0].expansion, "The Serpent's Spine")
         self.assertEqual(decision.expansion_evidence[0].origin, "entity.data_json")
+        self.assertEqual(decision.expansion_evidence[0].field_name, "expansion")
 
-    def test_direct_classic_item_is_available_even_if_only_known_location_is_modern(self):
+    def test_direct_allakhazam_item_is_available_even_if_only_known_location_is_modern(self):
         source = self._source("classic-item")
         item = self.db.upsert_entity(
             kind="item",
@@ -102,11 +110,29 @@ class EntityLifecycleTests(unittest.TestCase):
         self.assertEqual(len(decision.zones), 1)
         self.assertFalse(decision.zones[0].allowed)
 
-    def test_rich_detail_expansion_can_classify_portable_spell(self):
+    def test_explicit_allakhazam_quest_era_is_reviewed_lifecycle_evidence(self):
+        source = self._source("quest-era")
+        quest = self.db.upsert_entity(
+            kind="quest",
+            name="Classic Quest",
+            external_id="quest:classic",
+            source_page_id=source,
+            data={"era": "Ruins of Kunark"},
+        )
+
+        evidence = entity_expansion_evidence(self.db, quest)
+        decision = entity_profile_decision(self.db, quest, "p99")
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0].field_name, "era")
+        self.assertEqual(evidence[0].expansion, "Ruins of Kunark")
+        self.assertTrue(decision.available)
+
+    def test_mcp_rich_detail_expansion_is_not_direct_spell_lifecycle_evidence(self):
         detail_source = self._source("mcp-spell-detail", kind="mcp_local_details")
         spell = self.db.upsert_entity(
             kind="spell",
-            name="Modern Test Spell",
+            name="Synthetic MCP Spell",
             external_id="12345",
             external_namespace="eqclient:spell",
         )
@@ -114,28 +140,27 @@ class EntityLifecycleTests(unittest.TestCase):
             spell,
             source_page_id=detail_source,
             detail_format="mcp-json",
-            detail_json={"name": "Modern Test Spell", "expansion": "Planes of Power"},
+            detail_json={"name": "Synthetic MCP Spell", "expansion": "Planes of Power"},
         )
         set_active_world_profile(self.db, "p99")
 
         evidence = entity_expansion_evidence(self.db, spell)
         decision = entity_profile_decision(self.db, spell, "p99")
 
-        self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0].origin, "entity_details.detail_json")
-        self.assertEqual(evidence[0].source_kind, "mcp_local_details")
-        self.assertTrue(decision.blocked)
+        self.assertEqual(evidence, ())
+        self.assertIsNone(decision.compatibility)
+        self.assertEqual(decision.status, "unknown")
         text = profiled_entity_detail_text(self.db, spell)
-        self.assertIn("Direct expansion: Planes of Power", text)
-        self.assertIn("Status: OUTSIDE PROFILE", text)
+        self.assertNotIn("Direct expansion: Planes of Power", text)
+        self.assertIn("Status: UNDETERMINED", text)
 
-    def test_conflicting_direct_expansion_sources_remain_undetermined(self):
+    def test_unreviewed_detail_cannot_conflict_with_reviewed_allakhazam_entity_field(self):
         entity_source = self._source("entity-source")
         detail_source = self._source("detail-source", kind="mcp_local_details")
         item = self.db.upsert_entity(
             kind="item",
-            name="Conflicted Token",
-            external_id="item:conflicted",
+            name="Reviewed Token",
+            external_id="item:reviewed",
             source_page_id=entity_source,
             data={"expansion": "Velious"},
         )
@@ -148,12 +173,41 @@ class EntityLifecycleTests(unittest.TestCase):
 
         decision = entity_profile_decision(self.db, item, "p99")
 
-        self.assertIsNone(decision.compatibility)
-        self.assertEqual(decision.status, "mixed")
-        self.assertIn("disagree", decision.reason)
-        self.assertEqual({e.expansion for e in decision.expansion_evidence}, {"Velious", "The Serpent's Spine"})
+        self.assertTrue(decision.available)
+        self.assertEqual(decision.status, "available")
+        self.assertEqual(
+            {e.expansion for e in decision.expansion_evidence},
+            {"Velious"},
+        )
 
-    def test_live_does_not_treat_expansion_as_retirement_evidence(self):
+    def test_unattributed_entity_expansion_is_not_source_backed_evidence(self):
+        item = self.db.upsert_entity(
+            kind="item",
+            name="Unattributed Token",
+            external_id="item:unattributed",
+            data={"expansion": "Velious"},
+        )
+
+        self.assertEqual(entity_expansion_evidence(self.db, item), ())
+        self.assertIsNone(entity_profile_decision(self.db, item, "p99").compatibility)
+
+    def test_unreviewed_local_mirror_name_is_not_treated_as_allakhazam(self):
+        source = self._source(
+            "other-mirror",
+            kind="local_mirror",
+            name="Unreviewed Community Mirror",
+        )
+        item = self.db.upsert_entity(
+            kind="item",
+            name="Other Mirror Token",
+            external_id="item:other-mirror",
+            source_page_id=source,
+            data={"expansion": "Classic"},
+        )
+
+        self.assertEqual(entity_expansion_evidence(self.db, item), ())
+
+    def test_live_does_not_treat_reviewed_expansion_as_retirement_evidence(self):
         source = self._source("modern-live-item")
         item = self.db.upsert_entity(
             kind="item",

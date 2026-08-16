@@ -30,6 +30,7 @@ def install_activity_pathways_ui() -> None:
         boundary = self.activity_pathway_engine.latest_observed_event_id()
         self.activity_pathway_engine.reset_session(boundary)
         self._activity_session_start_event_id = boundary
+        self._activity_session_start_zone = getattr(self.state_model, "current_zone", None)
         self._activity_pathway_by_item: dict[str, PathwaySuggestion] = {}
         self._activity_pathway_signature = None
 
@@ -119,8 +120,6 @@ def install_activity_pathways_ui() -> None:
         suggestion = _selected_pathway(self)
         if suggestion is None:
             return
-        # This existing exact-ID handoff opens Knowledge without resolving by name,
-        # so duplicate quest names remain distinct.
         opener = getattr(self, "_open_knowledge_entity_exact", None)
         if callable(opener):
             opener(int(suggestion.quest_id))
@@ -223,6 +222,7 @@ def install_activity_pathways_ui() -> None:
         summary = session_activity_summary(
             self.db,
             boundary,
+            starting_zone=getattr(self, "_activity_session_start_zone", None),
             current_zone=getattr(self.state_model, "current_zone", None),
             pathway_count=len(getattr(self, "_activity_pathway_by_item", {})),
         )
@@ -318,6 +318,7 @@ def install_activity_pathways_ui() -> None:
         if engine is not None and getattr(self, "tailer", None) is not None:
             boundary = engine.latest_observed_event_id()
             self._activity_session_start_event_id = boundary
+            self._activity_session_start_zone = getattr(self.state_model, "current_zone", None)
             engine.reset_session(boundary)
             self._activity_pathway_signature = None
             self._refresh_activity_pathways(force=True)

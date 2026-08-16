@@ -6,6 +6,7 @@ from .knowledge_relationship_ui import install_knowledge_relationship_navigation
 from .travel_output_ui import install_travel_output_ui
 from .world_profile_ui import install_world_profile_ui
 from .profile_availability_ui import install_profile_availability_ui
+from .target_intelligence_ui import install_target_intelligence_ui
 from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime import main
 
@@ -18,5 +19,6 @@ if __name__ == "__main__":
     install_travel_output_ui()
     install_world_profile_ui()
     install_profile_availability_ui()
+    install_target_intelligence_ui()
     install_runtime_mode_ui()
     main()

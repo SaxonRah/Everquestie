@@ -11,12 +11,13 @@
 #   - Repository-approved travel supplements
 #
 # Then:
+#   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
 #   - Audits MCP inventory + rich details in working and snapshot DBs
 #   - Audits direct gameplay-profile lifecycle coverage
 #   - Runs route acceptance
 #   - Runs the complete regression suite
-#   - Emits route/frontier/lifecycle reports and snapshot SHA-256
+#   - Emits mirror/route/frontier/lifecycle reports and snapshot SHA-256
 #
 # Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
 # map packs, or a source checkout. Those are builder inputs only.
@@ -47,6 +48,7 @@ $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\
 
 $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
+$MirrorAuditReport = Join-Path $ProjectRoot "build\allakhazam-mirror-audit.json"
 $RouteReport = Join-Path $ProjectRoot "build\route-acceptance.json"
 $FrontierReport = Join-Path $ProjectRoot "build\provider-travel-frontier.json"
 $LifecycleReport = Join-Path $ProjectRoot "build\profile-lifecycle-audit.json"
@@ -136,6 +138,27 @@ Write-Host "OK  Node.js"
 Write-Host ("    {0}" -f $Node.Source)
 Write-Host "OK  MCP rich-detail compiler"
 Write-Host ("    {0}" -f $DetailBridge)
+
+# ------------------------------------------------------------
+# Allakhazam mirror inventory audit
+# ------------------------------------------------------------
+#
+# Capture what the completed local mirror actually contains before the expensive DB
+# build starts. This is intentionally diagnostic rather than a completeness gate: no
+# reviewed minimum number of spell or lifecycle pages exists yet. The JSON artifact
+# lets a later lifecycle audit distinguish source-capture gaps from reconciliation gaps.
+# ------------------------------------------------------------
+
+Write-Host
+Write-Host "============================================"
+Write-Host " Allakhazam Mirror Inventory Coverage"
+Write-Host "============================================"
+Write-Host
+
+python .\tools\audit_allakhazam_mirror.py `
+    $AllakhazamMirror `
+    --output $MirrorAuditReport
+Assert-LastExitCode "Allakhazam mirror inventory audit"
 
 # ------------------------------------------------------------
 # Automatic source/build versions
@@ -235,7 +258,7 @@ Assert-LastExitCode "Snapshot MCP knowledge audit"
 # This is a coverage artifact rather than a release-failure gate. The corpus can be
 # complete enough to ship while some entity kinds still have undetermined lifecycle.
 # Persist the JSON so each full build can measure whether source enrichment improved
-# direct zone/NPC/quest/item/etc. era evidence without guessing from locations/prose.
+# direct zone/NPC/quest/item/spell/etc. era evidence without guessing from locations/prose.
 # ------------------------------------------------------------
 
 Write-Host
@@ -322,20 +345,21 @@ Write-Host "Snapshot SHA-256:"
 Write-Host "  $SnapshotHash"
 Write-Host
 Write-Host "Reports:"
-Write-Host "  Route acceptance  : $RouteReport"
-Write-Host "  Travel frontier   : $FrontierReport"
-Write-Host "  Profile lifecycle : $LifecycleReport"
+Write-Host "  Mirror inventory   : $MirrorAuditReport"
+Write-Host "  Route acceptance   : $RouteReport"
+Write-Host "  Travel frontier    : $FrontierReport"
+Write-Host "  Profile lifecycle  : $LifecycleReport"
 Write-Host
 Write-Host "Build passed:"
-Write-Host "  EQ client         : included"
-Write-Host "  Allakhazam        : included"
-Write-Host "  MCP inventory     : verified"
-Write-Host "  MCP rich details  : verified"
-Write-Host "  Profile lifecycle : audited"
-Write-Host "  Good's maps       : included"
-Write-Host "  Brewall maps      : included"
-Write-Host "  Travel manifests  : automatically compiled"
-Write-Host "  Route acceptance  : passed"
-Write-Host "  Regression tests  : passed"
+Write-Host "  EQ client          : included"
+Write-Host "  Allakhazam mirror  : audited + included"
+Write-Host "  MCP inventory      : verified"
+Write-Host "  MCP rich details   : verified"
+Write-Host "  Profile lifecycle  : audited"
+Write-Host "  Good's maps        : included"
+Write-Host "  Brewall maps       : included"
+Write-Host "  Travel manifests   : automatically compiled"
+Write-Host "  Route acceptance   : passed"
+Write-Host "  Regression tests   : passed"
 Write-Host
 Write-Host "============================================"

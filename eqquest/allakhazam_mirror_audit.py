@@ -148,7 +148,7 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
 
     spell_pages = int(pages_by_kind_dict.get("spell", 0))
     spell_pages_with_expansion = sum(
-        1 for url, has_expansion in spell_expansion_by_url.items() if has_expansion
+        1 for has_expansion in spell_expansion_by_url.values() if has_expansion
     )
     spell_pages_missing_expansion = max(0, spell_pages - spell_pages_with_expansion)
 
@@ -182,12 +182,12 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
     )
 
 
-def allakhazam_mirror_audit_text(
-    folder: str | Path,
+def format_allakhazam_mirror_audit(
+    audit: AllakhazamMirrorAudit,
     *,
     duplicate_limit: int = 12,
 ) -> str:
-    audit = audit_allakhazam_mirror(folder)
+    """Render a previously collected mirror audit without touching the filesystem."""
     lines = [
         "EverQuestie Allakhazam mirror inventory audit",
         "",
@@ -230,3 +230,15 @@ def allakhazam_mirror_audit_text(
         "  • Run the DB normalization coverage audit after import to compare mirror inventory with what was actually normalized into SQLite.",
     ]
     return "\n".join(lines)
+
+
+def allakhazam_mirror_audit_text(
+    folder: str | Path,
+    *,
+    duplicate_limit: int = 12,
+) -> str:
+    """Backward-compatible scan-and-render convenience wrapper."""
+    return format_allakhazam_mirror_audit(
+        audit_allakhazam_mirror(folder),
+        duplicate_limit=duplicate_limit,
+    )

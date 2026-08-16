@@ -79,8 +79,27 @@ class FullBuildLifecycleReportTests(unittest.TestCase):
         )
         self.assertIn("python .\\tools\\audit_profile_lifecycle.py $SnapshotDb", script)
         self.assertIn("--output $LifecycleReport", script)
-        self.assertIn("Profile lifecycle : $LifecycleReport", script)
+        self.assertIn("Profile lifecycle  : $LifecycleReport", script)
         self.assertNotIn("Set-Content -Path $LifecycleReport", script)
+
+    def test_full_build_audits_mirror_before_database_construction_and_persists_report(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "tools" / "build_full_knowledge.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            '$MirrorAuditReport = Join-Path $ProjectRoot "build\\allakhazam-mirror-audit.json"',
+            script,
+        )
+        audit_call = "python .\\tools\\audit_allakhazam_mirror.py"
+        build_call = "python .\\tools\\build_knowledge_db.py"
+        self.assertIn(audit_call, script)
+        self.assertIn("--output $MirrorAuditReport", script)
+        self.assertLess(script.index(audit_call), script.index(build_call))
+        self.assertIn("Mirror inventory   : $MirrorAuditReport", script)
+        self.assertIn("Allakhazam mirror  : audited + included", script)
+        self.assertNotIn("spell_pages -eq 0", script)
+        self.assertNotIn("spell_pages_with_expansion -eq 0", script)
 
 
 if __name__ == "__main__":

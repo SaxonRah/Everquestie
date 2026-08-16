@@ -74,6 +74,13 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
             external_id="item:unknown",
             data={"description": "mentions Velious but has no lifecycle field"},
         )
+        self.db.upsert_entity(
+            kind="zone",
+            name="Taxonomy Zone",
+            external_id="zone:taxonomy",
+            source_page_id=npc_source,
+            data={"expansion": "Antonica"},
+        )
 
     def test_summary_counts_direct_evidence_by_kind_and_source(self):
         self._build_fixture()
@@ -81,21 +88,30 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         summary = profile_lifecycle_audit(self.db)
         by_kind = {row.kind: row for row in summary.by_kind}
 
-        self.assertEqual(summary.total_entities, 4)
-        self.assertEqual(summary.entities_with_expansion_evidence, 3)
-        self.assertEqual(summary.evidence_rows, 3)
+        self.assertEqual(summary.total_entities, 5)
+        self.assertEqual(summary.entities_with_expansion_evidence, 4)
+        self.assertEqual(summary.evidence_rows, 4)
         self.assertEqual(summary.p99_available_direct, 1)
         self.assertEqual(summary.p99_blocked_direct, 2)
         self.assertEqual(summary.p99_conflict, 0)
+        self.assertEqual(summary.p99_undetermined_direct, 1)
         self.assertEqual(by_kind["npc"].with_expansion_evidence, 2)
         self.assertEqual(by_kind["spell"].with_expansion_evidence, 1)
         self.assertEqual(by_kind["item"].with_expansion_evidence, 0)
-        self.assertIn(("local_mirror", 2), summary.by_source_kind)
+        self.assertEqual(by_kind["zone"].p99_undetermined, 1)
+        self.assertIn(("local_mirror", 3), summary.by_source_kind)
         self.assertIn(("mcp_local_details", 1), summary.by_source_kind)
+        self.assertIn(("Antonica", 1), summary.by_unclassified_expansion)
 
         text = profile_lifecycle_audit_text(self.db)
-        self.assertIn("Entities with explicit expansion/era evidence: 3", text)
-        self.assertIn("P99 direct lifecycle decisions: available=1 blocked=2 conflict=0", text)
+        self.assertIn("Entities with explicit expansion/era evidence: 4", text)
+        self.assertIn(
+            "P99 direct lifecycle decisions: available=1 blocked=2 conflict=0 undetermined=1",
+            text,
+        )
+        self.assertIn("Unclassified explicit expansion values:", text)
+        self.assertIn("Antonica: 1", text)
+        self.assertIn("Only reviewed expansion labels cross the P99 boundary", text)
         self.assertIn("Locations, prose, names, dates, and fuzzy inference are excluded", text)
 
     def test_cli_json_is_read_only_and_machine_readable(self):
@@ -112,8 +128,10 @@ class ProfileLifecycleAuditTests(unittest.TestCase):
         )
         payload = json.loads(completed.stdout)
 
-        self.assertEqual(payload["entities_with_expansion_evidence"], 3)
+        self.assertEqual(payload["entities_with_expansion_evidence"], 4)
         self.assertEqual(payload["p99_blocked_direct"], 2)
+        self.assertEqual(payload["p99_undetermined_direct"], 1)
+        self.assertEqual(payload["by_unclassified_expansion"][0]["expansion"], "Antonica")
         self.assertEqual(sha256(self.path.read_bytes()).hexdigest(), before)
         self.assertFalse(Path(str(self.path) + "-wal").exists())
         self.assertFalse(Path(str(self.path) + "-shm").exists())

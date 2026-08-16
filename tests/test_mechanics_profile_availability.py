@@ -8,24 +8,98 @@ from unittest.mock import patch
 
 from eqquest.db import Database
 from eqquest.entity_lifecycle_records import upsert_lifecycle_record
-from eqquest.mechanics_profile_availability import profiled_spell_stacking_text
+from eqquest.mechanics_context_ui import MechanicsContextFrame
+from eqquest.mechanics_profile_availability import (
+    mechanics_profile_source_notice,
+    profiled_spell_stacking_text,
+)
 from eqquest.profile_availability_ui import install_profile_availability_ui
 from eqquest.world_profile_ui import install_world_profile_ui
 from eqquest.world_profiles import set_active_world_profile, world_profile
 
 
 class _Var:
-    def __init__(self, value: str):
+    def __init__(self, value):
         self.value = value
 
-    def get(self) -> str:
+    def get(self):
         return self.value
 
-    def set(self, value: str) -> None:
+    def set(self, value) -> None:
         self.value = value
+
+
+class _Tree:
+    def __init__(self):
+        self.inserted: list[tuple] = []
+
+    def get_children(self):
+        return ()
+
+    def delete(self, *_items) -> None:
+        pass
+
+    def insert(self, _parent, _where, *, values) -> None:
+        self.inserted.append(tuple(values))
 
 
 class MechanicsProfileAvailabilityTests(unittest.TestCase):
+    def test_live_mechanics_notice_names_exact_live_client_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            db = Database(Path(temp) / "working.sqlite3")
+            try:
+                set_active_world_profile(db, "live")
+                text = mechanics_profile_source_notice(db)
+                self.assertIn("Live (default)", text)
+                self.assertIn("exact installed Live-client support files", text)
+                self.assertNotIn("not a profile-specific ruleset", text)
+            finally:
+                db.close()
+
+    def test_p99_mechanics_notice_refuses_to_claim_live_caps_as_p99_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            db = Database(Path(temp) / "working.sqlite3")
+            try:
+                set_active_world_profile(db, "p99")
+                text = mechanics_profile_source_notice(db)
+                self.assertIn("Classic / P99-style", text)
+                self.assertIn("installed Live-client support files", text)
+                self.assertIn("not a profile-specific ruleset", text)
+                self.assertIn("does not reinterpret Live-client caps", text)
+            finally:
+                db.close()
+
+    def test_class_refresh_appends_profile_source_notice_without_changing_summary(self) -> None:
+        rendered: list[str] = []
+        fake = SimpleNamespace(
+            db=object(),
+            class_var=_Var("Warrior"),
+            level_var=_Var(60),
+            skills_tree=_Tree(),
+            class_summary=object(),
+            _set_text=lambda _widget, text: rendered.append(text),
+        )
+        context = SimpleNamespace()
+        with patch(
+            "eqquest.mechanics_context_ui.build_class_mechanics_context",
+            return_value=(context, "exact"),
+        ), patch(
+            "eqquest.mechanics_context_ui.mechanics_context_summary",
+            return_value="CANONICAL CLASS SUMMARY",
+        ), patch(
+            "eqquest.mechanics_context_ui.mechanics_profile_source_notice",
+            return_value="PROFILE SOURCE NOTICE",
+        ), patch(
+            "eqquest.mechanics_context_ui.mechanics_skill_rows",
+            return_value=[],
+        ):
+            MechanicsContextFrame.refresh_class_level(fake)
+
+        self.assertEqual(
+            rendered,
+            ["CANONICAL CLASS SUMMARY\n\nPROFILE SOURCE NOTICE"],
+        )
+
     def test_profiled_spell_output_keeps_stacking_and_appends_p99_availability(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             db = Database(Path(temp) / "working.sqlite3")
@@ -75,7 +149,7 @@ class MechanicsProfileAvailabilityTests(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_global_profile_change_refreshes_selected_mechanics_spell(self) -> None:
+    def test_global_profile_change_refreshes_class_and_selected_spell_mechanics(self) -> None:
         from eqquest import app as app_module
         from eqquest import mechanics_context_ui as mechanics_ui
         from eqquest.mechanics_profile_availability import profiled_spell_stacking_text as renderer
@@ -94,7 +168,8 @@ class MechanicsProfileAvailabilityTests(unittest.TestCase):
                     world_profile_var=_Var(profile.label),
                     status=SimpleNamespace(set=lambda text: calls.append("status:" + text)),
                     mechanics_view=SimpleNamespace(
-                        _spell_selected=lambda: calls.append("mechanics")
+                        refresh_class_level=lambda: calls.append("mechanics-class"),
+                        _spell_selected=lambda: calls.append("mechanics-spell"),
                     ),
                     _show_entity=lambda: calls.append("knowledge"),
                     _refresh_guidance=lambda: calls.append("guidance"),
@@ -106,7 +181,8 @@ class MechanicsProfileAvailabilityTests(unittest.TestCase):
                 self.assertEqual(db.get_meta("world_profile", ""), "p99")
                 self.assertIn("knowledge", calls)
                 self.assertIn("guidance", calls)
-                self.assertIn("mechanics", calls)
+                self.assertIn("mechanics-class", calls)
+                self.assertIn("mechanics-spell", calls)
             finally:
                 db.close()
 

@@ -26,7 +26,7 @@ Generic EQ kill messages can describe a mob slain by another visible player or g
 
 EverQuestie already writes parsed log events to the writable user-state database. When monitoring starts, Activity Pathways records the current highest observed-event ID and considers only later events part of the new monitoring session.
 
-This prevents yesterday's kills and loot from appearing as current activity while preserving the existing event history for quest reconciliation and future session analytics.
+This prevents yesterday's kills and loot from appearing as current activity while preserving the existing event history for quest reconciliation, personal observations, and session analytics.
 
 No new user-state schema is required for the current feature.
 
@@ -61,7 +61,8 @@ The Live-tab **Potential Pathways** panel provides:
 - **View quest** — exact entity-ID handoff to Knowledge;
 - **Track quest** — explicit opt-in to existing tracking/reconciliation;
 - **Navigate contact** — find an evidence-backed quest contact and delegate safely to Map or Travel;
-- **Why this?** — lists the exact session observation and structured objective/relationship chain that produced the suggestion.
+- **Why this?** — lists the exact session observation and structured objective/relationship chain that produced the suggestion;
+- **Session recap** — summarizes parsed activity since monitoring started without promoting it into canonical knowledge.
 
 ### Navigate contact
 
@@ -77,24 +78,45 @@ The action does not create coordinates or resolve provider ambiguity itself. It 
 
 Simply seeing, selecting, viewing, or navigating a pathway never changes tracked quest state or quest progress.
 
+## Current Activity cluster
+
+The Live tab also projects a compact **Current Activity** log pattern. This is session context, not canonical EverQuest knowledge and not a claim that the player is at a named camp.
+
+The cluster:
+
+- uses the same monitoring-session boundary as Potential Pathways;
+- resets its segment at the latest logged zone transition, so old-zone activity does not follow the player into a new zone;
+- summarizes repeated mobs observed slain and items the player looted;
+- stays quiet for one-off activity;
+- names only already-surfaced Potential Pathways whose exact evidence overlaps the cluster;
+- continues to describe generic kill lines as `observed slain`, not guaranteed personal kills.
+
+The initial noise threshold is deliberately conservative: at least three relevant kill/loot observations are required, plus either a repeated subject or at least five total relevant observations.
+
+## Personal observations in Knowledge
+
+Player-owned history is also available from normal Knowledge detail. Exact unambiguous entity names/aliases can project logged observations such as loot count, mobs observed slain, faction messages, casts, task messages, and explicit corpse-source loot.
+
+That history remains user-state data. It never creates canonical `drops_from` relationships or calculated drop rates, and ambiguous duplicate canonical names remain unattached.
+
 ## Runtime split
 
 In packaged mode:
 
 - observations are read from `everquestie-user.sqlite3`;
 - quest/entity/relationship knowledge is read from the immutable `everquestie-knowledge.sqlite3` snapshot;
-- the pathway engine performs no knowledge writes.
+- the pathway, activity-cluster, recap, and personal-observation projections perform no knowledge writes.
 
-Regression coverage hashes the finalized knowledge snapshot before/after a packaged pathway observation and verifies that no knowledge WAL/SHM sidecars are created.
+Regression coverage hashes finalized knowledge in packaged-mode activity/personal-history tests and verifies that no knowledge WAL/SHM sidecars are created.
 
 ## Planned extensions
 
 Future slices can build on the same evidence model without changing its trust boundary:
 
-1. faction-change context correlated with nearby activity, clearly labeled as observation unless canonical causality is known;
-2. session summaries (zones visited, mobs observed slain, loot, faction changes, quest progress);
-3. personal encounter/drop history stored only in user state;
-4. camp/activity clustering based on repeated observations, labeled as inferred session context rather than canonical knowledge;
-5. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed.
+1. richer faction context, clearly labeled as contemporaneous observation unless canonical causality is known;
+2. optional player-controlled dismissal/snooze state for recurring opportunities;
+3. longer-term encounter statistics that remain explicitly personal observations rather than canonical rates;
+4. additional relationship-chain shapes only after their normalized semantics and provenance requirements are reviewed;
+5. profile-aware nearby-opportunity summaries as richer quest/NPC/item coverage arrives from the completed mirrors.
 
 The completed Allakhazam DB/wiki mirror should increase the breadth of these pathways substantially, but Activity Pathways itself remains source-agnostic: it consumes normalized EverQuestie knowledge rather than crawling or querying providers at runtime.

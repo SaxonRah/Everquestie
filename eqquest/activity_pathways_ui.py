@@ -1,14 +1,132 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from .activity_pathway_navigation import pathway_contact_navigation
-from .activity_pathways import ActivityPathwayEngine, PathwaySuggestion, pathway_detail_text
+from .activity_pathways import (
+    ActivityPathwayEngine,
+    PathwayEvidence,
+    PathwaySuggestion,
+    pathway_detail_text,
+)
+from .objective_reviewed_item_sources import (
+    quest_objective_navigation_with_reviewed_sources,
+)
 from .session_activity import session_activity_summary, session_activity_text
 
 
 _ACTIVITY_PATHWAYS_MARKER = "_everquestie_activity_pathways_ui"
+
+
+def direct_pathway_objective_evidence(
+    suggestion: PathwaySuggestion,
+) -> tuple[PathwayEvidence, ...]:
+    """Return only exact structured quest-step matches from one pathway suggestion."""
+    return tuple(
+        evidence
+        for evidence in suggestion.evidence
+        if evidence.path_kind == "direct_objective" and int(evidence.step_order) > 0
+    )
+
+
+def pathway_objective_evidence_labels(
+    evidence_rows: tuple[PathwayEvidence, ...],
+) -> tuple[str, ...]:
+    labels: list[str] = []
+    for evidence in evidence_rows:
+        action = "kill" if evidence.event_kind == "kill" else evidence.event_kind or "objective"
+        zone = f" — {evidence.step_zone}" if evidence.step_zone else ""
+        labels.append(
+            f"Step {evidence.step_order}: {evidence.step_description} "
+            f"[{action}: {evidence.subject}]{zone}"
+        )
+    return tuple(labels)
+
+
+class _PathwayObjectiveDialog(simpledialog.Dialog):
+    def __init__(
+        self,
+        parent,
+        *,
+        suggestion: PathwaySuggestion,
+        evidence_rows: tuple[PathwayEvidence, ...],
+    ):
+        self.suggestion = suggestion
+        self.evidence_rows = evidence_rows
+        self.result: PathwayEvidence | None = None
+        self._listbox = None
+        super().__init__(parent, title=f"Choose matched objective — {suggestion.quest_name}")
+
+    def body(self, master):
+        ttk.Label(
+            master,
+            text=(
+                f"Your current activity matched multiple exact structured objectives for "
+                f"{self.suggestion.quest_name}.\n"
+                "Choose the exact matched step to navigate. EverQuestie will not guess one."
+            ),
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self._listbox = tk.Listbox(
+            master,
+            exportselection=False,
+            width=110,
+            height=min(14, max(4, len(self.evidence_rows))),
+        )
+        self._listbox.grid(row=1, column=0, sticky="nsew")
+        master.rowconfigure(1, weight=1)
+        master.columnconfigure(0, weight=1)
+        for label in pathway_objective_evidence_labels(self.evidence_rows):
+            self._listbox.insert("end", label)
+        if self.evidence_rows:
+            self._listbox.selection_set(0)
+            self._listbox.activate(0)
+        self._listbox.bind("<Double-1>", lambda _event: self.ok())
+        return self._listbox
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        ttk.Button(box, text="Navigate match", width=14, command=self.ok).pack(
+            side="left", padx=5, pady=5
+        )
+        ttk.Button(box, text="Cancel", width=10, command=self.cancel).pack(
+            side="left", padx=5, pady=5
+        )
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def validate(self) -> bool:
+        return bool(self._listbox is not None and self._listbox.curselection())
+
+    def apply(self) -> None:
+        if self._listbox is None:
+            return
+        selected = self._listbox.curselection()
+        if not selected:
+            return
+        index = int(selected[0])
+        if 0 <= index < len(self.evidence_rows):
+            self.result = self.evidence_rows[index]
+
+
+def ask_pathway_objective_evidence(
+    parent,
+    suggestion: PathwaySuggestion,
+) -> PathwayEvidence | None:
+    """Choose one exact direct objective match, prompting only when necessary."""
+    rows = direct_pathway_objective_evidence(suggestion)
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    dialog = _PathwayObjectiveDialog(
+        parent,
+        suggestion=suggestion,
+        evidence_rows=rows,
+    )
+    return dialog.result
 
 
 def install_activity_pathways_ui() -> None:
@@ -93,6 +211,11 @@ def install_activity_pathways_ui() -> None:
             buttons,
             text="Navigate contact",
             command=self._activity_pathway_navigate_contact,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
+            text="Navigate match",
+            command=self._activity_pathway_navigate_match,
         ).pack(side="left", padx=(6, 0))
         ttk.Button(
             buttons,
@@ -210,6 +333,95 @@ def install_activity_pathways_ui() -> None:
             return
 
         self.status.set(result.reason)
+
+    def _activity_pathway_navigate_match(self) -> None:
+        suggestion = _selected_pathway(self)
+        if suggestion is None:
+            self.status.set("Select a Potential Pathway first.")
+            return
+
+        direct = direct_pathway_objective_evidence(suggestion)
+        if not direct:
+            self.status.set(
+                f"{suggestion.quest_name}: this pathway is source-backed through a "
+                "relationship chain, but it has no exact structured matched step to "
+                "navigate. Use Navigate contact or View quest."
+            )
+            return
+
+        evidence = ask_pathway_objective_evidence(self, suggestion)
+        if evidence is None:
+            self.status.set("Potential Pathway matched-objective selection cancelled.")
+            return
+
+        result = quest_objective_navigation_with_reviewed_sources(
+            self.db,
+            int(suggestion.quest_id),
+            getattr(self.state_model, "current_zone", None),
+            step_order=int(evidence.step_order),
+        )
+        if result.map_ready:
+            if len(result.map_choices) == 1:
+                choice = result.map_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_map_choice
+
+                choice = ask_knowledge_map_choice(
+                    self,
+                    f"{suggestion.quest_name} — matched objective",
+                    result.current_zone_name,
+                    result.map_choices,
+                )
+                if choice is None:
+                    self.status.set("Matched objective map selection cancelled.")
+                    return
+            self._focus_navigation_map_target(
+                choice.zone_name,
+                choice.x,
+                choice.y,
+                choice.z,
+                choice.map_label,
+            )
+            self.status.set(
+                f"Mapped exact matched objective: {choice.location_entity_name}."
+            )
+            return
+
+        if result.route_ready:
+            if len(result.route_choices) == 1:
+                choice = result.route_choices[0]
+            else:
+                from .knowledge_location_ui import ask_knowledge_route_choice
+
+                choice = ask_knowledge_route_choice(
+                    self,
+                    f"{suggestion.quest_name} — matched objective",
+                    result.current_zone_name,
+                    result.route_choices,
+                )
+                if choice is None:
+                    self.status.set("Matched objective route selection cancelled.")
+                    return
+            travel = getattr(self, "travel_tab", None)
+            if travel is None or not hasattr(travel, "route_to_zone"):
+                self.status.set("Travel routing is not connected in this application surface.")
+                return
+            self.notebook.select(self.travel_tab)
+            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
+            if routed:
+                self.status.set(
+                    f"Travel route opened to {choice.zone_name} for exact matched objective "
+                    f"step {evidence.step_order}."
+                )
+            else:
+                self.status.set(
+                    f"No confirmed route to {choice.zone_name} is currently available; "
+                    "see Travel for details."
+                )
+            return
+
+        reason = str(result.reason or "No safe exact matched-objective location is known.")
+        self.status.set(reason.replace("Active objective", "Matched objective"))
 
     def _activity_pathway_explain_selected(self) -> None:
         suggestion = _selected_pathway(self)
@@ -333,6 +545,7 @@ def install_activity_pathways_ui() -> None:
     current_app._activity_pathway_view_selected = _activity_pathway_view_selected
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected
     current_app._activity_pathway_navigate_contact = _activity_pathway_navigate_contact
+    current_app._activity_pathway_navigate_match = _activity_pathway_navigate_match
     current_app._activity_pathway_explain_selected = _activity_pathway_explain_selected
     current_app._activity_session_recap = _activity_session_recap
     current_app._refresh_activity_pathways = _refresh_activity_pathways

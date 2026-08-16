@@ -61,9 +61,13 @@ def install_activity_pathways_ui() -> None:
         self.activity_pathway_tree.heading("score", text="Signal")
         self.activity_pathway_tree.column("#0", width=290, minwidth=180, stretch=True)
         self.activity_pathway_tree.column("why", width=430, minwidth=220, stretch=True)
-        self.activity_pathway_tree.column("score", width=70, minwidth=60, stretch=False, anchor="center")
+        self.activity_pathway_tree.column(
+            "score", width=70, minwidth=60, stretch=False, anchor="center"
+        )
         self.activity_pathway_tree.grid(row=1, column=0, sticky="ew")
-        scroll = ttk.Scrollbar(panel, orient="vertical", command=self.activity_pathway_tree.yview)
+        scroll = ttk.Scrollbar(
+            panel, orient="vertical", command=self.activity_pathway_tree.yview
+        )
         scroll.grid(row=1, column=1, sticky="ns")
         self.activity_pathway_tree.configure(yscrollcommand=scroll.set)
         self.activity_pathway_tree.bind(
@@ -88,7 +92,7 @@ def install_activity_pathways_ui() -> None:
             command=self._activity_pathway_explain_selected,
         ).pack(side="left", padx=(6, 0))
 
-        self.after(1000, self._refresh_activity_pathways)
+        self.after(1000, self._activity_pathway_tick)
 
     def _selected_pathway(self) -> PathwaySuggestion | None:
         tree = getattr(self, "activity_pathway_tree", None)
@@ -160,7 +164,13 @@ def install_activity_pathways_ui() -> None:
             self._activity_pathway_by_item = {}
             for suggestion in suggestions:
                 iid = f"pathway:{suggestion.quest_id}"
-                strength = "high" if suggestion.score >= 90 else "medium" if suggestion.score >= 55 else "new"
+                strength = (
+                    "high"
+                    if suggestion.score >= 90
+                    else "medium"
+                    if suggestion.score >= 55
+                    else "new"
+                )
                 tree.insert(
                     "",
                     "end",
@@ -191,7 +201,9 @@ def install_activity_pathways_ui() -> None:
                 "exact kill and loot activity. Nothing is auto-tracked."
             )
 
-        self.after(1000, self._refresh_activity_pathways)
+    def _activity_pathway_tick(self) -> None:
+        self._refresh_activity_pathways()
+        self.after(1000, self._activity_pathway_tick)
 
     def _start(self) -> None:
         current_start(self)
@@ -212,6 +224,7 @@ def install_activity_pathways_ui() -> None:
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected
     current_app._activity_pathway_explain_selected = _activity_pathway_explain_selected
     current_app._refresh_activity_pathways = _refresh_activity_pathways
+    current_app._activity_pathway_tick = _activity_pathway_tick
     current_app._start = _start
     current_app._stop = _stop
     setattr(current_app, _ACTIVITY_PATHWAYS_MARKER, True)

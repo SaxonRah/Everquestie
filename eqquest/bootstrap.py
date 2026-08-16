@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .activity_clusters_ui import install_activity_clusters_ui
 from .activity_pathway_dismiss_ui import install_activity_pathway_dismiss_ui
+from .activity_pathway_zone_context_ui import install_activity_pathway_zone_context_ui
 from .activity_pathways_ui import install_activity_pathways_ui
 from .knowledge_coverage_ui import install_knowledge_coverage_ui
 from .knowledge_relationship_ui import install_knowledge_relationship_navigation_ui
@@ -38,6 +39,7 @@ def install_application_layers() -> None:
     install_world_profile_ui()
     install_profile_availability_ui()
     install_activity_pathways_ui()
+    install_activity_pathway_zone_context_ui()
     install_activity_pathway_dismiss_ui()
     install_activity_clusters_ui()
     install_zone_opportunities_ui()

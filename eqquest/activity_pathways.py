@@ -6,6 +6,7 @@ from typing import Any
 
 from .db import normalize_name
 from .profile_availability import entity_profile_decision
+from .zone_authority import resolve_authoritative_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +84,14 @@ class _QuestItemLink:
 class ActivityPathwayEngine:
     """Project live player observations into source-backed quest opportunities.
 
-    Direct pathways use source-backed exact structured quest-step targets. Graph pathways
-    use only reviewed normalized relationship semantics and require a unique canonical
-    NPC/item identity for the observed name. Names/prose are never fuzzily interpreted.
-    Session counters come from writable player state; knowledge remains read-only and a
-    suggestion never means a quest is owned.
+    Direct pathways use source-backed exact structured quest-step targets. A direct
+    zone-bound kill objective additionally requires explicit logged/session zone context
+    matching that objective zone; same-named kills elsewhere cannot qualify. Exact loot
+    possession remains portable across zones. Graph pathways use only reviewed normalized
+    relationship semantics and require a unique canonical NPC/item identity for the
+    observed name. Names/prose are never fuzzily interpreted. Session counters come from
+    writable player state; knowledge remains read-only and a suggestion never means a
+    quest is owned.
     """
 
     def __init__(self, db):
@@ -96,11 +100,26 @@ class ActivityPathwayEngine:
         self._graph_index: dict[tuple[str, str], list[_GraphOpportunity]] | None = None
         self._counts: dict[tuple[str, str], int] = {}
         self._display_names: dict[tuple[str, str], str] = {}
+        self._zone_counts: dict[tuple[str, str, str], int] = {}
+        self._zone_labels: dict[str, str] = {}
+        self._session_zone = ""
         self._last_event_id = 0
 
-    def reset_session(self, after_event_id: int | None = None) -> None:
+    @staticmethod
+    def _clean_zone(value: str | None) -> str:
+        return " ".join(str(value or "").split()).strip()
+
+    def reset_session(
+        self,
+        after_event_id: int | None = None,
+        *,
+        starting_zone: str | None = None,
+    ) -> None:
         self._counts.clear()
         self._display_names.clear()
+        self._zone_counts.clear()
+        self._zone_labels.clear()
+        self._session_zone = self._clean_zone(starting_zone)
         self._last_event_id = int(after_event_id or 0)
 
     def latest_observed_event_id(self) -> int:
@@ -339,15 +358,60 @@ class ActivityPathwayEngine:
             self._graph_index = self._build_graph_index()
         return self._graph_index
 
+    def _zones_match(self, observed_zone: str, objective_zone: str) -> bool:
+        """Compare zone evidence without fuzzy geography inference."""
+        observed = self._clean_zone(observed_zone)
+        objective = self._clean_zone(objective_zone)
+        if not observed or not objective:
+            return False
+        if normalize_name(observed) == normalize_name(objective):
+            return True
+
+        observed_resolution = resolve_authoritative_zone(self.db, observed)
+        objective_resolution = resolve_authoritative_zone(self.db, objective)
+        return bool(
+            observed_resolution.identity is not None
+            and objective_resolution.identity is not None
+            and int(observed_resolution.identity.entity_id)
+            == int(objective_resolution.identity.entity_id)
+        )
+
+    def _direct_observed_count(
+        self,
+        key: tuple[str, str],
+        objective: _Objective,
+    ) -> int:
+        total = int(self._counts.get(key, 0))
+        objective_zone = self._clean_zone(objective.zone)
+        if objective.event_kind != "kill" or not objective_zone:
+            return total
+
+        matched = 0
+        for (event_kind, subject_key, zone_key), count in self._zone_counts.items():
+            if event_kind != key[0] or subject_key != key[1]:
+                continue
+            observed_zone = self._zone_labels.get(zone_key, zone_key)
+            if self._zones_match(observed_zone, objective_zone):
+                matched += int(count)
+        return matched
+
     def refresh_observations(self) -> int:
-        """Consume newly persisted session events and return the number inspected."""
+        """Consume newly persisted session events and retain explicit zone boundaries."""
         rows = self.db.conn.execute(
-            "SELECT id,kind,actor,item FROM observed_events WHERE id>? ORDER BY id",
+            "SELECT id,kind,actor,item,zone FROM observed_events WHERE id>? ORDER BY id",
             (self._last_event_id,),
         ).fetchall()
         for row in rows:
             self._last_event_id = max(self._last_event_id, int(row["id"]))
             kind = str(row["kind"] or "").casefold()
+
+            if kind == "welcome":
+                self._session_zone = ""
+                continue
+            if kind == "zone":
+                self._session_zone = self._clean_zone(row["zone"])
+                continue
+
             if kind == "kill":
                 subject = str(row["actor"] or "").strip()
             elif kind == "loot":
@@ -356,9 +420,17 @@ class ActivityPathwayEngine:
                 continue
             if not subject:
                 continue
+
             key = (kind, normalize_name(subject))
             self._counts[key] = self._counts.get(key, 0) + 1
             self._display_names.setdefault(key, subject)
+
+            zone_text = self._clean_zone(self._session_zone)
+            zone_key = normalize_name(zone_text)
+            if zone_text and zone_key:
+                zoned_key = (kind, key[1], zone_key)
+                self._zone_counts[zoned_key] = self._zone_counts.get(zoned_key, 0) + 1
+                self._zone_labels.setdefault(zone_key, zone_text)
         return len(rows)
 
     def _entry_for(self, grouped: dict[int, dict[str, Any]], quest_id: int, quest_name: str):
@@ -395,6 +467,10 @@ class ActivityPathwayEngine:
             if count <= 0:
                 continue
             for objective in index.get(key, ()):
+                direct_count = self._direct_observed_count(key, objective)
+                if direct_count <= 0:
+                    continue
+
                 entry = self._entry_for(grouped, objective.quest_id, objective.quest_name)
                 if entry is None:
                     continue
@@ -404,7 +480,7 @@ class ActivityPathwayEngine:
                 entry["seen"].add(evidence_key)
 
                 base = 45 if objective.event_kind == "loot" else 30
-                repeat = min(count, 10) * (5 if objective.event_kind == "loot" else 3)
+                repeat = min(direct_count, 10) * (5 if objective.event_kind == "loot" else 3)
                 zone_bonus = (
                     15
                     if zone_key and normalize_name(objective.zone) == zone_key
@@ -415,7 +491,7 @@ class ActivityPathwayEngine:
                     PathwayEvidence(
                         objective.event_kind,
                         self._display_names.get(key, objective.subject),
-                        count,
+                        direct_count,
                         objective.step_order,
                         objective.description,
                         objective.zone,

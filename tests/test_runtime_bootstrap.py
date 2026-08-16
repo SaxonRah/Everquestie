@@ -21,6 +21,7 @@ class RuntimeBootstrapTests(unittest.TestCase):
             "install_world_profile_ui",
             "install_profile_availability_ui",
             "install_activity_pathways_ui",
+            "install_activity_pathway_zone_context_ui",
             "install_activity_pathway_dismiss_ui",
             "install_activity_clusters_ui",
             "install_zone_opportunities_ui",

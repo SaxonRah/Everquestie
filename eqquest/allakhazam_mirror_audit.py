@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .allakhazam import extract_canonical_url, infer_kind_and_external_id
+from .allakhazam import MiniDOMParser, extract_canonical_url, infer_kind_and_external_id
+from .allakhazam_mirror_importer import _quick_facts_expansion, _spell_numeric_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,9 @@ class AllakhazamMirrorAudit:
     missing_canonical: int
     unclassified_canonical: int
     pages_by_kind: tuple[tuple[str, int], ...]
+    spell_pages: int
+    spell_pages_with_expansion: int
+    spell_pages_missing_expansion: int
     duplicate_urls: tuple[tuple[str, int], ...]
 
     def as_dict(self) -> dict[str, object]:
@@ -38,8 +42,28 @@ class AllakhazamMirrorAudit:
             "missing_canonical": self.missing_canonical,
             "unclassified_canonical": self.unclassified_canonical,
             "pages_by_kind": dict(self.pages_by_kind),
+            "spell_pages": self.spell_pages,
+            "spell_pages_with_expansion": self.spell_pages_with_expansion,
+            "spell_pages_missing_expansion": self.spell_pages_missing_expansion,
             "duplicate_urls": dict(self.duplicate_urls),
         }
+
+
+def _mirror_page_kind(canonical: str) -> str | None:
+    """Classify exactly the structured page families the mirror importer accepts."""
+    kind, _external_id = infer_kind_and_external_id(canonical)
+    if kind:
+        return kind
+    if _spell_numeric_id(canonical):
+        return "spell"
+    return None
+
+
+def _spell_has_reviewed_expansion(raw_html: str) -> bool:
+    """Use the importer's exact Quick Facts parser; never scan arbitrary prose."""
+    dom = MiniDOMParser()
+    dom.feed(raw_html)
+    return bool(_quick_facts_expansion(dom.root))
 
 
 def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
@@ -47,8 +71,11 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
 
     This intentionally mirrors the builder importer's first-stage acceptance rules:
     only saved HTML-like files are considered, `.tmp` files are excluded, canonical
-    Allakhazam URLs are extracted from the document itself, and quest/NPC/item/zone
-    identity is inferred from that canonical URL. No network access is performed.
+    Allakhazam URLs are extracted from the document itself, and recognized structured
+    page identity is inferred from that canonical URL. Spell lifecycle readiness also
+    uses the mirror importer's exact labeled Quick Facts ``Expansion`` parser.
+
+    No database writes and no network access are performed.
     """
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
@@ -73,6 +100,7 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
 
     canonical_counts: dict[str, int] = {}
     canonical_kind: dict[str, str | None] = {}
+    spell_expansion_by_url: dict[str, bool] = {}
 
     for path in paths:
         if path.name.casefold().endswith(".tmp"):
@@ -90,8 +118,16 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
             missing_canonical += 1
             continue
         canonical_counts[canonical] = canonical_counts.get(canonical, 0) + 1
-        kind, _external_id = infer_kind_and_external_id(canonical)
+        kind = _mirror_page_kind(canonical)
         canonical_kind.setdefault(canonical, kind)
+        if kind == "spell":
+            # Duplicate local files for one source URL still represent one source page.
+            # If any completed copy contains the reviewed structured field, the unique
+            # source page is lifecycle-ready; the importer will preserve that exact fact.
+            spell_expansion_by_url[canonical] = (
+                spell_expansion_by_url.get(canonical, False)
+                or _spell_has_reviewed_expansion(raw_html)
+            )
 
     canonical_files = sum(canonical_counts.values())
     unique_canonical_pages = len(canonical_counts)
@@ -109,6 +145,12 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
             importable_pages += 1
         else:
             unclassified_canonical += 1
+
+    spell_pages = int(pages_by_kind_dict.get("spell", 0))
+    spell_pages_with_expansion = sum(
+        1 for url, has_expansion in spell_expansion_by_url.items() if has_expansion
+    )
+    spell_pages_missing_expansion = max(0, spell_pages - spell_pages_with_expansion)
 
     duplicate_urls = tuple(
         sorted(
@@ -133,6 +175,9 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
         pages_by_kind=tuple(
             sorted(pages_by_kind_dict.items(), key=lambda item: (-item[1], item[0]))
         ),
+        spell_pages=spell_pages,
+        spell_pages_with_expansion=spell_pages_with_expansion,
+        spell_pages_missing_expansion=spell_pages_missing_expansion,
         duplicate_urls=duplicate_urls,
     )
 
@@ -157,13 +202,21 @@ def allakhazam_mirror_audit_text(
         f"Files with canonical Allakhazam URL: {audit.canonical_files:,}",
         f"Unique canonical pages: {audit.unique_canonical_pages:,}",
         f"Duplicate canonical files: {audit.duplicate_canonical_files:,}",
-        f"Unique quest/NPC/item/zone pages ready for structured import: {audit.importable_pages:,}",
+        f"Unique structured pages ready for import: {audit.importable_pages:,}",
         f"Readable files with no canonical URL: {audit.missing_canonical:,}",
         f"Canonical helper/search/other pages not mapped to a structured kind: {audit.unclassified_canonical:,}",
     ]
     if audit.pages_by_kind:
         lines += ["", "Structured pages by kind:"]
         lines.extend(f"  {kind}: {count:,}" for kind, count in audit.pages_by_kind)
+    if audit.spell_pages:
+        lines += [
+            "",
+            "Structured spell lifecycle coverage:",
+            f"  Spell pages: {audit.spell_pages:,}",
+            f"  With reviewed Quick Facts Expansion: {audit.spell_pages_with_expansion:,}",
+            f"  Missing reviewed Quick Facts Expansion: {audit.spell_pages_missing_expansion:,}",
+        ]
     if audit.duplicate_urls:
         lines += ["", "Most duplicated canonical URLs:"]
         for url, count in audit.duplicate_urls[: max(0, duplicate_limit)]:
@@ -172,7 +225,8 @@ def allakhazam_mirror_audit_text(
         "",
         "Interpretation:",
         "  • HTTrack/raw mirror file count includes assets and helper pages; it is not expected to equal EverQuestie source_pages.",
-        "  • importable_pages is the upper bound of unique structured pages the current Allakhazam importer can classify from canonical URLs.",
+        "  • importable_pages is the upper bound of unique structured pages the current Allakhazam mirror importer can classify from canonical URLs.",
+        "  • spell_pages_with_expansion counts only labeled Quick Facts Expansion values accepted by the production spell lifecycle parser; comments/prose do not count.",
         "  • Run the DB normalization coverage audit after import to compare mirror inventory with what was actually normalized into SQLite.",
     ]
     return "\n".join(lines)

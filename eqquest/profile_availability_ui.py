@@ -98,8 +98,8 @@ def install_profile_availability_ui() -> None:
         current_app._suggest_zone_from_quest = _suggest_zone_from_quest
 
     # world_profile_ui owns the application-level selector. Decorate that one global
-    # change callback so already-built Knowledge, tracked-quest and Mechanics surfaces
-    # update immediately when the player changes server context from any tab.
+    # change callback so already-built Knowledge, tracked-quest, Live intelligence and
+    # Mechanics surfaces update immediately when the player changes server context.
     current_changed = getattr(current_app, "_world_profile_changed", None)
     if current_changed is None or getattr(current_changed, _PROFILE_AVAILABILITY_UI_MARKER, False):
         return
@@ -122,6 +122,17 @@ def install_profile_availability_ui() -> None:
         if callable(refresh_guidance):
             try:
                 refresh_guidance()
+            except Exception:
+                pass
+
+        # Potential Pathways owns the composed Live refresh chain. Resolve the method
+        # dynamically at profile-change time so later-installed Zone Opportunities,
+        # Recent Loot and Target Intelligence decorators all refresh in the same pass.
+        # This is projection-only; it does not create observations or mutate quest state.
+        refresh_live = getattr(self, "_refresh_activity_pathways", None)
+        if callable(refresh_live):
+            try:
+                refresh_live(force=True)
             except Exception:
                 pass
 

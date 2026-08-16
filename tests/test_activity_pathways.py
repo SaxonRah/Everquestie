@@ -55,6 +55,7 @@ class ActivityPathwayEngineTests(unittest.TestCase):
 
                 engine = ActivityPathwayEngine(db)
                 engine.reset_session(0)
+                db.add_event(Event(kind="zone", raw="zone", zone="Qeynos Catacombs"))
                 for _ in range(3):
                     db.add_event(Event(kind="kill", raw="kill", actor="a bloodsaber", target="You"))
                 db.add_event(Event(kind="loot", raw="loot", item="Bloodsaber Blade"))
@@ -73,6 +74,139 @@ class ActivityPathwayEngineTests(unittest.TestCase):
                 self.assertIn("Bloodsaber Blade", detail)
                 self.assertIn("potential pathway", detail)
                 self.assertIn("not proof", detail)
+            finally:
+                db.close()
+
+    def test_zone_bound_kill_rejects_same_named_mob_observed_elsewhere(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "wrong-zone-kill")
+                quest = db.upsert_entity(kind="quest", name="West Skeleton Hunt")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Defeat a skeleton in West Zone",
+                    zone="West Zone",
+                    match={"event": "kill", "npc": "a skeleton"},
+                    source_page_id=page,
+                )
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0)
+                db.add_event(Event(kind="zone", raw="zone", zone="East Zone"))
+                db.add_event(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.refresh_observations()
+
+                self.assertEqual(engine.suggestions("East Zone"), [])
+                self.assertFalse(db.is_quest_tracked(quest))
+            finally:
+                db.close()
+
+    def test_zone_bound_kill_accepts_matching_logged_zone_context(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "right-zone-kill")
+                quest = db.upsert_entity(kind="quest", name="West Skeleton Hunt")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Defeat a skeleton in West Zone",
+                    zone="West Zone",
+                    match={"event": "kill", "npc": "a skeleton"},
+                    source_page_id=page,
+                )
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0)
+                db.add_event(Event(kind="zone", raw="zone", zone="West Zone"))
+                db.add_event(Event(kind="kill", raw="kill", actor="a skeleton"))
+                db.add_event(Event(kind="kill", raw="kill", actor="A Skeleton"))
+                engine.refresh_observations()
+
+                suggestions = engine.suggestions("West Zone")
+                self.assertEqual([row.quest_id for row in suggestions], [quest])
+                self.assertEqual(suggestions[0].evidence[0].observed_count, 2)
+            finally:
+                db.close()
+
+    def test_zone_bound_kill_can_use_monitor_start_zone_seed(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "seeded-zone-kill")
+                quest = db.upsert_entity(kind="quest", name="Seeded Skeleton Hunt")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Defeat a skeleton in West Zone",
+                    zone="West Zone",
+                    match={"event": "kill", "npc": "a skeleton"},
+                    source_page_id=page,
+                )
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0, starting_zone="West Zone")
+                db.add_event(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.refresh_observations()
+
+                suggestions = engine.suggestions("West Zone")
+                self.assertEqual([row.quest_id for row in suggestions], [quest])
+                self.assertEqual(suggestions[0].evidence[0].observed_count, 1)
+            finally:
+                db.close()
+
+    def test_welcome_clears_seeded_zone_until_new_zone_entry(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "welcome-zone-reset")
+                quest = db.upsert_entity(kind="quest", name="Reset Skeleton Hunt")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Defeat a skeleton in West Zone",
+                    zone="West Zone",
+                    match={"event": "kill", "npc": "a skeleton"},
+                    source_page_id=page,
+                )
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0, starting_zone="West Zone")
+                db.add_event(Event(kind="welcome", raw="Welcome to EverQuest!"))
+                db.add_event(Event(kind="kill", raw="unlocated kill", actor="a skeleton"))
+                engine.refresh_observations()
+                self.assertEqual(engine.suggestions("West Zone"), [])
+
+                db.add_event(Event(kind="zone", raw="zone", zone="West Zone"))
+                db.add_event(Event(kind="kill", raw="located kill", actor="a skeleton"))
+                engine.refresh_observations()
+                suggestions = engine.suggestions("West Zone")
+                self.assertEqual([row.quest_id for row in suggestions], [quest])
+                self.assertEqual(suggestions[0].evidence[0].observed_count, 1)
+            finally:
+                db.close()
+
+    def test_zone_bound_loot_remains_portable_across_acquisition_zone(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "portable-loot")
+                quest = db.upsert_entity(kind="quest", name="Portable Token Quest")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Bring a Portable Token to West Zone",
+                    zone="West Zone",
+                    match={"event": "loot", "item": "Portable Token"},
+                    source_page_id=page,
+                )
+                engine = ActivityPathwayEngine(db)
+                engine.reset_session(0)
+                db.add_event(Event(kind="zone", raw="zone", zone="East Zone"))
+                db.add_event(Event(kind="loot", raw="loot", item="Portable Token"))
+                engine.refresh_observations()
+
+                suggestions = engine.suggestions("East Zone")
+                self.assertEqual([row.quest_id for row in suggestions], [quest])
+                self.assertEqual(suggestions[0].evidence[0].observed_count, 1)
             finally:
                 db.close()
 

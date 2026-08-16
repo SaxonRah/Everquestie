@@ -37,7 +37,7 @@ class ZoneOpportunity:
     @property
     def primary_reason(self) -> str:
         count = len(self.steps)
-        base = f"{count} structured objective{'s' if count != 1 else ''} in {self.zone_name}"
+        base = f"{count} source-backed structured objective{'s' if count != 1 else ''} in {self.zone_name}"
         if self.activity_match:
             return base + "; recent activity also matches this quest"
         return base
@@ -54,17 +54,19 @@ def _event_kind(match_json: str | None) -> str:
 
 
 def _resolved_step_zone_tokens(db, index: ZoneIdentityIndex, zone_entity_id: int) -> tuple[str, ...]:
-    """Return stored quest-step zone strings that resolve to one canonical zone.
+    """Return provenanced quest-step zone strings resolving to one canonical zone.
 
     Distinct stored zone strings are resolved through the same authoritative identity
     policy used by profile availability/navigation. Ambiguous or unresolved strings are
-    never admitted merely because they resemble the current display name.
+    never admitted merely because they resemble the current display name, and unsourced
+    local/synthetic steps cannot establish a player-facing zone opportunity.
     """
     rows = db.conn.execute(
         """
         SELECT zone
         FROM quest_steps
         WHERE zone IS NOT NULL AND TRIM(zone)<>''
+          AND source_page_id IS NOT NULL
         GROUP BY zone COLLATE NOCASE
         ORDER BY zone COLLATE NOCASE
         """
@@ -90,12 +92,12 @@ def zone_opportunities(
     profile_id: str | None = None,
     limit: int = 15,
 ) -> tuple[ZoneOpportunity, ...]:
-    """Project untracked quests with explicit structured objectives in current zone.
+    """Project untracked quests with provenanced structured objectives here.
 
     This is location-triggered discovery, not activity inference. A quest enters this
-    projection only because one or more compiled quest steps contain a zone string that
-    resolves authoritatively to the player's current canonical zone. Recent activity can
-    rank/contextualize an already-qualified quest but cannot create one.
+    projection only because one or more source-backed compiled quest steps contain a zone
+    string that resolves authoritatively to the player's current canonical zone. Recent
+    activity can rank/contextualize an already-qualified quest but cannot create one.
     """
     text = " ".join(str(current_zone or "").split()).strip()
     if not text or int(limit) <= 0:
@@ -126,6 +128,7 @@ def zone_opportunities(
         FROM quest_steps qs
         JOIN entities e ON e.id=qs.quest_entity_id
         WHERE e.kind='quest'
+          AND qs.source_page_id IS NOT NULL
           AND qs.zone COLLATE NOCASE IN ({placeholders})
         ORDER BY qs.quest_entity_id, qs.step_order
         """,
@@ -198,7 +201,7 @@ def zone_opportunity_text(opportunity: ZoneOpportunity) -> str:
         f"Why here: {opportunity.primary_reason}.",
         f"Gameplay profile: {opportunity.profile_status} — {opportunity.profile_reason}",
         "",
-        "Structured objectives in this zone:",
+        "Source-backed structured objectives in this zone:",
     ]
     for step in opportunity.steps:
         event = f" [{step.event_kind}]" if step.event_kind else ""
@@ -211,7 +214,7 @@ def zone_opportunity_text(opportunity: ZoneOpportunity) -> str:
         ]
     lines += [
         "",
-        "Zone Opportunity means compiled structured quest data places these objectives in "
-        "your current canonical zone. It does not mean the quest is currently owned.",
+        "Zone Opportunity means source-backed compiled structured quest data places these "
+        "objectives in your current canonical zone. It does not mean the quest is currently owned.",
     ]
     return "\n".join(lines)

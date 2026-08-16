@@ -31,7 +31,7 @@ class PathwaySuggestion:
         if not self.evidence:
             return "Exact structured quest relationship"
         evidence = self.evidence[0]
-        action = "killed" if evidence.event_kind == "kill" else "looted"
+        action = "observed slain" if evidence.event_kind == "kill" else "looted"
         return f"{action} {evidence.subject} x{evidence.observed_count}"
 
 
@@ -103,8 +103,6 @@ class ActivityPathwayEngine:
             except (TypeError, json.JSONDecodeError):
                 continue
             expected = str(rule.get("event", "")).casefold()
-            if expected == "receive_item":
-                expected = "loot"
             if expected not in {"kill", "loot"}:
                 continue
 
@@ -180,6 +178,8 @@ class ActivityPathwayEngine:
         *,
         limit: int = 10,
     ) -> list[PathwaySuggestion]:
+        if not self._counts:
+            return []
         index = self._ensure_index()
         grouped: dict[int, dict[str, Any]] = {}
         zone_key = normalize_name(current_zone or "")
@@ -261,10 +261,12 @@ def pathway_detail_text(suggestion: PathwaySuggestion) -> str:
     lines = [suggestion.quest_name, "", "Why this appeared:"]
     for evidence in suggestion.evidence:
         if evidence.event_kind == "kill":
-            observed = f"Killed {evidence.subject} x{evidence.observed_count} this session"
+            observed = (
+                f"Observed {evidence.subject} slain x{evidence.observed_count} this session"
+            )
             relation = "exact kill objective"
         else:
-            observed = f"Looted {evidence.subject} x{evidence.observed_count} this session"
+            observed = f"You looted {evidence.subject} x{evidence.observed_count} this session"
             relation = "exact item objective"
         zone = f" | {evidence.step_zone}" if evidence.step_zone else ""
         lines.append(f"  • {observed}")

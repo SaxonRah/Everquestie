@@ -10,10 +10,10 @@ def install_profile_availability_ui() -> None:
     from . import app as app_module
     from .profile_availability import (
         ProfileAwareQuestEngine,
-        entity_profile_decision,
         profiled_entity_detail_text,
     )
-    from .world_profiles import world_profile
+    from .world_profiles import active_world_profile_id, world_profile, zone_profile_decision
+    from .zone_authority import resolve_authoritative_zone
 
     # app.py imported these names directly. Rebinding its runtime globals keeps the
     # legacy/source UI builder intact while making normal entity detail and the quest
@@ -22,25 +22,35 @@ def install_profile_availability_ui() -> None:
     app_module.QuestEngine = ProfileAwareQuestEngine
 
     # Tracking a quest may historically suggest its zone when the log has not supplied
-    # one. Keep that convenience only when the selected profile does not positively
-    # reject the quest's direct canonical world evidence. Tracking and reconciliation
-    # still proceed either way.
+    # one. Evaluate the exact zone the app is about to suggest, not only the quest's
+    # aggregate availability: mixed-era quests can contain both allowed and blocked
+    # world evidence. Tracking and reconciliation still proceed either way.
     current_app = app_module.EverQuestieApp
     current_suggest_zone = current_app._suggest_zone_from_quest
     if not getattr(current_suggest_zone, _PROFILE_QUEST_ZONE_MARKER, False):
         def _suggest_zone_from_quest(self, quest_id: int) -> None:
-            decision = entity_profile_decision(self.db, int(quest_id))
-            if decision.blocked:
-                profile = world_profile(decision.profile_id)
-                row = self.db.entity(int(quest_id))
-                name = str(row["name"]) if row is not None else str(quest_id)
-                try:
-                    self._append_event(
-                        f"ZONE | not inferred from quest under {profile.label}: {name} | {decision.reason}"
+            zone = self._quest_zone_name(int(quest_id))
+            if zone:
+                resolution = resolve_authoritative_zone(self.db, zone)
+                if resolution.identity is not None:
+                    profile_id = active_world_profile_id(self.db)
+                    decision = zone_profile_decision(
+                        self.db,
+                        resolution.identity.entity_id,
+                        profile_id,
                     )
-                except Exception:
-                    pass
-                return
+                    if not decision.allowed:
+                        profile = world_profile(profile_id)
+                        row = self.db.entity(int(quest_id))
+                        name = str(row["name"]) if row is not None else str(quest_id)
+                        try:
+                            self._append_event(
+                                f"ZONE | not inferred from quest under {profile.label}: "
+                                f"{name} -> {decision.zone_name} | {decision.reason}"
+                            )
+                        except Exception:
+                            pass
+                        return
             return current_suggest_zone(self, quest_id)
 
         setattr(_suggest_zone_from_quest, _PROFILE_QUEST_ZONE_MARKER, True)

@@ -10,8 +10,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eqquest.allakhazam_mirror_audit import (
-    allakhazam_mirror_audit_text,
     audit_allakhazam_mirror,
+    format_allakhazam_mirror_audit,
 )
 
 
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:
-        print(allakhazam_mirror_audit_text(args.mirror))
+        print(format_allakhazam_mirror_audit(report))
     return 0
 
 

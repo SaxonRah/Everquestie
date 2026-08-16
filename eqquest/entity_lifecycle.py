@@ -8,6 +8,32 @@ from .db import Database, normalize_name
 from .world_profiles import p99_expansion_allowed
 
 
+LIFECYCLE_FIELD_KEYS = ("expansion", "expansion_name", "era")
+
+# Direct lifecycle truth is field/source-specific. A top-level key named ``expansion``
+# is not sufficient by itself: the parser/source semantics must have been reviewed.
+#
+# The Allakhazam mirror importer currently owns these exact structured fields:
+# - NPC/zone: explicit page ``Expansion``
+# - item: explicit metadata-table ``Expansion``
+# - quest: explicit quest-table ``Era``
+#
+# Do not widen this catalog merely because another source happens to expose a similarly
+# named field. Add a reviewed source/field policy only after confirming its semantics.
+_REVIEWED_ENTITY_DATA_LIFECYCLE_FIELDS: dict[tuple[str, str, str], frozenset[str]] = {
+    ("allakhazam", "local_mirror", "npc"): frozenset({"expansion"}),
+    ("allakhazam", "local_mirror", "zone"): frozenset({"expansion"}),
+    ("allakhazam", "local_mirror", "item"): frozenset({"expansion"}),
+    ("allakhazam", "local_mirror", "quest"): frozenset({"era"}),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleFieldPolicyDecision:
+    allowed: bool
+    reason: str
+
+
 @dataclass(frozen=True, slots=True)
 class EntityExpansionEvidence:
     entity_id: int
@@ -19,6 +45,7 @@ class EntityExpansionEvidence:
     source_key: str
     source_page_id: int | None
     origin: str
+    field_name: str = ""
 
     @property
     def source_label(self) -> str:
@@ -54,16 +81,99 @@ def _json_object(raw: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def expansion_text(data: dict[str, Any]) -> str:
-    """Return an explicit top-level lifecycle/expansion statement, if present."""
-    for key in ("expansion", "expansion_name", "era"):
+def lifecycle_field(data: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the first explicit top-level lifecycle field and normalized text."""
+    for key in LIFECYCLE_FIELD_KEYS:
         value = data.get(key)
         if value is not None and str(value).strip():
-            return " ".join(str(value).split())
-    return ""
+            return key, " ".join(str(value).split())
+    return None
 
 
-def _source_fields(row, *, fallback_name: str, fallback_kind: str) -> tuple[str, str, str, int | None]:
+def expansion_text(data: dict[str, Any]) -> str:
+    """Backward-compatible text-only view of :func:`lifecycle_field`."""
+    found = lifecycle_field(data)
+    return found[1] if found is not None else ""
+
+
+def lifecycle_field_policy(
+    *,
+    entity_kind: str,
+    origin: str,
+    field_name: str,
+    source_name: str,
+    source_kind: str,
+    source_page_id: int | None,
+) -> LifecycleFieldPolicyDecision:
+    """Decide whether one lifecycle-looking field is direct profile evidence.
+
+    Field presence is not evidence by itself. Direct lifecycle classification requires
+    reviewed parser/source semantics. This function deliberately fails closed for
+    unknown sources and for canonical detail JSON.
+
+    In particular, ``mcp_local_details`` is mechanics/reference data. The locked MCP
+    1.2.1 spell source has no direct spell expansion field, while its
+    ``getClassSpellsByExpansion`` helper explicitly derives approximate eras from class
+    level ranges. MCP detail keys must therefore never become direct lifecycle truth
+    unless a future source/field combination is separately reviewed and added here.
+    """
+    kind = str(entity_kind or "").strip().casefold()
+    origin_key = str(origin or "").strip()
+    field = str(field_name or "").strip().casefold()
+    source_name_key = str(source_name or "").strip().casefold()
+    source_kind_key = str(source_kind or "").strip().casefold()
+
+    if field not in LIFECYCLE_FIELD_KEYS:
+        return LifecycleFieldPolicyDecision(False, "field is not a recognized lifecycle field")
+
+    if origin_key == "entity.data_json":
+        reviewed = _REVIEWED_ENTITY_DATA_LIFECYCLE_FIELDS.get(
+            (source_name_key, source_kind_key, kind),
+            frozenset(),
+        )
+        if field in reviewed:
+            return LifecycleFieldPolicyDecision(
+                True,
+                "reviewed explicit lifecycle field from the Allakhazam local mirror",
+            )
+        if source_kind_key == "mcp_local_snapshot":
+            return LifecycleFieldPolicyDecision(
+                False,
+                "MCP inventory data is identity/reference input, not reviewed lifecycle evidence",
+            )
+        if source_page_id is None:
+            return LifecycleFieldPolicyDecision(
+                False,
+                "unattributed normalized entity data is not source-backed lifecycle evidence",
+            )
+        return LifecycleFieldPolicyDecision(
+            False,
+            "entity lifecycle field source/field semantics have not been reviewed",
+        )
+
+    if origin_key == "entity_details.detail_json":
+        if source_kind_key == "mcp_local_details":
+            return LifecycleFieldPolicyDecision(
+                False,
+                "MCP rich-detail lifecycle-looking fields are not reviewed direct lifecycle evidence",
+            )
+        return LifecycleFieldPolicyDecision(
+            False,
+            "canonical detail JSON requires an explicit reviewed lifecycle source policy",
+        )
+
+    return LifecycleFieldPolicyDecision(
+        False,
+        "lifecycle evidence origin has not been reviewed",
+    )
+
+
+def _source_fields(
+    row,
+    *,
+    fallback_name: str,
+    fallback_kind: str,
+) -> tuple[str, str, str, int | None]:
     source_page_id = (
         int(row["source_page_id"])
         if row["source_page_id"] is not None
@@ -81,17 +191,14 @@ def entity_expansion_evidence(
     db: Database,
     entity_id: int,
 ) -> tuple[EntityExpansionEvidence, ...]:
-    """Read explicit source-backed expansion statements already stored for an entity.
+    """Read reviewed, explicit, source-backed expansion statements for an entity.
 
-    The current shipped corpus can expose expansion evidence through two normalized
-    surfaces without a schema migration:
+    The normalized database can contain lifecycle-looking top-level fields on multiple
+    surfaces. Only source/field/origin combinations accepted by
+    :func:`lifecycle_field_policy` become direct gameplay-profile evidence.
 
-    * ``entities.data_json`` — e.g. structured Allakhazam NPC/zone fields;
-    * ``entity_details.detail_json`` — e.g. rich MCP records when their actual local
-      getter emits an explicit expansion field.
-
-    Only top-level explicit fields are accepted. Text descriptions, locations, names,
-    dates, IDs, and expansion-adjacent prose are never parsed into lifecycle truth.
+    Text descriptions, locations, names, dates, IDs, nested metadata, and unreviewed
+    detail fields are never promoted into lifecycle truth.
     """
     entity = db.entity(int(entity_id))
     if entity is None:
@@ -111,9 +218,16 @@ def entity_expansion_evidence(
         return ()
 
     result: list[EntityExpansionEvidence] = []
-    seen: set[tuple[str, str, int | None]] = set()
+    seen: set[tuple[str, str, int | None, str]] = set()
 
-    def add(expansion: str, row, origin: str, fallback_name: str, fallback_kind: str) -> None:
+    def add(
+        field_name: str,
+        expansion: str,
+        row,
+        origin: str,
+        fallback_name: str,
+        fallback_kind: str,
+    ) -> None:
         text = " ".join(str(expansion or "").split()).strip()
         if not text:
             return
@@ -122,7 +236,17 @@ def entity_expansion_evidence(
             fallback_name=fallback_name,
             fallback_kind=fallback_kind,
         )
-        key = (normalize_name(text), origin, source_page_id)
+        policy = lifecycle_field_policy(
+            entity_kind=str(base["kind"] or ""),
+            origin=origin,
+            field_name=field_name,
+            source_name=source_name,
+            source_kind=source_kind,
+            source_page_id=source_page_id,
+        )
+        if not policy.allowed:
+            return
+        key = (normalize_name(text), origin, source_page_id, field_name.casefold())
         if key in seen:
             return
         seen.add(key)
@@ -137,22 +261,24 @@ def entity_expansion_evidence(
                 source_key=source_key,
                 source_page_id=source_page_id,
                 origin=origin,
+                field_name=field_name,
             )
         )
 
-    base_expansion = expansion_text(_json_object(base["data_json"]))
-    if base_expansion:
+    base_field = lifecycle_field(_json_object(base["data_json"]))
+    if base_field is not None:
         add(
-            base_expansion,
+            base_field[0],
+            base_field[1],
             base,
             "entity.data_json",
             "EverQuestie normalized entity",
             "entity_data",
         )
 
-    # entity_details is a one-row canonical projection. The full MCP source-granular
-    # records remain preserved elsewhere; this read path intentionally consumes only
-    # the canonical detail attached to this exact entity ID.
+    # entity_details is a one-row canonical projection. Rich detail is retained for
+    # display/search/mechanics, but lifecycle semantics remain independently governed
+    # by the source policy above.
     try:
         detail = db.conn.execute(
             """
@@ -167,10 +293,11 @@ def entity_expansion_evidence(
     except Exception:
         detail = None
     if detail is not None:
-        detail_expansion = expansion_text(_json_object(detail["detail_json"]))
-        if detail_expansion:
+        detail_field = lifecycle_field(_json_object(detail["detail_json"]))
+        if detail_field is not None:
             add(
-                detail_expansion,
+                detail_field[0],
+                detail_field[1],
                 detail,
                 "entity_details.detail_json",
                 "EverQuestie structured detail",
@@ -184,6 +311,7 @@ def entity_expansion_evidence(
                 normalize_name(item.expansion),
                 item.source_name.casefold(),
                 item.origin,
+                item.field_name,
             ),
         )
     )
@@ -194,12 +322,12 @@ def entity_lifecycle_decision(
     entity_id: int,
     profile_id: str,
 ) -> EntityLifecycleDecision:
-    """Classify only direct entity lifecycle evidence for one gameplay profile.
+    """Classify only reviewed direct entity lifecycle evidence for one profile.
 
     Live does not currently use expansion alone as a retirement statement: knowing that
     content originated in Classic does not prove it still exists on Live. Unrestricted
-    accepts everything. P99 can use an explicit expansion field because the profile has
-    a positive Classic-through-Velious era boundary.
+    accepts everything. P99 can use a reviewed explicit expansion/era field because the
+    profile has a positive Classic-through-Velious era boundary.
     """
     entity = db.entity(int(entity_id))
     kind = str(entity["kind"] or "") if entity is not None else ""
@@ -209,7 +337,14 @@ def entity_lifecycle_decision(
 
     if profile == "unrestricted":
         return EntityLifecycleDecision(
-            int(entity_id), kind, name, profile, True, "available", "unrestricted/custom profile retains all compiled knowledge", evidence
+            int(entity_id),
+            kind,
+            name,
+            profile,
+            True,
+            "available",
+            "unrestricted/custom profile retains all compiled knowledge",
+            evidence,
         )
 
     if profile != "p99" or not evidence:
@@ -223,7 +358,7 @@ def entity_lifecycle_decision(
             (
                 "expansion evidence alone is not a Live retirement statement"
                 if profile == "live" and evidence
-                else "no explicit entity expansion evidence is currently compiled"
+                else "no reviewed direct entity expansion evidence is currently compiled"
             ),
             evidence,
         )
@@ -232,7 +367,14 @@ def entity_lifecycle_decision(
     known = [value for value in classified if value is not None]
     if not known:
         return EntityLifecycleDecision(
-            int(entity_id), kind, name, profile, None, "unknown", "entity expansion evidence is present but not classifiable", evidence
+            int(entity_id),
+            kind,
+            name,
+            profile,
+            None,
+            "unknown",
+            "reviewed entity expansion evidence is present but not classifiable",
+            evidence,
         )
     if any(value is True for value in known) and any(value is False for value in known):
         return EntityLifecycleDecision(
@@ -242,7 +384,7 @@ def entity_lifecycle_decision(
             profile,
             None,
             "conflict",
-            "direct source expansion statements disagree across the P99 Velious boundary",
+            "reviewed direct source expansion statements disagree across the P99 Velious boundary",
             evidence,
         )
     if all(value is True for value in known):
@@ -253,7 +395,7 @@ def entity_lifecycle_decision(
             profile,
             True,
             "available",
-            "direct entity expansion evidence places this content at or before Velious",
+            "reviewed direct entity expansion evidence places this content at or before Velious",
             evidence,
         )
     return EntityLifecycleDecision(
@@ -263,6 +405,6 @@ def entity_lifecycle_decision(
         profile,
         False,
         "post_velious",
-        "direct entity expansion evidence places this content after Velious",
+        "reviewed direct entity expansion evidence places this content after Velious",
         evidence,
     )

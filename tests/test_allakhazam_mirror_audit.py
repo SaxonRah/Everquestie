@@ -38,6 +38,14 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
             self._canonical("https://everquest.allakhazam.com/db/zone.html?zstrat=66"),
         )
         self._write(
+            "spell-with-expansion.html",
+            self._spell_page(111, "Malaisement", "Original"),
+        )
+        self._write(
+            "spell-without-expansion.html",
+            self._spell_page(222, "Later Spell", None),
+        )
+        self._write(
             "search.html",
             self._canonical("https://everquest.allakhazam.com/search.html?q=fungus"),
         )
@@ -55,6 +63,32 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
     def _canonical(url: str) -> str:
         return f'<html><head><link rel="canonical" href="{url}"></head><body>fixture</body></html>'
 
+    @staticmethod
+    def _spell_page(spell_id: int, name: str, expansion: str | None) -> str:
+        expansion_row = (
+            f'<div><b>Expansion:</b><img alt="{expansion}" src="/images/expansion.gif"></div>'
+            if expansion
+            else '<div><b>Duration:</b><span>7.4 mins</span></div>'
+        )
+        return f"""
+        <html>
+          <head>
+            <title>{name} :: Spells :: EverQuest :: ZAM</title>
+            <link rel="canonical" href="https://everquest.allakhazam.com/db/spell.html?spell={spell_id}">
+          </head>
+          <body>
+            <h1>{name}</h1>
+            <section class="spell-facts">
+              <h3>Quick Facts</h3>
+              <div><b>Scroll:</b> Spell: {name}</div>
+              {expansion_row}
+            </section>
+            <h3>Comments</h3>
+            <p>Expansion: The Serpent's Spine in player prose must not count.</p>
+          </body>
+        </html>
+        """
+
     def _write(self, relative: str, text: str) -> None:
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,32 +102,43 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
     def test_audit_separates_raw_files_from_unique_structured_pages(self):
         audit = audit_allakhazam_mirror(self.root)
 
-        self.assertEqual(audit.all_files, 9)
-        self.assertEqual(audit.html_candidates, 8)
+        self.assertEqual(audit.all_files, 11)
+        self.assertEqual(audit.html_candidates, 10)
         self.assertEqual(audit.temporary_files, 1)
-        self.assertEqual(audit.readable_files, 7)
+        self.assertEqual(audit.readable_files, 9)
         self.assertEqual(audit.read_errors, 0)
-        self.assertEqual(audit.canonical_files, 6)
-        self.assertEqual(audit.unique_canonical_pages, 5)
+        self.assertEqual(audit.canonical_files, 8)
+        self.assertEqual(audit.unique_canonical_pages, 7)
         self.assertEqual(audit.duplicate_canonical_files, 1)
-        self.assertEqual(audit.importable_pages, 4)
+        self.assertEqual(audit.importable_pages, 6)
         self.assertEqual(audit.missing_canonical, 1)
         self.assertEqual(audit.unclassified_canonical, 1)
         self.assertEqual(
             dict(audit.pages_by_kind),
-            {"item": 1, "npc": 1, "quest": 1, "zone": 1},
+            {"spell": 2, "item": 1, "npc": 1, "quest": 1, "zone": 1},
         )
+        self.assertEqual(audit.spell_pages, 2)
+        self.assertEqual(audit.spell_pages_with_expansion, 1)
+        self.assertEqual(audit.spell_pages_missing_expansion, 1)
         self.assertEqual(
             audit.duplicate_urls,
             (("https://everquest.allakhazam.com/db/quest.html?quest=123", 2),),
         )
 
-    def test_human_report_explains_httrack_file_count_boundary(self):
+    def test_spell_coverage_uses_structured_quick_facts_not_comment_prose(self):
+        audit = audit_allakhazam_mirror(self.root)
+        self.assertEqual(audit.spell_pages, 2)
+        self.assertEqual(audit.spell_pages_with_expansion, 1)
+        self.assertEqual(audit.spell_pages_missing_expansion, 1)
+
+    def test_human_report_explains_httrack_file_count_boundary_and_spell_coverage(self):
         text = allakhazam_mirror_audit_text(self.root)
-        self.assertIn("All mirror files: 9", text)
-        self.assertIn("HTML-like files discovered: 8", text)
-        self.assertIn("Unique quest/NPC/item/zone pages ready for structured import: 4", text)
-        self.assertIn("quest: 1", text)
+        self.assertIn("All mirror files: 11", text)
+        self.assertIn("HTML-like files discovered: 10", text)
+        self.assertIn("Unique structured pages ready for import: 6", text)
+        self.assertIn("spell: 2", text)
+        self.assertIn("With reviewed Quick Facts Expansion: 1", text)
+        self.assertIn("Missing reviewed Quick Facts Expansion: 1", text)
         self.assertIn("2 files -> https://everquest.allakhazam.com/db/quest.html?quest=123", text)
         self.assertIn("HTTrack/raw mirror file count includes assets and helper pages", text)
 
@@ -103,9 +148,12 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
             code = main([str(self.root), "--json"])
         self.assertEqual(code, 0)
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["all_files"], 9)
-        self.assertEqual(payload["importable_pages"], 4)
+        self.assertEqual(payload["all_files"], 11)
+        self.assertEqual(payload["importable_pages"], 6)
         self.assertEqual(payload["pages_by_kind"]["quest"], 1)
+        self.assertEqual(payload["pages_by_kind"]["spell"], 2)
+        self.assertEqual(payload["spell_pages_with_expansion"], 1)
+        self.assertEqual(payload["spell_pages_missing_expansion"], 1)
         self.assertFalse(any(path.suffix in {".db", ".sqlite", ".sqlite3"} for path in self.root.rglob("*")))
 
     def test_missing_folder_fails_cleanly(self):

@@ -12,6 +12,7 @@ from eqquest.activity_pathway_dismiss_ui import install_activity_pathway_dismiss
 from eqquest.activity_clusters_ui import install_activity_clusters_ui
 from eqquest.zone_opportunities_ui import install_zone_opportunities_ui
 from eqquest.loot_relevance_ui import install_loot_relevance_ui
+from eqquest.npc_relevance_ui import install_npc_relevance_ui
 from eqquest.runtime_mode_ui import install_runtime_mode_ui
 from eqquest.runtime import main
 
@@ -29,5 +30,6 @@ if __name__ == "__main__":
     install_activity_clusters_ui()
     install_zone_opportunities_ui()
     install_loot_relevance_ui()
+    install_npc_relevance_ui()
     install_runtime_mode_ui()
     main()

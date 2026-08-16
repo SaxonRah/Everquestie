@@ -100,16 +100,20 @@ If unrestricted knowledge contains a route but the selected profile blocks one o
 
 ## UI behavior
 
-Travel exposes a `Gameplay profile` selector. Changing it:
+The application top bar exposes one persistent `Server` selector. It is deliberately outside Travel because the selected server profile affects Travel, Knowledge, and tracked-quest guidance globally.
+
+Changing it:
 
 - persists the new user preference;
-- invalidates any cached route;
+- invalidates any cached Travel route;
 - requires route recalculation before `Map next hop` can continue;
 - immediately re-renders the currently selected Knowledge entity when possible;
 - immediately refreshes tracked-quest guidance;
 - leaves the knowledge snapshot unchanged.
 
-Route output is explicitly labelled with the profile. The same Travel owner is used by direct Travel queries, Knowledge → Travel handoffs, and Live tracked-objective navigation.
+Travel continues to own route inputs, route results, hop evidence, and map-next-hop behavior. Route output is explicitly labelled with the active profile. The same Travel owner is used by direct Travel queries, Knowledge → Travel handoffs, and Live tracked-objective navigation.
+
+Keeping the selector at application level also makes the active world/server context visible while the player is on Live, Map, Knowledge, Mechanics, Database, or Travel rather than requiring a trip to the Travel tab to discover or change it.
 
 ## Current lifecycle overrides
 

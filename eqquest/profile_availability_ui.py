@@ -56,25 +56,19 @@ def install_profile_availability_ui() -> None:
         setattr(_suggest_zone_from_quest, _PROFILE_QUEST_ZONE_MARKER, True)
         current_app._suggest_zone_from_quest = _suggest_zone_from_quest
 
-    # world_profile_ui owns the selector. Decorate its change callback so one global
-    # selection immediately refreshes other already-built player surfaces as well.
-    from . import route_guidance_ui as travel_ui
-
-    current = travel_ui.RouteGuidanceFrame
-    current_changed = getattr(current, "_world_profile_changed", None)
+    # world_profile_ui owns the application-level selector. Decorate that one global
+    # change callback so the already-built Knowledge and tracked-quest surfaces update
+    # immediately when the player changes server context from any tab.
+    current_changed = getattr(current_app, "_world_profile_changed", None)
     if current_changed is None or getattr(current_changed, _PROFILE_AVAILABILITY_UI_MARKER, False):
         return
 
     def _world_profile_changed(self, event=None) -> None:
         current_changed(self, event)
-        try:
-            top = self.winfo_toplevel()
-        except Exception:
-            return
 
         # Knowledge detail is read-only; this simply re-renders the selected entity
         # with its new availability statement. No entity/source row is changed.
-        show_entity = getattr(top, "_show_entity", None)
+        show_entity = getattr(self, "_show_entity", None)
         if callable(show_entity):
             try:
                 show_entity()
@@ -83,7 +77,7 @@ def install_profile_availability_ui() -> None:
 
         # Quest progress remains writable player state. Refreshing guidance changes
         # only the recommendation text, never tracked/completed progress.
-        refresh_guidance = getattr(top, "_refresh_guidance", None)
+        refresh_guidance = getattr(self, "_refresh_guidance", None)
         if callable(refresh_guidance):
             try:
                 refresh_guidance()
@@ -91,4 +85,4 @@ def install_profile_availability_ui() -> None:
                 pass
 
     setattr(_world_profile_changed, _PROFILE_AVAILABILITY_UI_MARKER, True)
-    current._world_profile_changed = _world_profile_changed
+    current_app._world_profile_changed = _world_profile_changed

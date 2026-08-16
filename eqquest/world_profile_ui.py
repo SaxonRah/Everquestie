@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 _WORLD_PROFILE_UI_MARKER = "_everquestie_world_profile_ui"
+_GLOBAL_PROFILE_APP_MARKER = "_everquestie_global_world_profile_ui"
 
 
 def _children(widget) -> list:
@@ -11,18 +12,35 @@ def _children(widget) -> list:
         return []
 
 
-def _find_zone_navigation_controls(frame):
-    for child in _children(frame):
-        try:
-            if str(child.cget("text")) == "Zone navigation":
-                return child
-        except Exception:
-            continue
+def _walk(widget):
+    stack = [widget]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(_children(current)))
+
+
+def _find_log_controls(app):
+    """Find the application top bar without coupling to a private widget name."""
+    for child in _children(app):
+        for descendant in _walk(child):
+            try:
+                if str(descendant.cget("text")) == "EQ log:":
+                    return child
+            except Exception:
+                continue
     return None
 
 
 def install_world_profile_ui() -> None:
-    """Install persistent gameplay-profile routing on the shared Travel surface."""
+    """Install global gameplay/server profile UI and profiled Travel routing.
+
+    The selected profile affects more than Travel, so its owner is the application
+    chrome rather than one tab. Travel still owns route calculation/results, while the
+    global selector stores one user-state profile consumed by Travel, Knowledge and
+    tracked-quest guidance.
+    """
+    from . import app as app_module
     from . import route_guidance_ui as ui
     from .world_profile_routing import (
         build_profiled_route_guidance,
@@ -43,10 +61,46 @@ def install_world_profile_ui() -> None:
     ui.route_guidance_text = profiled_route_guidance_text
 
     current = ui.RouteGuidanceFrame
-    current_build = current._build
-    if getattr(current_build, _WORLD_PROFILE_UI_MARKER, False):
-        return
     current_show_zone = current.show_zone_context
+    if not getattr(current_show_zone, _WORLD_PROFILE_UI_MARKER, False):
+        def _show_zone_context(self) -> None:
+            current_show_zone(self)
+            token = self._selected_or_current_zone()
+            if not token:
+                return
+            try:
+                from .zone_authority import resolve_authoritative_zone
+
+                resolution = resolve_authoritative_zone(self.db, token)
+                if resolution.identity is None:
+                    return
+                profile = world_profile(active_world_profile_id(self.db))
+                decision = zone_profile_decision(
+                    self.db,
+                    resolution.identity.entity_id,
+                    profile.profile_id,
+                )
+                availability = "routeable" if decision.allowed else "not routeable"
+                expansion = (
+                    f" | expansion evidence: {', '.join(decision.expansions)}"
+                    if decision.expansions
+                    else ""
+                )
+                self.status_var.set(
+                    f"{self.status_var.get()} | {profile.label}: {availability} "
+                    f"({decision.reason}){expansion}"
+                )
+            except Exception:
+                # Zone context remains useful even if profile annotation cannot be projected.
+                return
+
+        setattr(_show_zone_context, _WORLD_PROFILE_UI_MARKER, True)
+        current.show_zone_context = _show_zone_context
+
+    current_app = app_module.EverQuestieApp
+    current_build_ui = current_app._build_ui
+    if getattr(current_build_ui, _GLOBAL_PROFILE_APP_MARKER, False):
+        return
 
     labels = tuple(profile.label for profile in WORLD_PROFILES)
     ids_by_label = {profile.label: profile.profile_id for profile in WORLD_PROFILES}
@@ -55,91 +109,75 @@ def install_world_profile_ui() -> None:
         selected_label = self.world_profile_var.get().strip()
         profile_id = ids_by_label.get(selected_label, "live")
         profile = set_active_world_profile(self.db, profile_id)
-        self._route_guidance = None
-        self.world_profile_status_var.set(profile.description)
+        self.world_profile_var.set(profile.label)
 
-        source = self.from_var.get().strip() or "?"
-        target = self.to_var.get().strip()
-        if target:
+        travel = getattr(self, "travel_tab", None)
+        if travel is not None:
             try:
-                self._everquestie_result_mode = "pending_route"
+                travel._route_guidance = None
             except Exception:
                 pass
-            self._set_result(
-                f"Gameplay profile changed to {profile.label}.\n"
-                f"Route request: {source} → {target}\n\n"
-                "Press Find route to recalculate using this profile."
-            )
-            self.status_var.set(
-                f"Gameplay profile: {profile.label}. Cached route cleared; press Find route to recalculate."
-            )
-        else:
-            self.status_var.set(f"Gameplay profile: {profile.label}. {profile.description}")
+            source = travel.from_var.get().strip() or "?"
+            target = travel.to_var.get().strip()
+            if target:
+                try:
+                    travel._everquestie_result_mode = "pending_route"
+                except Exception:
+                    pass
+                try:
+                    travel._set_result(
+                        f"Server profile changed to {profile.label}.\n"
+                        f"Route request: {source} → {target}\n\n"
+                        "Press Find route to recalculate using this profile."
+                    )
+                except Exception:
+                    pass
+                try:
+                    travel.status_var.set(
+                        f"Server profile: {profile.label}. Cached route cleared; "
+                        "press Find route to recalculate."
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    travel.status_var.set(
+                        f"Server profile: {profile.label}. {profile.description}"
+                    )
+                except Exception:
+                    pass
 
-    def _build(self) -> None:
-        current_build(self)
+        try:
+            self.status.set(f"Server profile: {profile.label}. {profile.description}")
+        except Exception:
+            pass
+
+    def _build_ui(self) -> None:
+        current_build_ui(self)
         import tkinter as tk
         from tkinter import ttk
 
         profile = world_profile(active_world_profile_id(self.db))
         self.world_profile_var = tk.StringVar(value=profile.label)
-        self.world_profile_status_var = tk.StringVar(value=profile.description)
 
-        controls = _find_zone_navigation_controls(self)
-        if controls is None:
+        top = _find_log_controls(self)
+        if top is None:
             return
 
-        ttk.Label(controls, text="Gameplay profile").grid(
-            row=2, column=0, sticky="w", pady=(8, 0)
-        )
+        holder = ttk.Frame(top)
+        holder.pack(side="right", padx=(10, 0))
+        ttk.Label(holder, text="Server:").pack(side="left", padx=(0, 4))
         combo = ttk.Combobox(
-            controls,
+            holder,
             textvariable=self.world_profile_var,
             values=labels,
             state="readonly",
-            width=34,
+            width=31,
         )
-        combo.grid(row=2, column=1, sticky="w", padx=8, pady=(8, 0))
+        combo.pack(side="left")
         combo.bind("<<ComboboxSelected>>", self._world_profile_changed)
-        ttk.Label(
-            controls,
-            textvariable=self.world_profile_status_var,
-            wraplength=650,
-            justify="left",
-        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=(4, 0), pady=(8, 0))
         self.world_profile_combo = combo
 
-    def _show_zone_context(self) -> None:
-        current_show_zone(self)
-        token = self._selected_or_current_zone()
-        if not token:
-            return
-        try:
-            from .zone_authority import resolve_authoritative_zone
-
-            resolution = resolve_authoritative_zone(self.db, token)
-            if resolution.identity is None:
-                return
-            profile = world_profile(active_world_profile_id(self.db))
-            decision = zone_profile_decision(
-                self.db,
-                resolution.identity.entity_id,
-                profile.profile_id,
-            )
-            availability = "routeable" if decision.allowed else "not routeable"
-            expansion = (
-                f" | expansion evidence: {', '.join(decision.expansions)}"
-                if decision.expansions
-                else ""
-            )
-            self.status_var.set(
-                f"{self.status_var.get()} | {profile.label}: {availability} ({decision.reason}){expansion}"
-            )
-        except Exception:
-            # Zone context remains useful even if profile annotation cannot be projected.
-            return
-
-    setattr(_build, _WORLD_PROFILE_UI_MARKER, True)
-    current._world_profile_changed = _world_profile_changed
-    current._build = _build
-    current.show_zone_context = _show_zone_context
+    setattr(_build_ui, _GLOBAL_PROFILE_APP_MARKER, True)
+    current_app._world_profile_changed = _world_profile_changed
+    current_app._build_ui = _build_ui

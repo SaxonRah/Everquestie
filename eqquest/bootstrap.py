@@ -7,6 +7,7 @@ from .knowledge_coverage_ui import install_knowledge_coverage_ui
 from .knowledge_relationship_ui import install_knowledge_relationship_navigation_ui
 from .loot_relevance_ui import install_loot_relevance_ui
 from .map_loading_policy import install_map_loading_policy
+from .objective_reviewed_item_sources_ui import install_objective_reviewed_item_sources_ui
 from .packaged_ui_policy import install_packaged_ui_policy
 from .profile_availability_ui import install_profile_availability_ui
 from .runtime_mode_ui import install_runtime_mode_ui
@@ -30,6 +31,7 @@ def install_application_layers() -> None:
     install_map_loading_policy()
     install_knowledge_coverage_ui()
     install_packaged_ui_policy()
+    install_objective_reviewed_item_sources_ui()
     install_knowledge_relationship_navigation_ui()
     install_travel_output_ui()
     install_world_profile_ui()

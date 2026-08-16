@@ -13,13 +13,19 @@ class TargetIntelligenceUITests(unittest.TestCase):
         from eqquest import app as app_module
 
         install_activity_pathways_ui()
-        before = app_module.EverQuestieApp._refresh_activity_pathways
-        install_target_intelligence_ui()
         app_cls = app_module.EverQuestieApp
+        already_installed = bool(
+            getattr(app_cls, "_everquestie_target_intelligence_ui", False)
+        )
+        before = app_cls._refresh_activity_pathways
+        install_target_intelligence_ui()
         after = app_cls._refresh_activity_pathways
 
         self.assertTrue(getattr(app_cls, "_everquestie_target_intelligence_ui", False))
-        self.assertIsNot(after, before)
+        if already_installed:
+            self.assertIs(after, before)
+        else:
+            self.assertIsNot(after, before)
         self.assertTrue(callable(getattr(app_cls, "_refresh_target_intelligence", None)))
         self.assertTrue(callable(getattr(app_cls, "_target_intelligence_view", None)))
         self.assertTrue(callable(getattr(app_cls, "_target_intelligence_navigate", None)))

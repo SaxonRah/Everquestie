@@ -47,7 +47,13 @@ class KnowledgeMapTargetTests(unittest.TestCase):
             external_id="397",
             external_namespace="eqclient:zone",
         )
-        self.npc = self.db.upsert_entity(kind="npc", name="Scout Fana", external_id="npc:1001")
+        self.npc_page = self._page("npc:1001", "Scout Fana", "npc")
+        self.npc = self.db.upsert_entity(
+            kind="npc",
+            name="Scout Fana",
+            external_id="npc:1001",
+            source_page_id=self.npc_page,
+        )
 
     def tearDown(self):
         self.db.close()
@@ -75,6 +81,7 @@ class KnowledgeMapTargetTests(unittest.TestCase):
             x=x,
             z=z,
             label=label,
+            source_page_id=self.npc_page,
             evidence=f"{label} at {y}, {x}",
         )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import Database
+from .location_actionability import location_is_actionable, relationship_is_actionable
 from .locations import location_evidence_for_entity
 from .world_entity_detail import build_world_entity_context_for_id
 from .zone_authority import resolve_authoritative_zone
@@ -130,9 +131,9 @@ def _split_choices(
 
 def _group_direct_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
     rows = location_evidence_for_entity(db, entity_id)
-    navigable = [row for row in rows if row.navigable]
+    actionable = [row for row in rows if location_is_actionable(row)]
     grouped: dict[tuple[int, str, float, float, float | None], list] = {}
-    for row in navigable:
+    for row in actionable:
         assert row.zone_entity_id is not None and row.x is not None and row.y is not None
         row_zone_name = str(row.zone_name or "")
         if int(row.zone_entity_id) == int(zone_id) and not row_zone_name:
@@ -176,9 +177,26 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
     if context is None or context.kind != "quest":
         return [], [], []
 
-    navigable = [row for row in context.related_locations if row.navigable]
-    grouped: dict[tuple[int, str, int, str, float, float, float | None], list] = {}
-    for row in navigable:
+    reviewed_by_actor: dict[int, list] = {}
+    for fact in context.relationships:
+        if (
+            fact.direction == "out"
+            and fact.other_kind == "npc"
+            and fact.relation in _RELATION_LABELS
+            and relationship_is_actionable(fact)
+        ):
+            reviewed_by_actor.setdefault(int(fact.other_entity_id), []).append(fact)
+
+    actionable = [
+        row
+        for row in context.related_locations
+        if location_is_actionable(row) and int(row.entity_id) in reviewed_by_actor
+    ]
+    grouped: dict[
+        tuple[int, str, int, str, float, float, float | None],
+        tuple[list, list[str]],
+    ] = {}
+    for row in actionable:
         assert (
             row.gameplay_zone_entity_id is not None
             and row.x is not None
@@ -187,16 +205,20 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
         row_zone_name = str(row.gameplay_zone_name or "")
         if int(row.gameplay_zone_entity_id) == int(zone_id) and not row_zone_name:
             row_zone_name = zone_name
-        key = (
-            int(row.gameplay_zone_entity_id),
-            row_zone_name,
-            int(row.entity_id),
-            str(row.relation or ""),
-            float(row.x),
-            float(row.y),
-            float(row.z) if row.z is not None else None,
-        )
-        grouped.setdefault(key, []).append(row)
+        for fact in reviewed_by_actor[int(row.entity_id)]:
+            relation = str(fact.relation)
+            key = (
+                int(row.gameplay_zone_entity_id),
+                row_zone_name,
+                int(row.entity_id),
+                relation,
+                float(row.x),
+                float(row.y),
+                float(row.z) if row.z is not None else None,
+            )
+            evidence_rows, semantic_sources = grouped.setdefault(key, ([], []))
+            evidence_rows.append(row)
+            semantic_sources.append(fact.source_label)
 
     all_choices: list[KnowledgeMapChoice] = []
     for (
@@ -207,7 +229,7 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
         x,
         y,
         z,
-    ), evidence_rows in grouped.items():
+    ), (evidence_rows, semantic_sources) in grouped.items():
         actor_name = evidence_rows[0].entity_name
         all_choices.append(
             KnowledgeMapChoice(
@@ -226,7 +248,9 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
                 y=y,
                 z=z,
                 evidence_count=len(evidence_rows),
-                source_labels=_source_tuple(row.source_label for row in evidence_rows),
+                source_labels=_source_tuple(
+                    [*semantic_sources, *(row.source_label for row in evidence_rows)]
+                ),
             )
         )
     current, elsewhere = _split_choices(all_choices, zone_id)
@@ -234,11 +258,11 @@ def _quest_actor_choices(db: Database, entity_id: int, zone_id: int, zone_name: 
 
 
 def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_name: str):
-    """Project explicit item/vendor/trainer relationships through NPC locations.
+    """Project reviewed item/vendor/trainer relationships through reviewed locations.
 
-    The relationship identifies *which NPC is relevant*; it never supplies the
-    coordinate itself. Coordinates remain independently sourced `entity_locations`
-    or linked map evidence on that NPC and must already be canonical/navigable.
+    The relationship identifies *which NPC is relevant* and must carry its own reviewed
+    provenance. It never supplies the coordinate itself. Coordinates remain independently
+    sourced entity locations or linked map evidence and must pass the actionability gate.
     """
     context = build_world_entity_context_for_id(db, entity_id)
     if context is None:
@@ -251,13 +275,17 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
     all_locations: list = []
     for fact in context.relationships:
         relation_label = allowed.get((fact.direction, fact.relation))
-        if not relation_label or fact.other_kind != "npc":
+        if (
+            not relation_label
+            or fact.other_kind != "npc"
+            or not relationship_is_actionable(fact)
+        ):
             continue
         locations = location_evidence_for_entity(db, fact.other_entity_id)
         all_locations.extend(locations)
-        navigable = [row for row in locations if row.navigable]
+        actionable = [row for row in locations if location_is_actionable(row)]
         grouped: dict[tuple[int, str, float, float, float | None], list] = {}
-        for row in navigable:
+        for row in actionable:
             assert row.zone_entity_id is not None and row.x is not None and row.y is not None
             row_zone_name = str(row.zone_name or "")
             if int(row.zone_entity_id) == int(zone_id) and not row_zone_name:
@@ -297,13 +325,13 @@ def _related_entity_choices(db: Database, entity_id: int, zone_id: int, zone_nam
 def knowledge_route_choices(
     choice_set: KnowledgeMapChoiceSet,
 ) -> tuple[KnowledgeRouteChoice, ...]:
-    """Collapse safe remote map choices into explicit cross-zone route destinations.
+    """Collapse reviewed remote map choices into explicit route destinations.
 
     Route selection is about the destination canonical zone, not which spawn point in
     that zone will eventually be mapped. Multiple coordinate choices in one remote zone
-    therefore collapse into one route choice while retaining their semantic labels and
-    provenance. Candidate/ambiguous provider zones can never enter this function because
-    ``other_zone_choices`` contains only already-navigable canonical locations.
+    therefore collapse into one route choice while retaining semantic labels and
+    provenance. Candidate/ambiguous provider zones and unreviewed coordinates cannot
+    enter because ``other_zone_choices`` contains only already-actionable locations.
     """
     grouped: dict[int, list[KnowledgeMapChoice]] = {}
     for choice in choice_set.other_zone_choices:
@@ -344,13 +372,14 @@ def knowledge_map_choices(
     entity_id: int,
     current_zone: str | None,
 ) -> KnowledgeMapChoiceSet:
-    """Return safe canonical current-zone and remote choices for Knowledge.
+    """Return reviewed current-zone and remote action choices for Knowledge.
 
     Direct locations, explicit quest-actor locations, and supported related-NPC
-    locations are eligible. Relationships select relevant entities but never invent
-    coordinates. Current-zone choices may be handed to Map. Remote choices may only be
-    collapsed into explicit route destinations; they are never mapped as if they were
-    in the live zone. Provider candidate/unresolved coordinates remain evidence-only.
+    locations remain visible as Knowledge even when unreviewed. A Map/Travel choice is
+    stricter: the coordinate must have reviewed provenance, and a related-NPC choice also
+    needs a reviewed relationship explaining why that NPC is relevant. Current-zone
+    choices may be handed to Map; remote choices may only become explicit Travel
+    destinations. Provider candidate/unresolved coordinates remain evidence-only.
     """
     entity = db.entity(int(entity_id))
     if entity is None:
@@ -416,7 +445,7 @@ def knowledge_map_choices(
         return KnowledgeMapChoiceSet(
             "ready",
             (
-                f"{len(choices)} safe current-zone location choice(s) are available for {entity_name}."
+                f"{len(choices)} reviewed current-zone location choice(s) are available for {entity_name}."
             ),
             int(entity_id),
             entity_name,
@@ -433,7 +462,7 @@ def knowledge_map_choices(
         return KnowledgeMapChoiceSet(
             "not_in_current_zone",
             (
-                f"{entity_name} has {len(other_choices)} safe mapped location choice(s) in "
+                f"{entity_name} has {len(other_choices)} reviewed mapped location choice(s) in "
                 f"{remote_zones} other canonical {zone_word}, but none is in the current zone {zone_name}."
             ),
             int(entity_id),
@@ -447,7 +476,10 @@ def knowledge_map_choices(
     if all_locations:
         return KnowledgeMapChoiceSet(
             "no_navigable_location",
-            f"Location evidence exists for {entity_name}, but none has both a safe gameplay-zone identity and explicit X/Y coordinates.",
+            (
+                f"Location evidence exists for {entity_name}, but none is fully actionable with "
+                "reviewed provenance, a safe gameplay-zone identity, and explicit X/Y coordinates."
+            ),
             int(entity_id),
             entity_name,
             zone_id,

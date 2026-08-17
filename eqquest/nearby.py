@@ -4,12 +4,13 @@ from dataclasses import dataclass
 import math
 
 from .db import Database
+from .location_actionability import location_is_actionable
 from .zone_context import ZoneContext, build_zone_context
 
 
 @dataclass(frozen=True, slots=True)
 class NearbyPoint:
-    """One confirmed point ranked from the player's observed EQ /loc.
+    """One reviewed point ranked from the player's observed EQ /loc.
 
     Distance is deliberately geometric rather than pathfinding: ``horizontal_distance``
     is straight-line distance in normalized EverQuest X/Y and ``vertical_delta`` is
@@ -77,8 +78,9 @@ def _entity_points(
     result: list[NearbyPoint] = []
     for row in context.locations:
         location = row.location
-        if location.x is None or location.y is None:
+        if not location_is_actionable(location):
             continue
+        assert location.x is not None and location.y is not None
         horizontal, vertical, delta_x, delta_y = _point_distance(
             player_location,
             float(location.x),
@@ -160,12 +162,13 @@ def nearby_points(
     include_entities: bool = True,
     include_travel: bool = True,
 ) -> tuple[list[NearbyPoint], str]:
-    """Rank confirmed current-zone points around one observed player /loc.
+    """Rank reviewed current-zone points around one observed player /loc.
 
     This is a read projection over shipped knowledge. It never writes observed player
-    coordinates into the knowledge database. Multiple source statements for the same
-    entity remain separate points because they may represent distinct spawns/locations
-    rather than duplicate records.
+    coordinates into the knowledge database. Unprovenanced entity-location rows remain
+    visible elsewhere as Knowledge evidence but cannot become Nearby/Map targets. Multiple
+    reviewed source statements for the same entity remain separate points because they
+    may represent distinct spawns/locations rather than duplicate records.
     """
     if player_location is None:
         return [], "location_unknown"
@@ -206,7 +209,7 @@ def nearby_text(
     limit: int = 25,
     max_horizontal: float | None = None,
 ) -> str:
-    """Render nearby confirmed points without implying pathfinding distance."""
+    """Render nearby reviewed points without implying pathfinding distance."""
     points, status = nearby_points(
         db,
         zone_token,
@@ -233,10 +236,10 @@ def nearby_text(
     if max_horizontal is not None:
         lines.append(f"Radius: {max(0.0, float(max_horizontal)):g} horizontal units")
     if not points:
-        lines += ["", "No confirmed coordinate-bearing points match this view."]
+        lines += ["", "No reviewed coordinate-bearing points match this view."]
         return "\n".join(lines)
 
-    lines += ["", f"Nearest confirmed points: {len(points)}"]
+    lines += ["", f"Nearest reviewed points: {len(points)}"]
     for index, point in enumerate(points, start=1):
         if point.point_type == "travel":
             label = f"[travel:{point.kind.replace('_', ' ')}] → {point.name}"

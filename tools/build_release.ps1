@@ -131,6 +131,8 @@ Write-Host "[3/7] Verifying reviewed release inputs against finalized evidence..
 if ($LASTEXITCODE -ne 0) {
     throw "Reviewed release-input audit failed with exit code $LASTEXITCODE. Release packaging aborted."
 }
+$AuditedSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
+$AuditedSnapshotBytes = (Get-Item $Snapshot).Length
 
 if ($SkipRouteAudit) {
     Write-Host "[4/7] Route acceptance gate skipped by -SkipRouteAudit."
@@ -175,6 +177,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windows application build failed with exit code $LASTEXITCODE."
 }
 
+$CurrentSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
+$CurrentSnapshotBytes = (Get-Item $Snapshot).Length
+if ($CurrentSnapshotHash -ne $AuditedSnapshotHash -or $CurrentSnapshotBytes -ne $AuditedSnapshotBytes) {
+    throw "Knowledge snapshot changed after its reviewed-input audit. Release packaging aborted."
+}
+
 $Target = if ($OneFile) {
     Join-Path $ReleaseDir "EverQuestie.exe"
 }
@@ -190,17 +198,24 @@ else {
 if (-not (Test-Path $Executable -PathType Leaf)) {
     throw "Release executable is missing: $Executable"
 }
+$KnowledgePackagingIntegrity = "source-hash-stable-during-embed"
 if (-not $OneFile) {
     $PackagedKnowledge = Join-Path $Target $KnowledgeName
     if (-not (Test-Path $PackagedKnowledge -PathType Leaf)) {
         throw "Release knowledge snapshot is missing beside the executable: $PackagedKnowledge"
     }
+    $PackagedKnowledgeHash = (Get-FileHash -Algorithm SHA256 $PackagedKnowledge).Hash.ToLowerInvariant()
+    $PackagedKnowledgeBytes = (Get-Item $PackagedKnowledge).Length
+    if ($PackagedKnowledgeHash -ne $AuditedSnapshotHash -or $PackagedKnowledgeBytes -ne $AuditedSnapshotBytes) {
+        throw "Packaged knowledge snapshot does not match the audited release snapshot byte-for-byte."
+    }
+    $KnowledgePackagingIntegrity = "byte-identical-copy"
 }
 
 Write-Host "[7/7] Writing manifest and distributable ZIP..."
-$SnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
+$SnapshotHash = $AuditedSnapshotHash
 $ExecutableHash = (Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
-$SnapshotBytes = (Get-Item $Snapshot).Length
+$SnapshotBytes = $AuditedSnapshotBytes
 $ExecutableBytes = (Get-Item $Executable).Length
 $BuiltAt = (Get-Date).ToUniversalTime().ToString("o")
 $Layout = if ($OneFile) { "one-file" } else { "one-folder" }
@@ -228,6 +243,7 @@ $Manifest = [ordered]@{
         approved_zone_aliases_compiled = $true
         approved_travel_supplements_compiled = $true
         reviewed_release_inputs_verified = $true
+        packaging_integrity = $KnowledgePackagingIntegrity
         route_acceptance_verified = [bool](-not $SkipRouteAudit)
     }
     user_state_included = $false
@@ -264,5 +280,6 @@ else {
 }
 Write-Host "  manifest:   $ManifestPath"
 Write-Host "  archive:    $Archive"
+Write-Host "  knowledge packaging integrity: $KnowledgePackagingIntegrity"
 Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved identity/travel supplements"
 Write-Host "  user DB:    NOT included; created/preserved separately on each player machine"

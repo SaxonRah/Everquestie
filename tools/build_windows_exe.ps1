@@ -52,6 +52,8 @@ $ResolvedDist = Resolve-OutputPath $DistPath $ProjectRoot
 New-Item -ItemType Directory -Force -Path $ResolvedDist | Out-Null
 
 $KnowledgeResolved = ""
+$KnowledgeSourceHash = ""
+$KnowledgeSourceBytes = 0
 if (-not [string]::IsNullOrWhiteSpace($KnowledgeDb)) {
     $KnowledgeResolved = (Resolve-Path $KnowledgeDb -ErrorAction Stop).Path
     if (-not (Test-Path $KnowledgeResolved -PathType Leaf)) {
@@ -60,6 +62,8 @@ if (-not [string]::IsNullOrWhiteSpace($KnowledgeDb)) {
     if ((Split-Path $KnowledgeResolved -Leaf).ToLowerInvariant() -ne $KnowledgeName) {
         throw "Knowledge DB must be named '$KnowledgeName' so packaged runtime can locate it."
     }
+    $KnowledgeSourceHash = (Get-FileHash -Algorithm SHA256 $KnowledgeResolved).Hash.ToLowerInvariant()
+    $KnowledgeSourceBytes = (Get-Item $KnowledgeResolved).Length
 }
 
 $Target = if ($OneFile) {
@@ -118,11 +122,24 @@ finally {
     Pop-Location
 }
 
+if ($KnowledgeResolved) {
+    $KnowledgeAfterBuildHash = (Get-FileHash -Algorithm SHA256 $KnowledgeResolved).Hash.ToLowerInvariant()
+    $KnowledgeAfterBuildBytes = (Get-Item $KnowledgeResolved).Length
+    if ($KnowledgeAfterBuildHash -ne $KnowledgeSourceHash -or $KnowledgeAfterBuildBytes -ne $KnowledgeSourceBytes) {
+        throw "Knowledge snapshot changed while the Windows package was being built. Build output is not trusted."
+    }
+}
+
 if (-not $OneFile -and $KnowledgeResolved) {
     $PackagedKnowledge = Join-Path $Target $KnowledgeName
     Copy-Item -Force $KnowledgeResolved $PackagedKnowledge
     if (-not (Test-Path $PackagedKnowledge -PathType Leaf)) {
         throw "Windows build completed but the packaged knowledge snapshot is missing: $PackagedKnowledge"
+    }
+    $PackagedKnowledgeHash = (Get-FileHash -Algorithm SHA256 $PackagedKnowledge).Hash.ToLowerInvariant()
+    $PackagedKnowledgeBytes = (Get-Item $PackagedKnowledge).Length
+    if ($PackagedKnowledgeHash -ne $KnowledgeSourceHash -or $PackagedKnowledgeBytes -ne $KnowledgeSourceBytes) {
+        throw "Packaged knowledge snapshot does not match the source knowledge artifact byte-for-byte."
     }
 }
 
@@ -138,5 +155,6 @@ if ($KnowledgeResolved) {
     }
     else {
         Write-Host "Knowledge snapshot packaged beside executable: $(Join-Path $Target $KnowledgeName)"
+        Write-Host "Knowledge snapshot SHA-256 verified after copy: $KnowledgeSourceHash"
     }
 }

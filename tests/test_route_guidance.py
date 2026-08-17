@@ -55,22 +55,23 @@ class RouteGuidanceTests(unittest.TestCase):
             self.b,
             connection_kind="zone_line",
             bidirectional=True,
-            source_name="Topology Source",
-            source_kind="provider",
+            source_name="Map Topology Source",
+            source_kind="map_label",
             source_key="A-B",
-            evidence="two-way zone line",
+            evidence="two-way zone line map evidence",
         )
         catalog.add_provider_connection(
             self.b,
             self.c,
             connection_kind="portal",
             bidirectional=False,
-            source_name="Portal Source",
-            source_kind="provider",
+            source_name="Map Portal Source",
+            source_kind="map_label",
             source_key="B-C",
-            evidence="one-way portal",
+            evidence="one-way portal map evidence",
         )
-        # Travel-edge coordinates always belong to the stored edge's source zone.
+        # These rows model coordinate-owning map-label evidence. Travel-edge coordinates
+        # always belong to the stored edge's source zone.
         self.db.conn.execute(
             "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='A-B'"
         )

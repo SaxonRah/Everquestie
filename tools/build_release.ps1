@@ -16,6 +16,7 @@ $KnowledgeName = "everquestie-knowledge.sqlite3"
 $StageTool = Join-Path $PSScriptRoot "stage_release_working_db.py"
 $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
 $ReleaseInputAuditTool = Join-Path $PSScriptRoot "audit_release_inputs.py"
+$MapCatalogAuditTool = Join-Path $PSScriptRoot "audit_map_catalog.py"
 $RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
 $ArchiveVerifier = Join-Path $PSScriptRoot "verify_release_archive.py"
@@ -72,6 +73,7 @@ $ReleaseDir = Join-Path $ResolvedOutputRoot $VersionSafe
 $StagingRoot = Join-Path (Join-Path $ProjectRoot "build\release") $VersionSafe
 $StagedWorkingDb = Join-Path $StagingRoot "working-with-approved-data.sqlite3"
 $Snapshot = Join-Path $StagingRoot $KnowledgeName
+$MapCatalogAuditReport = Join-Path $StagingRoot "map-catalog-audit.json"
 
 if (Test-Path $ReleaseDir) {
     if (-not $Force) {
@@ -86,7 +88,7 @@ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
 $PythonCommand = Resolve-Python $PythonExe
-foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $RouteAuditTool, $WindowsBuilder, $ArchiveVerifier)) {
+foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $MapCatalogAuditTool, $RouteAuditTool, $WindowsBuilder, $ArchiveVerifier)) {
     if (-not (Test-Path $RequiredTool -PathType Leaf)) {
         throw "Required release helper was not found: $RequiredTool"
     }
@@ -127,10 +129,18 @@ if (-not (Test-Path $Snapshot -PathType Leaf)) {
     throw "Knowledge finalizer completed without producing '$Snapshot'."
 }
 
-Write-Host "[3/8] Verifying reviewed release inputs against finalized evidence..."
+Write-Host "[3/8] Verifying finalized reviewed inputs + prebuilt map catalog..."
 & $PythonCommand $ReleaseInputAuditTool $Snapshot --require-release-inputs
 if ($LASTEXITCODE -ne 0) {
     throw "Reviewed release-input audit failed with exit code $LASTEXITCODE. Release packaging aborted."
+}
+& $PythonCommand $MapCatalogAuditTool $Snapshot `
+    --require-source Goods `
+    --require-source Brewall `
+    --require-versioned-sources `
+    --output $MapCatalogAuditReport
+if ($LASTEXITCODE -ne 0) {
+    throw "Map catalog audit failed with exit code $LASTEXITCODE. Release packaging aborted."
 }
 $AuditedSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
 $AuditedSnapshotBytes = (Get-Item $Snapshot).Length
@@ -181,7 +191,7 @@ if ($LASTEXITCODE -ne 0) {
 $CurrentSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
 $CurrentSnapshotBytes = (Get-Item $Snapshot).Length
 if ($CurrentSnapshotHash -ne $AuditedSnapshotHash -or $CurrentSnapshotBytes -ne $AuditedSnapshotBytes) {
-    throw "Knowledge snapshot changed after its reviewed-input audit. Release packaging aborted."
+    throw "Knowledge snapshot changed after its finalized artifact audits. Release packaging aborted."
 }
 
 $Target = if ($OneFile) {
@@ -244,6 +254,8 @@ $Manifest = [ordered]@{
         approved_zone_aliases_compiled = $true
         approved_travel_supplements_compiled = $true
         reviewed_release_inputs_verified = $true
+        map_catalog_verified = $true
+        map_catalog_sources = @("Goods", "Brewall")
         packaging_integrity = $KnowledgePackagingIntegrity
         route_acceptance_verified = [bool](-not $SkipRouteAudit)
     }
@@ -298,6 +310,8 @@ Write-Host "  manifest:   $ManifestPath"
 Write-Host "  archive:    $Archive"
 Write-Host "  archive SHA-256: $ArchiveHash"
 Write-Host "  checksum:   $ArchiveHashPath"
+Write-Host "  map catalog audit: $MapCatalogAuditReport"
 Write-Host "  knowledge packaging integrity: $KnowledgePackagingIntegrity"
+Write-Host "  map catalog: prebuilt catalog validated only; no source directories crawled or rebuilt"
 Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved identity/travel supplements"
 Write-Host "  user DB:    NOT included; created/preserved separately on each player machine"

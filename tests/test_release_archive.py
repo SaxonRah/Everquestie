@@ -60,6 +60,8 @@ class ReleaseArchiveAuditTests(unittest.TestCase):
                 "approved_zone_aliases_compiled": True,
                 "approved_travel_supplements_compiled": True,
                 "reviewed_release_inputs_verified": True,
+                "map_catalog_verified": True,
+                "map_catalog_sources": ["Goods", "Brewall"],
                 "packaging_integrity": (
                     "source-hash-stable-during-embed"
                     if one_file
@@ -181,6 +183,22 @@ class ReleaseArchiveAuditTests(unittest.TestCase):
         self.assertFalse(audit.ok)
         self.assertTrue(
             any("source-hash-stable-during-embed" in error for error in audit.errors)
+        )
+
+    def test_manifest_must_preserve_verified_map_catalog_contract(self):
+        manifest = self._manifest("one-folder")
+        manifest["knowledge"]["map_catalog_verified"] = False
+        manifest["knowledge"]["map_catalog_sources"] = ["Brewall"]
+        self._write_archive(manifest=manifest)
+
+        audit = audit_release_archive(self.archive)
+        self.assertFalse(audit.ok)
+        self.assertIn(
+            "manifest knowledge map_catalog_verified must be true",
+            audit.errors,
+        )
+        self.assertTrue(
+            any("map_catalog_sources must be exactly" in error for error in audit.errors)
         )
 
     def test_cli_json_publish_gate_requires_matching_source_and_version(self):

@@ -14,11 +14,12 @@
 #   - Requires the Allakhazam HTTrack mirror to be complete before DB construction
 #   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
+#   - Audits the compiled Good's/Brewall map catalog in working and snapshot DBs
 #   - Audits MCP inventory + rich details in working and snapshot DBs
 #   - Audits direct gameplay-profile lifecycle coverage
 #   - Runs route acceptance
 #   - Runs the complete regression suite
-#   - Emits mirror/route/frontier/lifecycle reports and snapshot SHA-256
+#   - Emits mirror/map/route/frontier/lifecycle reports and snapshot SHA-256
 #
 # Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
 # map packs, or a source checkout. Those are builder inputs only.
@@ -50,6 +51,7 @@ $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\
 $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
 $MirrorAuditReport = Join-Path $ProjectRoot "build\allakhazam-mirror-audit.json"
+$MapCatalogAuditReport = Join-Path $ProjectRoot "build\map-catalog-audit.json"
 $RouteReport = Join-Path $ProjectRoot "build\route-acceptance.json"
 $FrontierReport = Join-Path $ProjectRoot "build\provider-travel-frontier.json"
 $LifecycleReport = Join-Path $ProjectRoot "build\profile-lifecycle-audit.json"
@@ -233,6 +235,37 @@ python .\tools\build_knowledge_db.py `
 Assert-LastExitCode "EverQuestie full knowledge build"
 
 # ------------------------------------------------------------
+# Map catalog completeness + portability gate
+# ------------------------------------------------------------
+#
+# The full builder is allowed to compile map packs because it is developer/builder
+# infrastructure. After compilation, audit both the mutable working database and the
+# finalized snapshot so publication never depends on re-crawling map directories.
+# ------------------------------------------------------------
+
+Write-Host
+Write-Host "============================================"
+Write-Host " Verifying Compiled Map Catalog"
+Write-Host "============================================"
+Write-Host
+
+Write-Host "Working database:"
+python .\tools\audit_map_catalog.py $WorkingDb `
+    --require-source Goods `
+    --require-source Brewall `
+    --require-versioned-sources
+Assert-LastExitCode "Working-DB map catalog audit"
+
+Write-Host
+Write-Host "Finalized knowledge snapshot:"
+python .\tools\audit_map_catalog.py $SnapshotDb `
+    --require-source Goods `
+    --require-source Brewall `
+    --require-versioned-sources `
+    --output $MapCatalogAuditReport
+Assert-LastExitCode "Snapshot map catalog audit"
+
+# ------------------------------------------------------------
 # MCP completeness gate
 # ------------------------------------------------------------
 #
@@ -351,6 +384,7 @@ Write-Host "  $SnapshotHash"
 Write-Host
 Write-Host "Reports:"
 Write-Host "  Mirror inventory   : $MirrorAuditReport"
+Write-Host "  Map catalog        : $MapCatalogAuditReport"
 Write-Host "  Route acceptance   : $RouteReport"
 Write-Host "  Travel frontier    : $FrontierReport"
 Write-Host "  Profile lifecycle  : $LifecycleReport"
@@ -363,6 +397,7 @@ Write-Host "  MCP rich details   : verified"
 Write-Host "  Profile lifecycle  : audited"
 Write-Host "  Good's maps        : included"
 Write-Host "  Brewall maps       : included"
+Write-Host "  Map catalog       : verified portable + versioned"
 Write-Host "  Travel manifests   : automatically compiled"
 Write-Host "  Route acceptance   : passed"
 Write-Host "  Regression tests   : passed"

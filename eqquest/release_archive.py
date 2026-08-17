@@ -281,9 +281,17 @@ def audit_release_archive(
                         "approved_zone_aliases_compiled",
                         "approved_travel_supplements_compiled",
                         "reviewed_release_inputs_verified",
+                        "map_catalog_verified",
                     ):
                         if knowledge.get(flag) is not True:
                             errors.append(f"manifest knowledge {flag} must be true")
+
+                    map_sources = knowledge.get("map_catalog_sources")
+                    if map_sources != ["Goods", "Brewall"]:
+                        errors.append(
+                            "manifest knowledge map_catalog_sources must be exactly "
+                            "['Goods', 'Brewall']"
+                        )
 
                     if source_path is not None and source_path.is_file():
                         if expected_hash and source_hash != expected_hash:

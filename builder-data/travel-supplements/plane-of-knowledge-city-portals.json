@@ -4,6 +4,17 @@
   "source_version": "2007-11-30-reviewed-2026-08-17",
   "edges": [
     {
+      "source_key": "pok-greater-faydark-city-book",
+      "source": "The Plane of Knowledge",
+      "source_eq_zone_id": "202",
+      "target": "Greater Faydark",
+      "target_eq_zone_id": "54",
+      "connection_kind": "portal",
+      "bidirectional": true,
+      "source_url": "https://www.everquest.com/news/imported-eq-enus-50703",
+      "evidence": "EverQuest's official teleportation guide states that Plane of Knowledge book statues in Norrath and Luclin teleport players to the Plane of Knowledge and that Plane of Knowledge city stones teleport players back to the named book statue. Its Plane of Knowledge portal list explicitly includes Greater Faydark (2), supporting travel in both directions. The current client identity is pinned to zone 54; the human-readable Greater Faydark name remains required and may match the client's leading-article display variant, The Greater Faydark."
+    },
+    {
       "source_key": "pok-west-freeport-city-book",
       "source": "The Plane of Knowledge",
       "source_eq_zone_id": "202",

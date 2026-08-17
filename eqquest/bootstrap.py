@@ -12,6 +12,7 @@ from .map_loading_policy import install_map_loading_policy
 from .objective_reviewed_item_sources_ui import install_objective_reviewed_item_sources_ui
 from .packaged_ui_policy import install_packaged_ui_policy
 from .profile_availability_ui import install_profile_availability_ui
+from .quest_interaction_guidance_ui import install_quest_interaction_guidance_ui
 from .quest_progress_zone_context_ui import install_quest_progress_zone_context_ui
 from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime_policy import install_runtime_policy
@@ -44,6 +45,7 @@ def install_application_layers() -> None:
     install_activity_pathway_zone_context_ui()
     install_quest_progress_zone_context_ui()
     install_session_geography_ui()
+    install_quest_interaction_guidance_ui()
     install_activity_pathway_dismiss_ui()
     install_activity_clusters_ui()
     install_zone_opportunities_ui()

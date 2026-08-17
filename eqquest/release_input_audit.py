@@ -15,11 +15,18 @@ from .zone_alias_supplement import (
 )
 
 
-REVIEWED_RELEASE_META_KEYS = (
+ZONE_ALIAS_RELEASE_META_KEYS = (
     "approved_zone_alias_supplement_count",
     "approved_zone_alias_count",
+)
+TRAVEL_RELEASE_META_KEYS = (
     "approved_travel_supplement_count",
     "approved_travel_supplement_edge_count",
+)
+REVIEWED_RELEASE_META_KEYS = ZONE_ALIAS_RELEASE_META_KEYS + TRAVEL_RELEASE_META_KEYS
+_RELEASE_META_FAMILIES = (
+    ("zone-alias", ZONE_ALIAS_RELEASE_META_KEYS),
+    ("travel", TRAVEL_RELEASE_META_KEYS),
 )
 
 
@@ -80,11 +87,15 @@ def _table_exists(db, table: str, schema: str) -> bool:
     return row is not None
 
 
-def _recorded_metadata(db, schema: str) -> tuple[bool, dict[str, int | None], list[str]]:
+def _recorded_metadata(
+    db,
+    schema: str,
+) -> tuple[bool, dict[str, int | None], frozenset[str], list[str]]:
+    """Read reviewed counters as independently optional, internally atomic families."""
     metadata = {key: None for key in REVIEWED_RELEASE_META_KEYS}
     errors: list[str] = []
     if not _table_exists(db, "app_meta", schema):
-        return False, metadata, errors
+        return False, metadata, frozenset(), errors
 
     placeholders = ",".join("?" for _ in REVIEWED_RELEASE_META_KEYS)
     rows = db.conn.execute(
@@ -93,13 +104,20 @@ def _recorded_metadata(db, schema: str) -> tuple[bool, dict[str, int | None], li
     ).fetchall()
     raw = {str(row["key"]): str(row["value"]).strip() for row in rows}
     if not raw:
-        return False, metadata, errors
+        return False, metadata, frozenset(), errors
 
-    missing = [key for key in REVIEWED_RELEASE_META_KEYS if key not in raw]
-    if missing:
-        errors.append(
-            "reviewed release-input metadata is incomplete; missing " + ", ".join(missing)
-        )
+    recorded_families: set[str] = set()
+    for family, keys in _RELEASE_META_FAMILIES:
+        present = [key for key in keys if key in raw]
+        if not present:
+            continue
+        recorded_families.add(family)
+        missing = [key for key in keys if key not in raw]
+        if missing:
+            errors.append(
+                f"reviewed {family} release-input metadata is incomplete; missing "
+                + ", ".join(missing)
+            )
 
     for key in REVIEWED_RELEASE_META_KEYS:
         if key not in raw:
@@ -113,15 +131,16 @@ def _recorded_metadata(db, schema: str) -> tuple[bool, dict[str, int | None], li
             errors.append(f"{key} must be non-negative, found {value}")
             continue
         metadata[key] = value
-    return True, metadata, errors
+
+    return True, metadata, frozenset(recorded_families), errors
 
 
 def _alias_actuals(db, schema: str, errors: list[str]) -> tuple[int, int]:
     if not _table_exists(db, "source_pages", schema):
-        errors.append("source_pages is missing while reviewed release metadata is recorded")
+        errors.append("source_pages is missing while reviewed zone-alias metadata is recorded")
         return 0, 0
     if not _table_exists(db, "entity_aliases", schema):
-        errors.append("entity_aliases is missing while reviewed release metadata is recorded")
+        errors.append("entity_aliases is missing while reviewed zone-alias metadata is recorded")
         return 0, 0
 
     pages = db.conn.execute(
@@ -190,7 +209,7 @@ def _alias_actuals(db, schema: str, errors: list[str]) -> tuple[int, int]:
 
 def _travel_actuals(db, schema: str, errors: list[str]) -> tuple[int, int]:
     if not _table_exists(db, "zone_travel_edges", schema):
-        errors.append("zone_travel_edges is missing while reviewed release metadata is recorded")
+        errors.append("zone_travel_edges is missing while reviewed travel metadata is recorded")
         return 0, 0
 
     rows = db.conn.execute(
@@ -254,13 +273,14 @@ def _travel_actuals(db, schema: str, errors: list[str]) -> tuple[int, int]:
 def audit_reviewed_release_inputs(db) -> ReviewedReleaseInputAudit:
     """Compare retained reviewed-input counters with persisted release evidence.
 
-    The audit is read-only. Missing counters are treated as ``not_recorded`` so older
-    generic snapshots remain compatible. Once any reviewed counter is present, the
-    complete set becomes an integrity contract and all counts must match the actual
-    curated alias/travel rows in the same knowledge database.
+    The audit is read-only. Zone-alias and travel counters are independent release-input
+    families because lower-level builders may compile either family without the other.
+    Within a recorded family both counters are required and must match persisted curated
+    evidence. Missing families remain uncontracted for backward compatibility with old
+    snapshots and the supported lower-level build helpers.
     """
     schema = _knowledge_schema(db)
-    recorded, metadata, errors = _recorded_metadata(db, schema)
+    recorded, metadata, recorded_families, errors = _recorded_metadata(db, schema)
 
     # Old snapshots deliberately did not retain these counters. Do not reinterpret
     # their surviving provenance as a new release contract after the fact.
@@ -278,29 +298,48 @@ def audit_reviewed_release_inputs(db) -> ReviewedReleaseInputAudit:
             errors=(),
         )
 
-    alias_supplements, aliases = _alias_actuals(db, schema, errors)
-    travel_supplements, travel_edges = _travel_actuals(db, schema, errors)
     actual = {
-        "zone_alias_supplements": alias_supplements,
-        "zone_aliases": aliases,
-        "travel_supplements": travel_supplements,
-        "travel_edges": travel_edges,
+        "zone_alias_supplements": 0,
+        "zone_aliases": 0,
+        "travel_supplements": 0,
+        "travel_edges": 0,
     }
-    comparisons = (
-        ("approved_zone_alias_supplement_count", "zone_alias_supplements"),
-        ("approved_zone_alias_count", "zone_aliases"),
-        ("approved_travel_supplement_count", "travel_supplements"),
-        ("approved_travel_supplement_edge_count", "travel_edges"),
-    )
-    for meta_key, actual_key in comparisons:
-        expected = metadata.get(meta_key)
-        if expected is None:
-            continue
-        found = actual[actual_key]
-        if expected != found:
-            errors.append(
-                f"{meta_key} records {expected}, but persisted reviewed evidence contains {found}"
-            )
+
+    if "zone-alias" in recorded_families:
+        alias_supplements, aliases = _alias_actuals(db, schema, errors)
+        actual["zone_alias_supplements"] = alias_supplements
+        actual["zone_aliases"] = aliases
+        comparisons = (
+            ("approved_zone_alias_supplement_count", "zone_alias_supplements"),
+            ("approved_zone_alias_count", "zone_aliases"),
+        )
+        for meta_key, actual_key in comparisons:
+            expected = metadata.get(meta_key)
+            if expected is None:
+                continue
+            found = actual[actual_key]
+            if expected != found:
+                errors.append(
+                    f"{meta_key} records {expected}, but persisted reviewed evidence contains {found}"
+                )
+
+    if "travel" in recorded_families:
+        travel_supplements, travel_edges = _travel_actuals(db, schema, errors)
+        actual["travel_supplements"] = travel_supplements
+        actual["travel_edges"] = travel_edges
+        comparisons = (
+            ("approved_travel_supplement_count", "travel_supplements"),
+            ("approved_travel_supplement_edge_count", "travel_edges"),
+        )
+        for meta_key, actual_key in comparisons:
+            expected = metadata.get(meta_key)
+            if expected is None:
+                continue
+            found = actual[actual_key]
+            if expected != found:
+                errors.append(
+                    f"{meta_key} records {expected}, but persisted reviewed evidence contains {found}"
+                )
 
     return ReviewedReleaseInputAudit(
         recorded=True,

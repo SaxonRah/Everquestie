@@ -1,26 +1,36 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from eqquest.approved_travel_supplements import approved_travel_manifest_paths
+from eqquest.approved_travel_supplements import (
+    approved_travel_manifest_paths,
+    stage_builder_with_approved_travel_supplements,
+)
 from eqquest.approved_zone_aliases import approved_zone_alias_manifest_paths
 from eqquest.db import Database
+from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 from eqquest.route_acceptance import (
     DEFAULT_ROUTE_ACCEPTANCE_CASES,
     evaluate_route_acceptance,
 )
+from eqquest.runtime import RuntimeDatabase
 from eqquest.travel_supplement import TravelSupplementImporter
 from eqquest.zone_alias_supplement import ZoneAliasSupplementImporter
 from eqquest.zone_catalog import ZoneMapCatalog
+from eqquest.zone_identity import ZoneIdentityIndex
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAVEL_DIR = REPO_ROOT / "builder-data" / "travel-supplements"
 ZONE_ALIAS_DIR = REPO_ROOT / "builder-data" / "zone-aliases"
+ROUTE_AUDIT_TOOL = REPO_ROOT / "tools" / "audit_route_acceptance.py"
 
 
 class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
@@ -110,6 +120,15 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
             )
         return maps
 
+    def _index_source_maps(self) -> None:
+        maps = self._write_brewall_source_shape()
+        indexed = MapCatalog(self.db).index_root(
+            maps,
+            source_name="Brewall's Maps",
+            source_version="release-contract-source-shape",
+        )
+        self.assertEqual(indexed.base_maps, 6)
+
     def test_repository_owned_evidence_satisfies_all_five_current_live_defaults(self):
         self._seed_current_live_zone_identities()
 
@@ -119,13 +138,7 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         for manifest in alias_manifests:
             alias_importer.import_manifest(manifest)
 
-        maps = self._write_brewall_source_shape()
-        indexed = MapCatalog(self.db).index_root(
-            maps,
-            source_name="Brewall's Maps",
-            source_version="release-contract-source-shape",
-        )
-        self.assertEqual(indexed.base_maps, 6)
+        self._index_source_maps()
         ZoneMapCatalog(self.db).reconcile(source_name="Brewall's Maps")
         map_travel = ZoneTravelCatalog(self.db).reconcile_from_maps(
             source_name="Brewall's Maps"
@@ -199,6 +212,73 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
                 "West Freeport",
             ),
         )
+
+    def test_finalized_snapshot_passes_same_five_route_publish_gate_read_only(self):
+        self._seed_current_live_zone_identities()
+        self._index_source_maps()
+
+        # The source builder intentionally has no reviewed alias yet. This proves the
+        # release staging/finalization path, rather than the direct builder test above,
+        # is what turns Brewall's Old Paineel label into a canonical Hole transition.
+        self.assertEqual(
+            ZoneIdentityIndex(self.db).resolve("The Ruins of Old Paineel").status,
+            "unresolved",
+        )
+
+        staged = self.root / "staged.sqlite3"
+        snapshot = self.root / "everquestie-knowledge.sqlite3"
+        user_db = self.root / "everquestie-user.sqlite3"
+        stage_builder_with_approved_travel_supplements(
+            self.db.path,
+            staged,
+            TRAVEL_DIR,
+            zone_alias_dir=ZONE_ALIAS_DIR,
+        )
+        create_knowledge_snapshot(
+            staged,
+            snapshot,
+            snapshot_version="five-route-finalized-contract",
+        )
+
+        before = snapshot.read_bytes()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROUTE_AUDIT_TOOL),
+                str(snapshot),
+                "--json",
+                "--fail-unreachable",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["total"], 5)
+        self.assertEqual(payload["accepted"], 5)
+        self.assertEqual(payload["failed"], 0)
+        self.assertTrue(all(result["status"] == "reachable" for result in payload["results"]))
+
+        runtime = RuntimeDatabase(snapshot, user_db, migrate_legacy=False)
+        try:
+            alias = ZoneIdentityIndex(runtime).resolve("The Ruins of Old Paineel")
+            self.assertEqual(alias.status, "linked")
+            self.assertEqual(alias.zone_name, "The Hole")
+            runtime_summary = evaluate_route_acceptance(
+                runtime,
+                DEFAULT_ROUTE_ACCEPTANCE_CASES,
+            )
+            self.assertEqual(runtime_summary.total, 5)
+            self.assertEqual(runtime_summary.accepted, 5)
+            self.assertEqual(runtime_summary.failed, 0)
+        finally:
+            runtime.close()
+
+        # Both the release audit CLI and packaged runtime adapter are read-only with
+        # respect to the immutable knowledge artifact.
+        self.assertEqual(snapshot.read_bytes(), before)
 
 
 if __name__ == "__main__":

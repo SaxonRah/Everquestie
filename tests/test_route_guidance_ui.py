@@ -6,8 +6,10 @@ import tempfile
 import unittest
 
 from eqquest.db import Database
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import build_route_guidance
 from eqquest.route_guidance_ui import RouteGuidanceFrame
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -25,13 +27,17 @@ class _Var:
 class RouteGuidanceUITests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.db = Database(Path(self.tempdir.name) / "working.sqlite3")
+        self.root = Path(self.tempdir.name)
+        self.maps = self.root / "maps"
+        self.maps.mkdir()
+        self.db = Database(self.root / "working.sqlite3")
         self.a = self.db.upsert_entity(
             kind="zone",
             name="Zone A",
             external_id="1001",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonea"},
         )
         self.b = self.db.upsert_entity(
             kind="zone",
@@ -39,6 +45,7 @@ class RouteGuidanceUITests(unittest.TestCase):
             external_id="1002",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zoneb"},
         )
         self.c = self.db.upsert_entity(
             kind="zone",
@@ -46,6 +53,7 @@ class RouteGuidanceUITests(unittest.TestCase):
             external_id="1003",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonec"},
         )
         self.x = self.db.upsert_entity(
             kind="zone",
@@ -62,7 +70,7 @@ class RouteGuidanceUITests(unittest.TestCase):
             bidirectional=True,
             source_name="Topology Source",
             source_kind="provider",
-            source_key="A-B",
+            source_key="A-B-provider",
             evidence="two-way zone line",
         )
         catalog.add_provider_connection(
@@ -72,16 +80,22 @@ class RouteGuidanceUITests(unittest.TestCase):
             bidirectional=False,
             source_name="Portal Source",
             source_kind="provider",
-            source_key="B-C",
+            source_key="B-C-provider",
             evidence="one-way portal",
         )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='A-B'"
+        (self.maps / "zonea.txt").write_text(
+            "P -10,-20,3,255,0,0,2,To_Zone_B\n",
+            encoding="utf-8",
         )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=30,y=40,z=5 WHERE source_key='B-C'"
+        (self.maps / "zoneb.txt").write_text(
+            "P -30,-40,5,255,0,0,2,To_Zone_C\n",
+            encoding="utf-8",
         )
-        self.db.conn.commit()
+        maps = MapCatalog(self.db)
+        maps.index_root(self.maps, source_name="Brewall", source_version="test")
+        ZoneMapCatalog(self.db).reconcile(source_name="Brewall")
+        maps.reconcile_all(force=True)
+        ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Brewall")
 
     def tearDown(self):
         self.db.close()
@@ -103,15 +117,13 @@ class RouteGuidanceUITests(unittest.TestCase):
         guidance = build_route_guidance(self.db, "Zone A", "Zone C")
         fake, emitted, status = self._fake(guidance, "Zone A")
 
-        # There is intentionally no get_location callback on the fake. Route map
-        # guidance owns no player-position dependency.
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
             [("Zone A", 10.0, 20.0, 3.0, "zone line to Zone B")],
         )
         self.assertIn("Map next hop", status.value)
-        self.assertIn("Topology Source", status.value)
+        self.assertIn("Brewall", status.value)
 
     def test_cached_route_advances_to_next_hop_after_zone_change(self):
         guidance = build_route_guidance(self.db, "Zone A", "Zone C")
@@ -120,9 +132,9 @@ class RouteGuidanceUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone B", 30.0, 40.0, 5.0, "portal to Zone C")],
+            [("Zone B", 30.0, 40.0, 5.0, "zone line to Zone C")],
         )
-        self.assertIn("Portal Source", status.value)
+        self.assertIn("Brewall", status.value)
 
     def test_reverse_two_way_route_refuses_opposite_side_coordinate(self):
         guidance = build_route_guidance(self.db, "Zone B", "Zone A")
@@ -130,7 +142,7 @@ class RouteGuidanceUITests(unittest.TestCase):
 
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(emitted, [])
-        self.assertIn("stored coordinate belongs to Zone A", status.value)
+        self.assertIn("no confirmed source-zone coordinate", status.value)
         self.assertIn("will not map", status.value)
 
     def test_arrived_and_off_route_states_never_emit_map_target(self):
@@ -169,8 +181,7 @@ class RouteGuidanceUITests(unittest.TestCase):
         RouteGuidanceFrame.find_route(fake)
         self.assertIsNotNone(fake._route_guidance)
         self.assertTrue(fake._route_guidance.ok)
-        self.assertIn("stored /loc belongs to Zone A", rendered[0])
-        self.assertIn("no source-zone coordinate is known", rendered[0])
+        self.assertIn("no reviewed source-zone coordinate is present", rendered[0])
         self.assertNotIn("source-zone /loc: 20.0, 10.0, 3.0", rendered[0])
         self.assertIn("Confirmed canonical route found", status.value)
 

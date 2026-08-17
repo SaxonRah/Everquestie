@@ -109,6 +109,97 @@ class ReviewedReleaseInputAuditTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_travel_only_family_is_valid_without_zone_alias_counters(self):
+        db = Database(self.working)
+        try:
+            source_zone = db.upsert_entity(
+                kind="zone",
+                name="Travel Only Source",
+                external_id="9101",
+                external_namespace="eqclient:zone",
+                merge_by_name=False,
+            )
+            target_zone = db.upsert_entity(
+                kind="zone",
+                name="Travel Only Target",
+                external_id="9102",
+                external_namespace="eqclient:zone",
+                merge_by_name=False,
+            )
+            ZoneTravelCatalog(db).add_provider_connection(
+                source_zone,
+                target_zone,
+                connection_kind="portal",
+                source_name="Travel-only reviewed manifest",
+                source_kind=TRAVEL_SUPPLEMENT_SOURCE_KIND,
+                source_key="travel-only-source-to-target",
+                source_version="1",
+                evidence="Reviewed travel-only evidence.",
+                data={
+                    "manifest_schema_version": 1,
+                    "manifest_source_key": "travel-only-source-to-target",
+                    "travel_requirements": [],
+                },
+            )
+            db.set_meta("approved_travel_supplement_count", "1")
+            db.set_meta("approved_travel_supplement_edge_count", "1")
+            db.conn.commit()
+
+            audit = audit_reviewed_release_inputs(db)
+            self.assertTrue(audit.recorded)
+            self.assertTrue(audit.ok)
+            self.assertIsNone(audit.metadata["approved_zone_alias_supplement_count"])
+            self.assertIsNone(audit.metadata["approved_zone_alias_count"])
+            self.assertEqual(audit.actual["zone_aliases"], 0)
+            self.assertEqual(audit.actual["travel_supplements"], 1)
+            self.assertEqual(audit.actual["travel_edges"], 1)
+        finally:
+            db.close()
+
+    def test_zone_alias_only_family_is_valid_without_travel_counters(self):
+        db = Database(self.working)
+        try:
+            zone_id = db.upsert_entity(
+                kind="zone",
+                name="Alias Only Zone",
+                external_id="9201",
+                external_namespace="eqclient:zone",
+                merge_by_name=False,
+            )
+            source_page_id = db.upsert_source_page(
+                url="https://example.invalid/reviewed-alias#alias-only",
+                title="Reviewed zone alias: Old Alias Only -> Alias Only Zone",
+                entity_type="zone_alias",
+                sha256="alias-only-sha",
+                plain_text="Reviewed alias-only evidence.",
+                raw_html="",
+                source_name="Alias-only reviewed identity",
+                source_kind=ZONE_ALIAS_SUPPLEMENT_SOURCE_KIND,
+                source_key="alias-only-zone",
+                source_version="1",
+            )
+            db.add_alias(
+                zone_id,
+                "Old Alias Only",
+                alias_type=ZONE_ALIAS_SUPPLEMENT_ALIAS_TYPE,
+                source_page_id=source_page_id,
+            )
+            db.set_meta("approved_zone_alias_supplement_count", "1")
+            db.set_meta("approved_zone_alias_count", "1")
+            db.conn.commit()
+
+            audit = audit_reviewed_release_inputs(db)
+            self.assertTrue(audit.recorded)
+            self.assertTrue(audit.ok)
+            self.assertEqual(audit.actual["zone_alias_supplements"], 1)
+            self.assertEqual(audit.actual["zone_aliases"], 1)
+            self.assertEqual(audit.actual["travel_supplements"], 0)
+            self.assertEqual(audit.actual["travel_edges"], 0)
+            self.assertIsNone(audit.metadata["approved_travel_supplement_count"])
+            self.assertIsNone(audit.metadata["approved_travel_supplement_edge_count"])
+        finally:
+            db.close()
+
     def test_missing_counters_remain_backward_compatible(self):
         db = Database(self.working)
         db.close()

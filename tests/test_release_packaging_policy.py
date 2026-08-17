@@ -56,10 +56,10 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         self.assertLess(reviewed, tests)
         self.assertLess(reviewed, windows)
 
-    def test_release_locks_audited_snapshot_hash_through_packaging(self):
+    def test_release_locks_all_audited_snapshot_claims_through_packaging(self):
         self.assertIn('$AuditedSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot)', self.script)
         self.assertIn('$CurrentSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot)', self.script)
-        self.assertIn('Knowledge snapshot changed after its reviewed-input audit', self.script)
+        self.assertIn('Knowledge snapshot changed after its finalized artifact audits', self.script)
         self.assertIn('$PackagedKnowledgeHash = (Get-FileHash -Algorithm SHA256 $PackagedKnowledge)', self.script)
         self.assertIn('does not match the audited release snapshot byte-for-byte', self.script)
         self.assertIn('$SnapshotHash = $AuditedSnapshotHash', self.script)
@@ -68,11 +68,13 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         self.assertIn('packaging_integrity = $KnowledgePackagingIntegrity', self.script)
 
         reviewed = self.script.index('$ReleaseInputAuditTool $Snapshot --require-release-inputs')
+        map_catalog = self.script.index('$MapCatalogAuditTool $Snapshot')
         lock_hash = self.script.index('$AuditedSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot)')
         windows = self.script.index('$WindowsBuilder @BuilderParams')
         verify_copy = self.script.index('$PackagedKnowledgeHash = (Get-FileHash -Algorithm SHA256 $PackagedKnowledge)')
         manifest = self.script.index('$Manifest = [ordered]@{')
-        self.assertLess(reviewed, lock_hash)
+        self.assertLess(reviewed, map_catalog)
+        self.assertLess(map_catalog, lock_hash)
         self.assertLess(lock_hash, windows)
         self.assertLess(windows, verify_copy)
         self.assertLess(verify_copy, manifest)

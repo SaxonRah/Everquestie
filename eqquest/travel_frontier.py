@@ -13,16 +13,9 @@ from .zone_travel import ZoneTravelCatalog
 # Explicit map-author syntax that is not currently compiled by ZoneTravelCatalog.
 # Keep this list intentionally narrower than the compiler. When a frontier spelling
 # graduates into the production parser it must be removed here so the audit never
-# reports already-supported syntax as backlog.
-_FRONTIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "zone_line",
-        re.compile(
-            r"^(?:connection|boundary)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
-            re.I,
-        ),
-    ),
-)
+# reports already-supported syntax as backlog. There are currently no extra explicit
+# spellings awaiting promotion; bare exact zone-name labels remain audited separately.
+_FRONTIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +104,8 @@ class TravelFrontierAudit:
 
     * current explicit syntax that the compiler already understands, including whether
       the stored ``zone_travel_edges`` row is missing/stale;
-    * additional explicit travel spellings that are safe-looking candidates for a
-      future parser expansion (currently ``Connection`` / ``Boundary`` forms);
+    * any additional explicit travel spellings registered as safe-looking candidates
+      for a future parser expansion;
     * bare labels that exactly resolve to another canonical zone. Bare names are never
       auto-promoted here because they may be landmarks rather than exits.
 

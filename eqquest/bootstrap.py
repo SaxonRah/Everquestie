@@ -14,6 +14,7 @@ from .packaged_ui_policy import install_packaged_ui_policy
 from .profile_availability_ui import install_profile_availability_ui
 from .quest_interaction_guidance_ui import install_quest_interaction_guidance_ui
 from .quest_manual_progress_ui import install_quest_manual_progress_ui
+from .quest_progress_identity import install_quest_progress_identity_policy
 from .quest_progress_zone_context_ui import install_quest_progress_zone_context_ui
 from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime_policy import install_runtime_policy
@@ -45,6 +46,7 @@ def install_application_layers() -> None:
     install_activity_pathways_ui()
     install_activity_pathway_zone_context_ui()
     install_quest_progress_zone_context_ui()
+    install_quest_progress_identity_policy()
     install_session_geography_ui()
     install_quest_interaction_guidance_ui()
     install_quest_manual_progress_ui()

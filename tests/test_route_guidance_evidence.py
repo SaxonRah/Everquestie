@@ -158,7 +158,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone A", 12.0, 34.0, 5.0, "zone line to Zone B")],
+            [("Zone A", 12.0, 34.0, 5.0, "travel to Zone B")],
         )
         self.assertIn("Z Located", fake.status_var.value)
 

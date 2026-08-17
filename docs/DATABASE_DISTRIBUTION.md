@@ -39,6 +39,8 @@ A user's selected map directory is different: it is a local rendering asset and 
 
 This separation lets the shipped DB answer global map/POI searches and `WHERE` location queries even when a player has never indexed anything locally.
 
+`tools/audit_map_catalog.py` is the read-only publication check for this boundary. It validates the catalog already stored in a knowledge database; it never opens map-pack directories or changes the database. The Windows release builder requires the finalized snapshot to contain versioned `Goods` and `Brewall` catalog sources with portable source keys/URIs, base maps, and indexed labels before packaging can continue.
+
 ## Unified location evidence
 
 EverQuestie deliberately preserves the difference between source facts and reconciled map evidence:
@@ -67,17 +69,17 @@ Explicit online Search remains a separate user-triggered feature where available
 
 For an existing builder database, `tools/build_release.ps1` is the preferred Windows distribution boundary. It performs the following sequence in one explicit operation:
 
-1. copy/finalize the builder DB into a separate immutable `everquestie-knowledge.sqlite3`;
-2. rerun canonical mechanics, map, zone and travel reconciliation against the complete provider set;
-3. rebuild FTS;
-4. run database integrity and identity audits;
-5. strip user/session state, builder-local paths and builder-only payloads;
-6. record source versions, build timestamp, schema version, and knowledge snapshot version;
-7. eliminate WAL-sidecar dependence and `VACUUM`/optimize the snapshot;
-8. run the complete regression suite;
-9. build the Windows application;
-10. package the finalized snapshot with the application, never the builder DB or a user-state DB;
-11. emit a manifest with hashes and a versioned Windows ZIP.
+1. stage the builder DB into a separate release-working copy and compile approved release supplements;
+2. finalize that staged copy into an immutable `everquestie-knowledge.sqlite3`;
+3. audit recorded reviewed zone-alias/travel inputs against evidence inside the finalized snapshot;
+4. audit the finalized snapshot's already-built global map catalog, requiring versioned `Goods` and `Brewall` sources without crawling or rebuilding either map pack;
+5. run the finalized-snapshot route acceptance gate;
+6. run the complete regression suite;
+7. build the Windows application and attach the finalized snapshot;
+8. emit a release manifest with hashes and both verified immutable-artifact contracts;
+9. package the application and finalized snapshot into the versioned Windows ZIP.
+
+The snapshot finalization/staging machinery remains responsible for canonical reconciliation, FTS rebuilding, integrity/identity checks, stripping user/session state and builder-only payloads, recording snapshot metadata, and eliminating WAL-sidecar dependence. Release publication consumes the resulting finalized artifact; it does not reconstruct source catalogs during packaging.
 
 The default one-folder Windows layout keeps `everquestie-knowledge.sqlite3` beside `EverQuestie.exe`. This is intentional: a future updater can replace application/knowledge artifacts while leaving `everquestie-user.sqlite3` untouched. A one-file build may embed the immutable snapshot when specifically requested.
 

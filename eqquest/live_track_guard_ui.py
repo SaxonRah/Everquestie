@@ -21,19 +21,26 @@ def track_live_recommendation(
     announce: str,
     surface_label: str,
 ) -> bool:
-    """Track one selected quest only after verifying writable player state now.
+    """Track one exact Live recommendation at the current action boundary.
 
     Live recommendation rows are read projections and can become stale between render
     and click. The writable tracked-quest state is therefore authoritative at the
-    action boundary. If ownership cannot be verified, fail closed instead of risking a
-    duplicate reconciliation pass.
+    action boundary. A recommendation plus an explicit Track click proves only that
+    the player wants to track this exact quest now; it does not prove a historical log
+    boundary or the player's current zone. Consequently this path writes tracking state
+    directly and never invokes quest reconciliation or quest-derived zone inference.
+
+    Existing player progress is deliberately preserved when re-tracking a previously
+    untracked quest. New live events may advance the quest normally after this action.
     """
     quest_id = int(selection.quest_id)
     quest_name = str(selection.quest_name)
-    checker = getattr(getattr(self, "db", None), "is_quest_tracked", None)
-    if not callable(checker):
+    db = getattr(self, "db", None)
+    checker = getattr(db, "is_quest_tracked", None)
+    tracker = getattr(db, "track_quest", None)
+    if not callable(checker) or not callable(tracker):
         self.status.set(
-            f"{surface_label}: could not verify whether {quest_name} is already tracked; "
+            f"{surface_label}: could not verify writable tracking state for {quest_name}; "
             "quest state was not changed."
         )
         return False
@@ -52,7 +59,19 @@ def track_live_recommendation(
         _refresh_live_recommendations(self)
         return False
 
-    self._track_and_reconcile(quest_id, announce=announce)
+    try:
+        tracker(quest_id)
+    except Exception:
+        self.status.set(
+            f"{surface_label}: could not write tracking state for {quest_name}; "
+            "quest state was not changed."
+        )
+        return False
+
+    append_event = getattr(self, "_append_event", None)
+    if callable(append_event) and announce:
+        append_event(f"{announce}: {quest_name}")
+
     refresh_guidance = getattr(self, "_refresh_guidance", None)
     if callable(refresh_guidance):
         refresh_guidance()

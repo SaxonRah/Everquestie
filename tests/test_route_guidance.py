@@ -6,12 +6,14 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import (
     build_route_guidance,
     next_hop_for_zone,
     route_guidance_text,
 )
 from eqquest.runtime import RuntimeDatabase
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -19,6 +21,8 @@ class RouteGuidanceTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
+        self.maps = self.root / "maps"
+        self.maps.mkdir()
         self.db = Database(self.root / "working.sqlite3")
         self.a = self.db.upsert_entity(
             kind="zone",
@@ -26,6 +30,7 @@ class RouteGuidanceTests(unittest.TestCase):
             external_id="1001",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonea"},
         )
         self.b = self.db.upsert_entity(
             kind="zone",
@@ -33,6 +38,7 @@ class RouteGuidanceTests(unittest.TestCase):
             external_id="1002",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zoneb"},
         )
         self.c = self.db.upsert_entity(
             kind="zone",
@@ -40,6 +46,7 @@ class RouteGuidanceTests(unittest.TestCase):
             external_id="1003",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonec"},
         )
         self.off_route = self.db.upsert_entity(
             kind="zone",
@@ -49,36 +56,45 @@ class RouteGuidanceTests(unittest.TestCase):
             merge_by_name=True,
         )
         self.db.add_alias(self.b, "Middle Zone", alias_type="provider_alias")
+
+        # Provider topology proves A↔B so the reverse route remains available without
+        # borrowing the A-side map coordinate.
         catalog = ZoneTravelCatalog(self.db)
         catalog.add_provider_connection(
             self.a,
             self.b,
             connection_kind="zone_line",
             bidirectional=True,
-            source_name="Map Topology Source",
-            source_kind="map_label",
-            source_key="A-B",
-            evidence="two-way zone line map evidence",
+            source_name="Topology Source",
+            source_kind="provider",
+            source_key="A-B-provider",
+            evidence="two-way zone line topology",
         )
         catalog.add_provider_connection(
             self.b,
             self.c,
             connection_kind="portal",
             bidirectional=False,
-            source_name="Map Portal Source",
-            source_kind="map_label",
-            source_key="B-C",
-            evidence="one-way portal map evidence",
+            source_name="Portal Source",
+            source_kind="provider",
+            source_key="B-C-provider",
+            evidence="one-way portal topology",
         )
-        # These rows model coordinate-owning map-label evidence. Travel-edge coordinates
-        # always belong to the stored edge's source zone.
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='A-B'"
+
+        # Real map labels own the exact source-zone coordinates used by Map next hop.
+        (self.maps / "zonea.txt").write_text(
+            "P -10,-20,3,255,0,0,2,To_Zone_B\n",
+            encoding="utf-8",
         )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=30,y=40,z=5 WHERE source_key='B-C'"
+        (self.maps / "zoneb.txt").write_text(
+            "P -30,-40,5,255,0,0,2,To_Zone_C\n",
+            encoding="utf-8",
         )
-        self.db.conn.commit()
+        maps = MapCatalog(self.db)
+        maps.index_root(self.maps, source_name="Brewall", source_version="test")
+        ZoneMapCatalog(self.db).reconcile(source_name="Brewall")
+        maps.reconcile_all(force=True)
+        ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Brewall")
 
     def tearDown(self):
         self.db.close()
@@ -93,6 +109,7 @@ class RouteGuidanceTests(unittest.TestCase):
         self.assertEqual(first.coordinate_owner_entity_id, self.a)
         self.assertEqual(first.source_coordinate, (10.0, 20.0, 3.0))
         self.assertEqual(first.map_label, "zone line to Zone B")
+        self.assertEqual(first.evidence_source, "Brewall")
 
     def test_reverse_bidirectional_hop_never_reuses_opposite_side_coordinate(self):
         guidance = build_route_guidance(self.db, "Zone B", "Zone A")
@@ -104,8 +121,7 @@ class RouteGuidanceTests(unittest.TestCase):
         self.assertIsNone(hop.source_coordinate)
 
         text = route_guidance_text(self.db, guidance)
-        self.assertIn("stored /loc belongs to Zone A", text)
-        self.assertIn("no source-zone coordinate is known", text)
+        self.assertIn("no reviewed source-zone coordinate is present", text)
         self.assertNotIn("source-zone /loc: 20.0, 10.0, 3.0", text)
 
     def test_guidance_text_marks_only_safe_source_coordinates_as_map_targets(self):
@@ -166,6 +182,7 @@ class RouteGuidanceTests(unittest.TestCase):
             hop, status = next_hop_for_zone(runtime, guidance, "Zone B")
             self.assertEqual(status, "linked")
             self.assertEqual(hop.source_coordinate, (30.0, 40.0, 5.0))
+            self.assertEqual(hop.evidence_source, "Brewall")
             with self.assertRaises(Exception):
                 runtime.conn.execute("UPDATE zone_travel_edges SET x=999")
         finally:

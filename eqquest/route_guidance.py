@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .db import Database
 from .travel import TravelRouteResult, build_route_result
 from .travel_connectivity import travel_connectivity_text
+from .travel_coordinate_actionability import travel_coordinate_source_owns_point
 from .travel_requirements import TravelRequirement, travel_requirements_for_hop
 from .zone_authority import resolve_authoritative_zone
 
@@ -64,23 +65,23 @@ class RouteGuidanceResult:
 
 
 def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
-    """Choose deterministic hop evidence without hiding an actionable direct coordinate.
+    """Choose deterministic hop evidence without inventing coordinate authority.
 
     Direction ownership is the primary invariant: any direct source→target evidence
     outranks reverse use of a bidirectional target→source row. Within the same
-    direction rank, prefer a row with X/Y so route guidance agrees with release
-    coverage's definition of a mappable source-side direction.
+    direction rank, prefer a row whose coordinate evidence is independently
+    source-owned by the map-label compiler. Merely having X/Y columns populated on a
+    provider/curated topology row never makes that edge a map waypoint.
 
     Travel requirements are deliberately aggregated separately from *all* eligible
     evidence rows, so choosing a coordinate-rich map row here cannot hide a gate or
     interaction requirement supplied by another confirmed source.
     """
-    return db.conn.execute(
+    rows = db.conn.execute(
         """
         SELECT *,
                CASE WHEN source_zone_entity_id=? AND target_zone_entity_id=?
-                    THEN 0 ELSE 1 END AS reverse_rank,
-               CASE WHEN x IS NOT NULL AND y IS NOT NULL THEN 0 ELSE 1 END AS coordinate_rank
+                    THEN 0 ELSE 1 END AS reverse_rank
         FROM zone_travel_edges
         WHERE status='linked' AND target_zone_entity_id IS NOT NULL
           AND (
@@ -88,11 +89,29 @@ def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
               OR
               (bidirectional=1 AND source_zone_entity_id=? AND target_zone_entity_id=?)
           )
-        ORDER BY reverse_rank,coordinate_rank,source_kind,source_name,source_key,id
-        LIMIT 1
+        ORDER BY reverse_rank,source_kind,source_name,source_key,id
         """,
         (source_id, target_id, source_id, target_id, target_id, source_id),
-    ).fetchone()
+    ).fetchall()
+    if not rows:
+        return None
+
+    def rank(row):
+        source_owned_coordinate = travel_coordinate_source_owns_point(
+            str(row["source_kind"] or ""),
+            row["x"],
+            row["y"],
+        )
+        return (
+            int(row["reverse_rank"]),
+            0 if source_owned_coordinate else 1,
+            str(row["source_kind"] or "").casefold(),
+            str(row["source_name"] or "").casefold(),
+            str(row["source_key"] or "").casefold(),
+            int(row["id"]),
+        )
+
+    return min(rows, key=rank)
 
 
 def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuidance:
@@ -123,6 +142,11 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
 
     owner_id = int(edge["source_zone_entity_id"])
     owner = db.entity(owner_id)
+    coordinate_owned = travel_coordinate_source_owns_point(
+        str(edge["source_kind"] or ""),
+        edge["x"],
+        edge["y"],
+    )
     return RouteHopGuidance(
         source_entity_id=source_id,
         target_entity_id=target_id,
@@ -137,9 +161,13 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
         evidence=str(edge["evidence"] or "").strip(),
         coordinate_owner_entity_id=owner_id,
         coordinate_owner_name=(str(owner["name"]) if owner is not None else f"zone {owner_id}"),
-        stored_x=(float(edge["x"]) if edge["x"] is not None else None),
-        stored_y=(float(edge["y"]) if edge["y"] is not None else None),
-        stored_z=(float(edge["z"]) if edge["z"] is not None else None),
+        stored_x=(float(edge["x"]) if coordinate_owned else None),
+        stored_y=(float(edge["y"]) if coordinate_owned else None),
+        stored_z=(
+            float(edge["z"])
+            if coordinate_owned and edge["z"] is not None
+            else None
+        ),
         requirements=requirements,
     )
 
@@ -239,7 +267,7 @@ def route_guidance_text(db: Database, guidance: RouteGuidanceResult) -> str:
                     "no source-zone coordinate is known for this route direction"
                 )
         else:
-            lines.append("   no source-zone coordinate is present for map targeting")
+            lines.append("   no reviewed source-zone coordinate is present for map targeting")
         if hop.uses_reverse_evidence:
             lines.append("   using the reverse direction of explicitly two-way evidence")
         lines.append("")

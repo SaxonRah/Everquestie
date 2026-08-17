@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument(
         "--source-name",
         required=True,
-        help="Stable catalog source name, e.g. Brewall or Good",
+        help="Stable catalog source name, e.g. Goods or Brewall",
     )
     parser.add_argument(
         "--source-version",

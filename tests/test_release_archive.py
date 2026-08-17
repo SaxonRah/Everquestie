@@ -156,14 +156,29 @@ class ReleaseArchiveAuditTests(unittest.TestCase):
         )
 
     def test_extra_builder_or_user_sqlite_is_rejected(self):
-        self._write_archive(
-            extra_members={"EverQuestie/working-with-approved-data.sqlite3": b"builder state"}
-        )
+        for member, payload in (
+            ("EverQuestie/working-with-approved-data.sqlite3", b"builder state"),
+            ("EverQuestie/everquestie-user.sqlite3", b"player state"),
+        ):
+            with self.subTest(member=member):
+                self._write_archive(extra_members={member: payload})
+                audit = audit_release_archive(self.archive)
+                self.assertFalse(audit.ok)
+                self.assertTrue(
+                    any(
+                        "exactly the declared knowledge SQLite DB" in error
+                        for error in audit.errors
+                    )
+                )
+
+    def test_manifest_cannot_claim_user_state_is_included(self):
+        manifest = self._manifest("one-folder")
+        manifest["user_state_included"] = True
+        self._write_archive(manifest=manifest)
+
         audit = audit_release_archive(self.archive)
         self.assertFalse(audit.ok)
-        self.assertTrue(
-            any("exactly the declared knowledge SQLite DB" in error for error in audit.errors)
-        )
+        self.assertIn("release manifest user_state_included must be false", audit.errors)
 
     def test_case_colliding_archive_member_is_rejected(self):
         self._write_archive(

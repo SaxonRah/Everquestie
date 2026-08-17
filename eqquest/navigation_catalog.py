@@ -13,7 +13,7 @@ from .zone_provider_reconciliation import (
 from .zone_travel import ZoneTravelBuildStats, ZoneTravelCatalog
 
 
-NAVIGATION_CATALOG_VERSION = "5"
+NAVIGATION_CATALOG_VERSION = "6"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,118 @@
+name: Windows release packaging smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'builder-data/**'
+      - 'eqquest/**'
+      - 'tools/**'
+      - 'EverQuestie.py'
+      - '.github/workflows/windows-release-smoke.yml'
+  pull_request:
+    paths:
+      - 'builder-data/**'
+      - 'eqquest/**'
+      - 'tools/**'
+      - 'EverQuestie.py'
+      - '.github/workflows/windows-release-smoke.yml'
+
+jobs:
+  package:
+    name: ${{ matrix.layout }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layout: [one-folder, one-file]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --no-input pyinstaller
+          python -m PyInstaller --version
+
+      - name: Create release-shaped builder fixture
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $PWD 'build\windows-release-smoke\working.sqlite3'
+          python .\tools\create_release_smoke_fixture.py --output $fixture --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $fixture -PathType Leaf)) {
+            throw "Fixture DB was not created: $fixture"
+          }
+
+      - name: Run official release coordinator
+        shell: pwsh
+        run: |
+          $layout = '${{ matrix.layout }}'
+          $version = "ci-$layout"
+          $fixture = Join-Path $PWD 'build\windows-release-smoke\working.sqlite3'
+          $output = Join-Path $PWD 'build\windows-release-smoke\release'
+          $params = @{
+            Version = $version
+            WorkingDb = $fixture
+            OutputRoot = $output
+            PythonExe = (Get-Command python).Source
+            SkipTests = $true
+            SkipRouteAudit = $true
+            Force = $true
+          }
+          if ($layout -eq 'one-file') {
+            $params['OneFile'] = $true
+          }
+          & .\tools\build_release.ps1 @params
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Re-verify release outputs and checksum
+        shell: pwsh
+        run: |
+          $layout = '${{ matrix.layout }}'
+          $version = "ci-$layout"
+          $releaseDir = Join-Path $PWD "build\windows-release-smoke\release\$version"
+          $archive = Join-Path $releaseDir "EverQuestie-$version-windows.zip"
+          $checksum = "$archive.sha256"
+          $sourceKnowledge = Join-Path $PWD "build\release\$version\everquestie-knowledge.sqlite3"
+
+          foreach ($required in @($archive, $checksum, $sourceKnowledge)) {
+            if (-not (Test-Path $required -PathType Leaf)) {
+              throw "Expected Windows release smoke output is missing: $required"
+            }
+          }
+
+          python .\tools\verify_release_archive.py $archive `
+            --source-knowledge $sourceKnowledge `
+            --require-source-knowledge `
+            --expected-version $version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          $sidecarText = (Get-Content -Raw $checksum).Trim()
+          $expectedHash = ($sidecarText -split '\s+')[0].ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Release ZIP checksum sidecar does not match archive bytes."
+          }
+
+          if ($layout -eq 'one-folder') {
+            $packagedKnowledge = Join-Path $releaseDir 'EverQuestie\everquestie-knowledge.sqlite3'
+            if (-not (Test-Path $packagedKnowledge -PathType Leaf)) {
+              throw "One-folder release is missing packaged knowledge DB."
+            }
+            $sourceHash = (Get-FileHash -Algorithm SHA256 $sourceKnowledge).Hash.ToLowerInvariant()
+            $packagedHash = (Get-FileHash -Algorithm SHA256 $packagedKnowledge).Hash.ToLowerInvariant()
+            if ($sourceHash -ne $packagedHash) {
+              throw "One-folder packaged knowledge DB differs from audited source snapshot."
+            }
+          }
+          else {
+            $externalKnowledge = Join-Path $releaseDir 'everquestie-knowledge.sqlite3'
+            if (Test-Path $externalKnowledge) {
+              throw "One-file release unexpectedly emitted an external knowledge DB."
+            }
+          }

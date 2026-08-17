@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import tempfile
 import unittest
@@ -52,6 +53,45 @@ class BuilderNavigationRefreshTests(unittest.TestCase):
         client_blight = self._zone("Blightfire Moors", "395", "eqclient:zone")
         return provider_stone, client_stone, provider_blight, client_blight
 
+    def _provider_topology(self):
+        provider_stone, client_stone, provider_blight, client_blight = self._corpus()
+        page = self.db.upsert_source_page(
+            url="https://everquest.allakhazam.com/db/zone.html?zstrat=884",
+            title="Stone Hive provider page",
+            entity_type="zone",
+            sha256="stone-provider-topology",
+            plain_text="Connected Zones",
+            raw_html="",
+            source_name="Allakhazam",
+            source_kind="local_mirror",
+            source_key="zone:884",
+            source_version="mirror-v1",
+        )
+        self.db.upsert_relationship(
+            provider_stone,
+            provider_blight,
+            "connected_to",
+            source_page_id=page,
+            evidence="Blightfire Moors / North",
+            data={"confidence": "structured", "direction": "North"},
+        )
+        relationship = self.db.conn.execute(
+            """
+            SELECT id FROM entity_relationships
+            WHERE source_entity_id=? AND target_entity_id=? AND relation='connected_to'
+            """,
+            (provider_stone, provider_blight),
+        ).fetchone()
+        self.assertIsNotNone(relationship)
+        return (
+            provider_stone,
+            client_stone,
+            provider_blight,
+            client_blight,
+            page,
+            int(relationship["id"]),
+        )
+
     def _index_stone_hive(self) -> Path:
         maps = self.root / "Good's Maps"
         maps.mkdir(parents=True, exist_ok=True)
@@ -87,6 +127,130 @@ class BuilderNavigationRefreshTests(unittest.TestCase):
         route = build_route_result(self.db, "Stone Hive", "Blightfire Moors")
         self.assertTrue(route.ok)
         self.assertEqual(route.path, (client_stone, client_blight))
+
+    def test_builder_refresh_compiles_stored_provider_topology_without_snapshot_finalization(self):
+        (
+            _provider_stone,
+            client_stone,
+            _provider_blight,
+            client_blight,
+            _page,
+            _relationship,
+        ) = self._provider_topology()
+
+        before = build_route_result(self.db, "Stone Hive", "Blightfire Moors")
+        self.assertFalse(before.ok)
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='zone_provider_bindings'"
+            ).fetchone()[0],
+            0,
+        )
+
+        refresh = ensure_builder_navigation_catalog(self.db)
+        self.assertTrue(refresh.refreshed)
+        self.assertIsNotNone(refresh.provider_zones)
+        self.assertIsNotNone(refresh.provider_travel)
+        assert refresh.provider_zones is not None
+        assert refresh.provider_travel is not None
+        self.assertEqual(refresh.provider_zones.linked, 2)
+        self.assertEqual(refresh.provider_travel.relationships_scanned, 1)
+        self.assertEqual(refresh.provider_travel.linked, 1)
+        self.assertEqual(self.db.get_meta("navigation_catalog_version"), "5")
+        self.assertEqual(self.db.get_meta("navigation_catalog_dirty"), "0")
+
+        edges = [
+            edge
+            for edge in ZoneTravelCatalog(self.db).edges_from(client_stone)
+            if edge.source_kind == "provider_zone_relationship"
+        ]
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0].target_zone_entity_id, client_blight)
+        self.assertEqual(edges[0].source_name, "Allakhazam")
+        self.assertEqual(edges[0].source_version, "mirror-v1")
+        self.assertFalse(edges[0].bidirectional)
+
+        route = build_route_result(self.db, "Stone Hive", "Blightfire Moors")
+        self.assertTrue(route.ok)
+        self.assertEqual(route.path, (client_stone, client_blight))
+        reverse = build_route_result(self.db, "Blightfire Moors", "Stone Hive")
+        self.assertFalse(reverse.ok)
+
+    def test_connected_relationship_changes_dirty_and_withdraw_provider_route(self):
+        (
+            _provider_stone,
+            client_stone,
+            _provider_blight,
+            client_blight,
+            _page,
+            relationship_id,
+        ) = self._provider_topology()
+        ensure_builder_navigation_catalog(self.db)
+        self.assertTrue(build_route_result(self.db, "Stone Hive", "Blightfire Moors").ok)
+
+        self.db.conn.execute("DELETE FROM entity_relationships WHERE id=?", (relationship_id,))
+        self.db.conn.commit()
+        self.assertEqual(self.db.get_meta("navigation_catalog_dirty"), "1")
+
+        refresh = ensure_builder_navigation_catalog(self.db)
+        self.assertTrue(refresh.refreshed)
+        self.assertIsNotNone(refresh.provider_travel)
+        assert refresh.provider_travel is not None
+        self.assertEqual(refresh.provider_travel.relationships_scanned, 0)
+        self.assertEqual(refresh.provider_travel.linked, 0)
+        self.assertEqual(self.db.get_meta("navigation_catalog_dirty"), "0")
+        self.assertFalse(build_route_result(self.db, "Stone Hive", "Blightfire Moors").ok)
+        provider_edges = [
+            edge
+            for edge in ZoneTravelCatalog(self.db).edges_from(client_stone)
+            if edge.source_kind == "provider_zone_relationship"
+            and edge.target_zone_entity_id == client_blight
+        ]
+        self.assertEqual(provider_edges, [])
+
+    def test_provider_source_version_change_dirties_and_refreshes_edge_provenance(self):
+        (
+            _provider_stone,
+            client_stone,
+            _provider_blight,
+            _client_blight,
+            page,
+            _relationship,
+        ) = self._provider_topology()
+        ensure_builder_navigation_catalog(self.db)
+
+        edge = next(
+            edge
+            for edge in ZoneTravelCatalog(self.db).edges_from(client_stone)
+            if edge.source_kind == "provider_zone_relationship"
+        )
+        self.assertEqual(edge.source_version, "mirror-v1")
+
+        self.db.conn.execute(
+            "UPDATE source_pages SET source_version='mirror-v2' WHERE id=?",
+            (page,),
+        )
+        self.db.conn.commit()
+        self.assertEqual(self.db.get_meta("navigation_catalog_dirty"), "1")
+
+        ensure_builder_navigation_catalog(self.db)
+        edge = next(
+            edge
+            for edge in ZoneTravelCatalog(self.db).edges_from(client_stone)
+            if edge.source_kind == "provider_zone_relationship"
+        )
+        self.assertEqual(edge.source_version, "mirror-v2")
+        payload = self.db.conn.execute(
+            "SELECT data_json FROM zone_travel_edges WHERE id=?",
+            (edge.id,),
+        ).fetchone()
+        self.assertIsNotNone(payload)
+        self.assertEqual(
+            json.loads(payload["data_json"])["provider_relationship_id"],
+            self.db.conn.execute(
+                "SELECT id FROM entity_relationships WHERE relation='connected_to' LIMIT 1"
+            ).fetchone()["id"],
+        )
 
     def test_clean_builder_catalog_is_a_noop_until_zone_identity_changes(self):
         self._corpus()

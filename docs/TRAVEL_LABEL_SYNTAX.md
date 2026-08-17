@@ -18,4 +18,4 @@ A bare label such as `Blightfire Moors` is intentionally **not** a route by itse
 
 Travel evidence remains directed unless a provider explicitly says it is bidirectional. A source-side map coordinate belongs only to the direction represented by that label.
 
-Builder navigation catalog v4 recompiles the already-indexed `map_labels` once after this syntax expansion. It does not crawl the player's map folder. Finalized release snapshots compile the same travel parser before packaging.
+Builder navigation catalog v5 recompiles the already-indexed `map_labels` when navigation derivatives are stale and also keeps structured provider travel in sync. It does not crawl the player's map folder or provider mirror. Finalized release snapshots independently compile the same travel parser before packaging.

@@ -4,11 +4,16 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .map_catalog import MapCatalog
+from .provider_zone_travel import ProviderZoneTravelCatalog, ProviderZoneTravelStats
 from .zone_catalog import ZoneMapBindingStats, ZoneMapCatalog
+from .zone_provider_reconciliation import (
+    ProviderZoneReconciliationCatalog,
+    ProviderZoneReconciliationStats,
+)
 from .zone_travel import ZoneTravelBuildStats, ZoneTravelCatalog
 
 
-NAVIGATION_CATALOG_VERSION = "4"
+NAVIGATION_CATALOG_VERSION = "5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +21,8 @@ class NavigationCatalogRefresh:
     refreshed: bool
     map_bindings: ZoneMapBindingStats | None = None
     travel: ZoneTravelBuildStats | None = None
+    provider_zones: ProviderZoneReconciliationStats | None = None
+    provider_travel: ProviderZoneTravelStats | None = None
 
 
 def _install_dirty_triggers(db) -> None:
@@ -95,6 +102,42 @@ def _install_dirty_triggers(db) -> None:
           ON CONFLICT(key) DO UPDATE SET value='1';
         END;
 
+        CREATE TRIGGER IF NOT EXISTS eq_navigation_dirty_connected_insert
+        AFTER INSERT ON entity_relationships
+        WHEN NEW.relation='connected_to'
+        BEGIN
+          INSERT INTO app_meta(key,value) VALUES('navigation_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_navigation_dirty_connected_update
+        AFTER UPDATE OF source_entity_id,target_entity_id,relation,source_page_id,evidence,data_json
+        ON entity_relationships
+        WHEN OLD.relation='connected_to' OR NEW.relation='connected_to'
+        BEGIN
+          INSERT INTO app_meta(key,value) VALUES('navigation_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_navigation_dirty_connected_delete
+        AFTER DELETE ON entity_relationships
+        WHEN OLD.relation='connected_to'
+        BEGIN
+          INSERT INTO app_meta(key,value) VALUES('navigation_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_navigation_dirty_provider_source_update
+        AFTER UPDATE OF source_name,source_key,source_version ON source_pages
+        WHEN EXISTS(
+          SELECT 1 FROM entity_relationships r
+          WHERE r.source_page_id=NEW.id AND r.relation='connected_to'
+        )
+        BEGIN
+          INSERT INTO app_meta(key,value) VALUES('navigation_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
         CREATE TRIGGER IF NOT EXISTS eq_navigation_dirty_map_source_insert
         AFTER INSERT ON map_sources
         BEGIN
@@ -142,11 +185,13 @@ def _install_dirty_triggers(db) -> None:
 
 
 def ensure_builder_navigation_catalog(db, *, force: bool = False) -> NavigationCatalogRefresh:
-    """Refresh stale deterministic map/zone/travel derivatives in a writable builder DB.
+    """Refresh stale deterministic navigation derivatives in a writable builder DB.
 
-    This never scans a map folder. It operates only on map sources/labels that were
-    already indexed into EverQuestie's SQLite knowledge DB. Packaged RuntimeDatabase
-    knowledge is immutable, so the function is a strict no-op there.
+    This never scans a map folder or provider mirror. It operates only on source facts
+    already stored in EverQuestie's SQLite knowledge DB: canonical/client zone identity,
+    provider ``connected_to`` relationships, provider-zone bindings, and indexed map
+    labels. Packaged RuntimeDatabase knowledge is immutable, so the function is a strict
+    no-op there.
     """
     if not getattr(db, "knowledge_writable", True):
         return NavigationCatalogRefresh(False)
@@ -165,12 +210,22 @@ def ensure_builder_navigation_catalog(db, *, force: bool = False) -> NavigationC
     _install_dirty_triggers(db)
 
     with db.batch():
+        # Match release finalization order: provider identities are projected first so
+        # structured provider topology can compile against canonical gameplay zones.
+        provider_zones = ProviderZoneReconciliationCatalog(db).reconcile()
         bindings = ZoneMapCatalog(db).reconcile()
         travel = ZoneTravelCatalog(db).reconcile_from_maps()
+        provider_travel = ProviderZoneTravelCatalog(db).reconcile()
         db.set_meta("navigation_catalog_version", NAVIGATION_CATALOG_VERSION)
         db.set_meta("navigation_catalog_dirty", "0")
         db.set_meta(
             "navigation_catalog_last_reconcile",
             datetime.now().isoformat(timespec="seconds"),
         )
-    return NavigationCatalogRefresh(True, bindings, travel)
+    return NavigationCatalogRefresh(
+        True,
+        map_bindings=bindings,
+        travel=travel,
+        provider_zones=provider_zones,
+        provider_travel=provider_travel,
+    )

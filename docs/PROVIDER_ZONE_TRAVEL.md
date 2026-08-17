@@ -32,11 +32,14 @@ endpoint IDs/names/external IDs, and original relationship data.
 
 ## Directionality
 
-A provider relationship is compiled exactly in its stored source → target direction.
+A provider relationship is compiled exactly according to its source-owned structured
+direction semantics. Unknown or compass-like direction text remains source → target.
+Explicit `Both` evidence is reciprocal; exact `Exit From <target>` and
+`Entrance To <target>` forms retain their reviewed orientation rules.
 
 One Allakhazam page saying Stone Hive is connected to Blightfire Moors therefore creates
-one canonical Stone Hive → Blightfire Moors edge. It does **not** imply the reverse edge
-and it is not stored as `bidirectional=1`.
+one canonical Stone Hive → Blightfire Moors edge unless the structured direction field
+explicitly says otherwise. It does **not** imply the reverse edge.
 
 If a second structured provider page independently stores Blightfire Moors → Stone Hive,
 the graph contains two directed evidence rows. Runtime routing can then traverse both
@@ -51,11 +54,30 @@ EverQuestie never invents a map target from provider topology. A map-label edge 
 same direction may independently provide source-owned coordinates and route guidance can
 prefer that more actionable evidence without changing the canonical path.
 
+## Builder freshness
+
+Builder navigation catalog v5 owns both map-derived and provider-derived travel
+projections. `ensure_builder_navigation_catalog()` works only from source facts already
+stored in EverQuestie's SQLite database; it does not scan a map folder or provider
+mirror.
+
+A refresh performs provider-zone reconciliation before provider-travel compilation, so a
+working builder database can use newly imported structured provider topology immediately
+without waiting for snapshot finalization. Changes to canonical zone identity,
+`connected_to` relationships, relevant provider source provenance, or indexed map
+sources/labels mark the navigation derivatives dirty. The next builder Travel refresh
+rebuilds them and then returns to a cheap no-op while the catalog remains clean.
+
+Deleting provider topology also withdraws its derived travel edge on the next refresh;
+stale routes are not retained.
+
 ## Snapshot/runtime boundary
 
-Snapshot finalization runs the provider topology compiler after provider-zone identity
-reconciliation and map travel compilation, then computes release zone coverage over the
-combined graph.
+Snapshot finalization independently runs the provider topology compiler after
+provider-zone identity reconciliation and map travel compilation, then computes release
+zone coverage over the combined graph. This remains the release-time source of truth even
+though builder mode can now repair the same deterministic derivatives earlier.
 
 The packaged `RuntimeDatabase` only reads those finalized edges. It does not import
-Allakhazam, inspect mirrors, reconcile provider identities, or compile topology.
+Allakhazam, inspect mirrors, reconcile provider identities, compile topology, or run the
+builder navigation refresh.

@@ -36,7 +36,7 @@ class LootTurnInNavigation:
 def _source_backed_turn_in_contacts(db, quest_id: int):
     return db.conn.execute(
         """
-        SELECT r.target_entity_id AS npc_id, n.name AS npc_name
+        SELECT DISTINCT r.target_entity_id AS npc_id, n.name AS npc_name
         FROM entity_relationships r
         JOIN entities n ON n.id=r.target_entity_id AND n.kind='npc'
         WHERE r.source_entity_id=?
@@ -53,12 +53,15 @@ def loot_turn_in_navigation(
     quest_id: int,
     current_zone: str | None,
 ) -> LootTurnInNavigation:
-    """Project an explicit quest turn-in contact through existing safe Map/Travel logic.
+    """Project reviewed exact turn-in contacts through safe Map/Travel logic.
 
-    Quest relevance and navigation remain separate claims: this function first requires
-    a source-backed ``objective_turn_in_to`` quest relationship, then delegates all
-    coordinate/zone actionability to ``knowledge_map_choices``. It never derives an NPC
-    from the item name, objective prose, or a provider-only coordinate.
+    Quest relevance and navigation remain separate claims. This function first requires
+    source-backed ``objective_turn_in_to`` relationships and records their exact NPC
+    identities. General Knowledge projection may expose additional quest-actor facts for
+    inspection, including unprovenanced relationships, so this specialized action filters
+    every returned Map/Travel choice back to the reviewed NPC ID set before it can become
+    actionable. Coordinates and gameplay-zone identity must still independently survive
+    ``knowledge_map_choices``.
     """
     quest = db.entity(int(quest_id))
     if quest is None or str(quest["kind"]) != "quest":
@@ -78,17 +81,22 @@ def loot_turn_in_navigation(
             int(quest_id),
             quest_name,
         )
+    allowed_ids = {int(row["npc_id"]) for row in contacts}
 
     base = knowledge_map_choices(db, int(quest_id), current_zone)
     current = tuple(
         choice
         for choice in base.choices
-        if choice.origin == "quest_actor" and choice.relation == "objective_turn_in_to"
+        if choice.origin == "quest_actor"
+        and choice.relation == "objective_turn_in_to"
+        and int(choice.location_entity_id) in allowed_ids
     )
     remote = tuple(
         choice
         for choice in base.other_zone_choices
-        if choice.origin == "quest_actor" and choice.relation == "objective_turn_in_to"
+        if choice.origin == "quest_actor"
+        and choice.relation == "objective_turn_in_to"
+        and int(choice.location_entity_id) in allowed_ids
     )
 
     filtered = KnowledgeMapChoiceSet(
@@ -108,7 +116,7 @@ def loot_turn_in_navigation(
         names = ", ".join(dict.fromkeys(choice.location_entity_name for choice in current))
         return LootTurnInNavigation(
             "map_ready",
-            f"Explicit turn-in contact {names} has a safe location in the current zone.",
+            f"Reviewed explicit turn-in contact {names} has a safe location in the current zone.",
             int(quest_id),
             quest_name,
             map_choices=current,
@@ -118,7 +126,7 @@ def loot_turn_in_navigation(
         zones = ", ".join(choice.zone_name for choice in routes)
         return LootTurnInNavigation(
             "route_ready",
-            f"Explicit turn-in contact is safely located outside the current zone: {zones}.",
+            f"Reviewed explicit turn-in contact is safely located outside the current zone: {zones}.",
             int(quest_id),
             quest_name,
             route_choices=routes,
@@ -140,8 +148,8 @@ def loot_turn_in_navigation(
     return LootTurnInNavigation(
         "contact_location_unavailable",
         (
-            f"Turn-in contact is known for {quest_name} ({contact_names}), but no safe canonical "
-            "Map/Travel location is currently compiled for that contact."
+            f"Reviewed turn-in contact is known for {quest_name} ({contact_names}), but no safe canonical "
+            "Map/Travel location is currently compiled for that exact contact."
         ),
         int(quest_id),
         quest_name,

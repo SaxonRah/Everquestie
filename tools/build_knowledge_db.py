@@ -180,6 +180,41 @@ def audit_snapshot_provider_travel_frontier(
         conn.close()
 
 
+def route_report_payload(summary, frontier_summary=None) -> dict:
+    """Return backward-compatible route JSON with inline source diagnostics on failures.
+
+    Route acceptance remains the owner of route/identity/connectivity status. Provider
+    frontier diagnostics are attached only to topology-shaped failures and are copied
+    verbatim from ``ProviderTravelZoneDiagnostic.as_dict()``. Successful routes and
+    identity failures therefore retain their existing result shape. When no topology-
+    shaped failures exist, the entire report remains byte-schema-compatible with the
+    pre-diagnostic payload apart from normal JSON formatting/order.
+    """
+    payload = summary.as_dict()
+    if frontier_summary is None or not frontier_summary.zones:
+        return payload
+
+    frontier_by_entity_id = {
+        int(zone.canonical_zone_entity_id): zone
+        for zone in frontier_summary.zones
+        if zone.canonical_zone_entity_id is not None
+    }
+    for result_payload, result in zip(payload["results"], summary.results):
+        if result.status not in _TOPOLOGY_FRONTIER_STATUSES:
+            continue
+        if result.source.entity_id is not None:
+            source_frontier = frontier_by_entity_id.get(int(result.source.entity_id))
+            if source_frontier is not None:
+                result_payload["source_provider_frontier"] = source_frontier.as_dict()
+        if result.target.entity_id is not None:
+            target_frontier = frontier_by_entity_id.get(int(result.target.entity_id))
+            if target_frontier is not None:
+                result_payload["target_provider_frontier"] = target_frontier.as_dict()
+
+    payload["provider_frontier_status_counts"] = frontier_summary.as_dict()["status_counts"]
+    return payload
+
+
 def _write_json_report(path: str | Path, payload: dict) -> Path:
     output = Path(path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -190,8 +225,8 @@ def _write_json_report(path: str | Path, payload: dict) -> Path:
     return output
 
 
-def write_route_report(path: str | Path, summary) -> Path:
-    return _write_json_report(path, summary.as_dict())
+def write_route_report(path: str | Path, summary, *, frontier_summary=None) -> Path:
+    return _write_json_report(path, route_report_payload(summary, frontier_summary))
 
 
 def write_provider_travel_frontier_report(path: str | Path, summary) -> Path:
@@ -290,13 +325,16 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--route-report",
-        help="Optional path for a machine-readable route-acceptance JSON report",
+        help=(
+            "Optional path for machine-readable route-acceptance JSON; topology-shaped failures "
+            "include inline provider source-frontier diagnostics for both resolved endpoints"
+        ),
     )
     p.add_argument(
         "--provider-travel-frontier-report",
         help=(
-            "Optional JSON path for provider-compiler frontier diagnostics covering the unique "
-            "resolved endpoints of topology-shaped route acceptance failures"
+            "Optional separate JSON path for deduplicated provider-compiler frontier diagnostics "
+            "covering the unique resolved endpoints of topology-shaped route acceptance failures"
         ),
     )
     p.add_argument(
@@ -387,17 +425,27 @@ def main() -> int:
         route_summary = audit_snapshot_routes(report.snapshot.path)
         print()
         print(route_acceptance_text(route_summary))
-        if args.route_report:
-            output = write_route_report(args.route_report, route_summary)
-            print()
-            print(f"route acceptance JSON: {output}")
 
-        if args.provider_travel_frontier_report:
+        frontier_zones: tuple[str, ...] = ()
+        frontier_summary = None
+        if args.route_report or args.provider_travel_frontier_report:
             frontier_zones = route_failure_frontier_zones(route_summary)
             frontier_summary = audit_snapshot_provider_travel_frontier(
                 report.snapshot.path,
                 frontier_zones,
             )
+
+        if args.route_report:
+            output = write_route_report(
+                args.route_report,
+                route_summary,
+                frontier_summary=frontier_summary,
+            )
+            print()
+            print(f"route acceptance + failure source diagnostics JSON: {output}")
+
+        if args.provider_travel_frontier_report:
+            assert frontier_summary is not None
             output = write_provider_travel_frontier_report(
                 args.provider_travel_frontier_report,
                 frontier_summary,

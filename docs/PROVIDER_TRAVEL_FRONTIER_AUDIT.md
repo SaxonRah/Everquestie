@@ -4,7 +4,7 @@
 
 `tools/audit_provider_travel_frontier.py` is a read-only diagnostic for the boundary between stored provider zone evidence and EverQuestie's canonical travel graph.
 
-It was added after the first real post-HTTrack-fix acceptance run established that provider topology was genuinely compiling: three of five difficult real route cases became reachable, while `Labyrinth of Spite` and `North Freeport` still had zero incoming canonical travel edges. Subsequent scope review established that `North Freeport` is a historical/retired identity rather than a current-live default destination, so the CLI now defaults only to the remaining current-live provider frontier, `Labyrinth of Spite`. `North Freeport` remains available for explicit historical diagnostics.
+It was added after the first real post-HTTrack-fix acceptance run established that provider topology was genuinely compiling: three of five difficult real route cases became reachable, while `Labyrinth of Spite` and `North Freeport` still had zero incoming canonical travel edges. Subsequent scope review established that `North Freeport` is a historical/retired identity rather than a current-live default destination, so the CLI defaults only to the remaining current-live provider frontier, `Labyrinth of Spite`. `North Freeport` remains available for explicit historical diagnostics.
 
 The audit answers a narrower question than route acceptance:
 
@@ -14,7 +14,7 @@ It does **not** attempt to make a route pass.
 
 ## Ownership boundary
 
-The audit is intentionally a projection over existing finalized knowledge.
+The audit is intentionally a projection over existing knowledge.
 
 It does not:
 
@@ -40,35 +40,45 @@ Substring, nearest-name, significant-word and other fuzzy fallbacks are not used
 For each requested canonical gameplay zone the audit reports:
 
 1. provider-zone bindings whose recorded gameplay target is the requested canonical zone;
-2. the provider zone's source page/provenance when available;
-3. every stored `connected_to` relationship touching those provider-zone entities;
-4. the provider travel compiler's structured-row decision;
-5. the compiler's current direction interpretation;
-6. projection of each provider endpoint to canonical gameplay zone identity;
-7. whether a finalized provider travel edge references that relationship;
-8. all existing canonical incoming/outgoing travel edges touching the requested zone.
+2. whether those provider entities actually have a stored source page and its provenance;
+3. the binding-state counts (`linked`, `candidate`, and any other stored state);
+4. every stored `connected_to` relationship touching those provider-zone entities;
+5. the provider travel compiler's structured-row decision and aggregate decision counts;
+6. the compiler's current direction interpretation;
+7. projection of each provider endpoint to canonical gameplay zone identity;
+8. whether a finalized provider travel edge references that relationship;
+9. all existing canonical incoming/outgoing travel edges touching the requested zone.
 
 Direction is interpreted by `ProviderZoneTravelCatalog` itself. The audit therefore reflects the production meanings of structured values such as `Both`, `Entrance To <exact target>`, and `Exit From <exact target>` without maintaining a second direction parser.
 
 ## Zone classifications
 
 `compiled`
-: At least one stored provider `connected_to` relationship touching the provider zone is represented by a finalized canonical provider travel edge.
+: At least one stored provider `connected_to` relationship touching the provider zone is represented by a canonical provider travel edge. Other blocked rows may still be reported alongside the compiled evidence.
 
 `provider_rows_uncompiled`
-: A stored provider relationship is structurally eligible, both endpoints have projection-safe canonical bindings, and it is not a self-edge, but no finalized provider travel edge references it. This is the strongest signal of a compiler/finalization defect.
+: A stored provider relationship is structurally eligible, both endpoints have projection-safe canonical bindings, and it is not a self-edge, but no canonical provider travel edge references it. This is the strongest signal of a compiler/finalization or stale-builder defect.
+
+`provider_rows_identity_blocked`
+: Structured provider `connected_to` rows exist, but a source or target provider endpoint lacks a linked canonical gameplay binding. Fix or enrich the exact identity evidence; do not route through the unresolved provider entity.
+
+`provider_rows_unstructured`
+: `connected_to` rows exist, but none qualify as source-owned structured travel evidence. This distinguishes stored generic/inferred relationships from a missing provider page or missing extraction entirely.
 
 `provider_rows_blocked`
-: Provider `connected_to` rows exist, but none currently compile. Per-row classifications explain whether the source or target binding is blocked, the relationship is unstructured, or both endpoints collapse to one canonical zone.
+: Provider rows exist but are non-routeable for another explicit compiler reason, such as both endpoints collapsing to one canonical gameplay zone. Per-row classifications give the exact reason.
 
-`no_structured_provider_topology`
-: A provider-zone binding/page is associated with the canonical zone, but no stored `connected_to` relationship references that provider entity. This is a source-data/extraction frontier rather than a route-search failure.
+`provider_page_no_connected_rows`
+: A provider-zone binding and stored provider source page exist, but no `connected_to` relationship references that provider entity. This is a source-data/extraction frontier. Inspect the saved structured zone page before considering any parser expansion.
+
+`provider_zone_missing_source_page`
+: A provider-zone binding/entity exists but it has no stored source page. The gap is upstream of connected-zone extraction.
 
 `non_provider_topology_only`
 : Canonical travel edges exist for the gameplay zone, but there is no associated provider-zone binding.
 
 `no_provider_zone`
-: Neither an associated provider-zone binding nor a canonical travel edge exists.
+: Neither an associated provider-zone binding nor a canonical travel edge exists. No provider-backed source fact is currently attached to this canonical endpoint through the established reconciliation rules.
 
 `ambiguous_zone` / `unresolved_zone`
 : The requested audit endpoint itself does not resolve to one authoritative canonical gameplay zone. The audit refuses to guess.
@@ -84,7 +94,7 @@ Each provider relationship is independently classified as:
 - `self_edge`;
 - `ignored_unstructured`.
 
-The JSON output includes provider IDs/names, source provenance, raw direction, interpreted direction mode, canonical endpoint IDs/names, interpreted edge orientation, and the matching compiled edge ID when one exists.
+The JSON output includes provider IDs/names, source provenance, raw direction, interpreted direction mode, canonical endpoint IDs/names, interpreted edge orientation, the matching compiled edge ID when one exists, binding-state counts, provider-source-page count, and relationship-decision counts.
 
 ## Usage
 
@@ -94,7 +104,7 @@ Default current-live provider frontier:
 python tools/audit_provider_travel_frontier.py release.sqlite3
 ```
 
-The default currently audits `Labyrinth of Spite` only.
+The default audits `Labyrinth of Spite` only.
 
 Machine-readable output:
 
@@ -115,11 +125,15 @@ python tools/audit_provider_travel_frontier.py release.sqlite3 `
 
 For the real route-acceptance loop, run this audit before changing importer or routing behavior.
 
-If a target reports `no_structured_provider_topology`, inspect the saved Allakhazam zone page/mirror representation for an additional structured transition surface. Do not parse arbitrary walkthrough prose simply to satisfy the acceptance case.
+If a target reports `provider_zone_missing_source_page`, repair or import the exact provider page before looking at topology parsing.
 
-If it reports `provider_rows_blocked`, fix the exact binding/evidence gap named by the relationship diagnostics.
+If it reports `provider_page_no_connected_rows`, inspect the saved provider zone page/mirror representation for an additional **structured** transition surface. Do not parse arbitrary walkthrough prose simply to satisfy an acceptance case.
 
-If it reports `provider_rows_uncompiled`, the source evidence and canonical bindings are already sufficient; investigate the provider travel compiler/finalization path.
+If it reports `provider_rows_unstructured`, determine whether the stored relationship really came from a structured travel surface. Do not upgrade generic or inferred rows merely because their endpoints look useful.
+
+If it reports `provider_rows_identity_blocked`, fix the exact provider→canonical identity gap named by the relationship diagnostics. A relationship is not allowed to break identity ambiguity.
+
+If it reports `provider_rows_uncompiled`, the source evidence and canonical bindings are already sufficient; investigate builder freshness, provider travel compilation, or snapshot finalization.
 
 If it reports `compiled` but route acceptance still says the target has no incoming edge, compare the interpreted direction and the route-connectivity component. A correct one-way edge may still make a route unreachable in the requested direction.
 

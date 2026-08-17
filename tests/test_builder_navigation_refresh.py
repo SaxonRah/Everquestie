@@ -156,7 +156,7 @@ class BuilderNavigationRefreshTests(unittest.TestCase):
         self.assertEqual(refresh.provider_zones.linked, 2)
         self.assertEqual(refresh.provider_travel.relationships_scanned, 1)
         self.assertEqual(refresh.provider_travel.linked, 1)
-        self.assertEqual(self.db.get_meta("navigation_catalog_version"), "5")
+        self.assertEqual(self.db.get_meta("navigation_catalog_version"), NAVIGATION_CATALOG_VERSION)
         self.assertEqual(self.db.get_meta("navigation_catalog_dirty"), "0")
 
         edges = [

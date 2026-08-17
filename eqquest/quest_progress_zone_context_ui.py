@@ -2,34 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .log_geography import recover_log_geography
+
 
 _QUEST_PROGRESS_ZONE_CONTEXT_MARKER = "_everquestie_quest_progress_zone_context_ui"
 
 
 def _zone_context_from_log(log_path: str | Path, parser) -> str | None:
-    """Return the last authoritative zone boundary in one EQ log.
-
-    Only explicit ``You have entered ...`` lines establish geography. ``Welcome to
-    EverQuest!`` clears that geography until another explicit zone entry appears.
-    Manual UI state and quest-inferred destinations are intentionally not inputs.
-    """
-    current: str | None = None
-    try:
-        with Path(log_path).open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if "You have entered " not in line and "Welcome to EverQuest!" not in line:
-                    continue
-                event = parser.parse_line(line)
-                if event is None:
-                    continue
-                kind = str(event.kind or "").casefold()
-                if kind == "welcome":
-                    current = None
-                elif kind == "zone" and event.zone:
-                    current = " ".join(str(event.zone).split()).strip() or None
-    except (OSError, PermissionError):
-        return None
-    return current
+    """Return the last authoritative zone boundary in one EQ log."""
+    geography = recover_log_geography(log_path, parser)
+    return geography.zone if geography is not None else None
 
 
 def install_quest_progress_zone_context_ui() -> None:

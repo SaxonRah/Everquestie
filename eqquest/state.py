@@ -16,6 +16,18 @@ class SessionState:
     looted_items: Counter[str] = field(default_factory=Counter)
     killed_npcs: Counter[str] = field(default_factory=Counter)
 
+    def clear_geography(self) -> bool:
+        """Forget zone/location context after an explicit loss-of-session boundary."""
+        changed = bool(
+            self.current_zone is not None
+            or self.zone_source != "unknown"
+            or self.last_location is not None
+        )
+        self.current_zone = None
+        self.zone_source = "unknown"
+        self.last_location = None
+        return changed
+
     def set_zone(self, zone: str | None, *, source: str, force: bool = False) -> bool:
         """Set current zone with conservative source priority.
 
@@ -40,10 +52,15 @@ class SessionState:
         return changed
 
     def apply(self, event: Event) -> None:
-        if event.kind == "zone" and event.zone:
+        if event.kind == "welcome":
+            # A reconnect/login boundary invalidates the prior character's geography.
+            # Wait for a new explicit zone entry before accepting /loc again.
+            self.clear_geography()
+
+        elif event.kind == "zone" and event.zone:
             self.set_zone(event.zone, source="log", force=True)
 
-        elif event.kind == "loc":
+        elif event.kind == "loc" and self.current_zone:
             self.last_location = (
                 float(event.fields["x"]),
                 float(event.fields["y"]),

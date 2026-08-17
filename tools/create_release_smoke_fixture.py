@@ -4,12 +4,14 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from eqquest.db import Database
+from eqquest.map_catalog import MapCatalog
 from eqquest.zone_identity import ZoneIdentityIndex
 
 
@@ -46,6 +48,9 @@ REQUIRED_QUERIES: tuple[str, ...] = (
     "The Vortex",
 )
 
+MAP_SOURCES: tuple[str, ...] = ("Goods", "Brewall")
+MAP_SOURCE_VERSION = "windows-packaging-smoke"
+
 
 def _remove_sqlite_family(path: Path) -> None:
     for candidate in (
@@ -56,12 +61,35 @@ def _remove_sqlite_family(path: Path) -> None:
         candidate.unlink(missing_ok=True)
 
 
+def _populate_map_catalog(db: Database, parent: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="release-smoke-maps-", dir=parent) as tempdir:
+        root = Path(tempdir)
+        catalog = MapCatalog(db)
+        for source_name in MAP_SOURCES:
+            source_root = root / source_name
+            source_root.mkdir()
+            (source_root / "stonehive.txt").write_text(
+                "L 0,0,0,10,10,0,0,0,0\n",
+                encoding="utf-8",
+            )
+            (source_root / "stonehive_1.txt").write_text(
+                "P 279,529,-27,255,0,0,2,Release_Smoke_POI\n",
+                encoding="utf-8",
+            )
+            catalog.index_root(
+                source_root,
+                source_name=source_name,
+                source_version=MAP_SOURCE_VERSION,
+            )
+
+
 def create_release_smoke_fixture(output: str | Path, *, overwrite: bool = False) -> Path:
-    """Create the smallest builder DB that can exercise official reviewed release staging.
+    """Create the smallest builder DB that can exercise the official release packager.
 
     This is CI/package plumbing only; it is not gameplay content and does not attempt to
-    satisfy route acceptance. The official packaging smoke intentionally skips the route
-    gate while still compiling the real checked-in reviewed alias/travel manifests.
+    satisfy route acceptance. The fixture includes the real reviewed-release identities
+    plus a tiny versioned Goods/Brewall catalog so the official packaging smoke exercises
+    the same immutable map-catalog gate as a production release.
     """
     destination = Path(output).expanduser().resolve()
     if destination.exists() and not overwrite:
@@ -96,6 +124,8 @@ def create_release_smoke_fixture(output: str | Path, *, overwrite: bool = False)
                     "release smoke fixture does not resolve required zone identities: "
                     + "; ".join(unresolved)
                 )
+
+            _populate_map_catalog(db, destination.parent)
             db.set_meta("release_smoke_fixture", "windows-packaging")
             db.conn.commit()
         finally:
@@ -124,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"release packaging smoke fixture: {path}")
     print(f"client-backed zones: {len(CLIENT_ZONES)}")
     print(f"additional reviewed zones: {len(PLAIN_ZONES)}")
+    print(f"map catalog sources: {', '.join(MAP_SOURCES)}")
     return 0
 
 

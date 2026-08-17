@@ -99,6 +99,7 @@ class ShatteringOfRoTravelManifestTests(unittest.TestCase):
         legacy_toxxulia = self._zone("Toxxulia Forest", 38)
         current_toxxulia = self._zone("Toxxulia Forest", 414)
         pok = self._zone("The Plane of Knowledge", 202)
+        self._zone("The Greater Faydark", 54)
         legacy_west_freeport = self._zone("West Freeport", 9)
         current_west_freeport = self._zone("West Freeport", 383)
         arcstone = self._zone("Arcstone, Shattered Isles", 881)
@@ -110,7 +111,7 @@ class ShatteringOfRoTravelManifestTests(unittest.TestCase):
         odus = importer.import_manifest(ODUS_MANIFEST)
         pok_stats = importer.import_manifest(POK_MANIFEST)
         sor = importer.import_manifest(MANIFEST)
-        self.assertEqual((odus.edges, pok_stats.edges, sor.edges), (2, 2, 4))
+        self.assertEqual((odus.edges, pok_stats.edges, sor.edges), (2, 3, 4))
 
         catalog = ZoneTravelCatalog(self.db)
         expected = [

@@ -169,6 +169,70 @@ class LootTurnInNavigationTests(unittest.TestCase):
         self.assertEqual(result.status, "no_explicit_turn_in_contact")
         self.assertFalse(result.navigable)
 
+    def test_mixed_current_zone_contacts_map_only_reviewed_exact_npc(self):
+        quest, page = self._quest("Mixed Current Turn-In")
+        reviewed = self._npc(
+            "Reviewed Brewer", "npc:7601", self.current_zone, y=11.0, x=21.0
+        )
+        unproven = self._npc(
+            "Rumored Brewer", "npc:7602", self.current_zone, y=31.0, x=41.0
+        )
+        self.db.upsert_relationship(
+            quest,
+            reviewed,
+            "objective_turn_in_to",
+            source_page_id=page,
+            evidence="Give the bark to Reviewed Brewer.",
+        )
+        self.db.upsert_relationship(
+            quest,
+            unproven,
+            "objective_turn_in_to",
+            evidence="synthetic candidate without source provenance",
+        )
+
+        result = loot_turn_in_navigation(self.db, quest, "The Stone Hive")
+
+        self.assertEqual(result.status, "map_ready")
+        self.assertEqual(
+            tuple(choice.location_entity_id for choice in result.map_choices),
+            (reviewed,),
+        )
+        self.assertNotIn(
+            unproven,
+            {choice.location_entity_id for choice in result.map_choices},
+        )
+
+    def test_mixed_remote_contacts_route_labels_exclude_unproven_exact_npc(self):
+        quest, page = self._quest("Mixed Remote Turn-In")
+        reviewed = self._npc("Reviewed Remote Brewer", "npc:7701", self.remote_zone)
+        unproven = self._npc("Rumored Remote Brewer", "npc:7702", self.remote_zone)
+        self.db.upsert_relationship(
+            quest,
+            reviewed,
+            "objective_turn_in_to",
+            source_page_id=page,
+            evidence="Give the bark to Reviewed Remote Brewer.",
+        )
+        self.db.upsert_relationship(
+            quest,
+            unproven,
+            "objective_turn_in_to",
+            evidence="synthetic remote candidate without source provenance",
+        )
+
+        result = loot_turn_in_navigation(self.db, quest, "The Stone Hive")
+
+        self.assertEqual(result.status, "route_ready")
+        self.assertEqual(len(result.route_choices), 1)
+        route = result.route_choices[0]
+        self.assertEqual(route.zone_entity_id, self.remote_zone)
+        self.assertEqual(
+            route.target_labels,
+            ("Reviewed Remote Brewer (turn-in NPC)",),
+        )
+        self.assertNotIn("Rumored Remote Brewer", " ".join(route.target_labels))
+
     def test_missing_current_zone_does_not_guess_map_or_route(self):
         quest, page = self._quest("Unknown Position Turn-In")
         turnin = self._npc("Located Brewer", "npc:7501", self.remote_zone)

@@ -23,6 +23,7 @@ class RuntimeBootstrapTests(unittest.TestCase):
             "install_activity_pathways_ui",
             "install_activity_pathway_zone_context_ui",
             "install_quest_progress_zone_context_ui",
+            "install_quest_progress_identity_policy",
             "install_session_geography_ui",
             "install_quest_interaction_guidance_ui",
             "install_quest_manual_progress_ui",

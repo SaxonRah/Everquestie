@@ -25,6 +25,23 @@ def location_is_actionable(row) -> bool:
     return getattr(row, "source_page_id", None) is not None
 
 
+def location_actionability_note(row) -> str:
+    """Explain the evidence-only case without redefining geometry navigability.
+
+    Candidate/unresolved zone projection has its own more specific presentation in the
+    location renderers. This note covers the subtler case where a row has canonical X/Y
+    geometry but lacks the reviewed evidence carrier required by player Map/Travel
+    actions.
+    """
+    if location_is_actionable(row) or not bool(getattr(row, "navigable", False)):
+        return ""
+
+    evidence_type = str(getattr(row, "evidence_type", "") or "")
+    if evidence_type == "map_label":
+        return "evidence only: linked map provenance is incomplete; not map-targetable"
+    return "evidence only: missing reviewed provenance; not map-targetable"
+
+
 def relationship_is_actionable(fact) -> bool:
     """Return whether a semantic relationship is reviewed enough for player action."""
     return getattr(fact, "source_page_id", None) is not None

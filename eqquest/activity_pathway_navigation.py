@@ -37,19 +37,39 @@ class PathwayContactNavigation:
         return bool(self.route_choices)
 
 
+def _reviewed_contact_ids(db, quest_id: int, relation: str) -> frozenset[int]:
+    rows = db.conn.execute(
+        """
+        SELECT DISTINCT r.target_entity_id AS npc_id
+        FROM entity_relationships r
+        JOIN entities n ON n.id=r.target_entity_id AND n.kind='npc'
+        WHERE r.source_entity_id=?
+          AND r.relation=?
+          AND r.source_page_id IS NOT NULL
+        """,
+        (int(quest_id), str(relation)),
+    ).fetchall()
+    return frozenset(int(row["npc_id"]) for row in rows)
+
+
 def _contact_choices(
     choice_set: KnowledgeMapChoiceSet,
     relation: str,
+    allowed_ids: frozenset[int],
 ) -> tuple[tuple[KnowledgeMapChoice, ...], tuple[KnowledgeMapChoice, ...]]:
     current = tuple(
         choice
         for choice in choice_set.choices
-        if choice.origin == "quest_actor" and choice.relation == relation
+        if choice.origin == "quest_actor"
+        and choice.relation == relation
+        and int(choice.location_entity_id) in allowed_ids
     )
     remote = tuple(
         choice
         for choice in choice_set.other_zone_choices
-        if choice.origin == "quest_actor" and choice.relation == relation
+        if choice.origin == "quest_actor"
+        and choice.relation == relation
+        and int(choice.location_entity_id) in allowed_ids
     )
     return current, remote
 
@@ -78,16 +98,18 @@ def pathway_contact_navigation(
     quest_id: int,
     current_zone: str | None,
 ) -> PathwayContactNavigation:
-    """Return safe Map/Travel choices for a suggested quest contact.
+    """Return reviewed safe Map/Travel choices for a suggested quest contact.
 
-    A quest starter is the preferred contact because a pathway is not assumed to be
-    owned yet. If no navigable starter is known, an explicit turn-in NPC is offered as
-    useful context. Objective mobs and arbitrary quest locations are deliberately not
+    A reviewed quest starter is preferred because a pathway is not assumed to be owned
+    yet. If no navigable reviewed starter is known, a reviewed explicit turn-in NPC is
+    offered as useful context. Objective mobs and arbitrary quest locations are not
     substituted for those roles.
 
-    All location safety, provider-zone reconciliation, and coordinate provenance are
-    delegated to ``knowledge_map_choices``. This function only filters its already-safe
-    quest-actor results by reviewed relationship semantics.
+    General Knowledge projection intentionally includes broader relationship facts for
+    inspection. This specialized player action therefore records the exact NPC IDs from
+    source-backed contact relationships and filters every already-safe map/route choice
+    back to that reviewed set. Location safety, provider-zone reconciliation, and
+    coordinate provenance remain delegated to ``knowledge_map_choices``.
     """
     quest = db.entity(int(quest_id))
     if quest is None or str(quest["kind"] or "") != "quest":
@@ -110,20 +132,23 @@ def pathway_contact_navigation(
         )
 
     for relation, label in _CONTACT_PRIORITY:
-        current, remote = _contact_choices(choice_set, relation)
+        allowed_ids = _reviewed_contact_ids(db, int(quest_id), relation)
+        if not allowed_ids:
+            continue
+        current, remote = _contact_choices(choice_set, relation, allowed_ids)
         if not current and not remote:
             continue
         routes = _route_choices_for(choice_set, current, remote)
         if current:
             reason = (
-                f"{len(current)} safe {label} location choice(s) are available in "
+                f"{len(current)} reviewed safe {label} location choice(s) are available in "
                 f"the current zone {choice_set.current_zone_name}."
             )
             status = "map_ready"
         else:
             remote_zones = len({choice.zone_entity_id for choice in remote})
             reason = (
-                f"The known {label} is outside the current zone; "
+                f"The reviewed {label} is outside the current zone; "
                 f"{len(remote)} safe location choice(s) span {remote_zones} canonical "
                 f"zone{'s' if remote_zones != 1 else ''}."
             )
@@ -145,7 +170,7 @@ def pathway_contact_navigation(
         "ready",
     }:
         reason = (
-            f"No safely mapped quest starter or turn-in NPC is currently known for "
+            f"No safely mapped reviewed quest starter or turn-in NPC is currently known for "
             f"{quest_name}."
         )
     else:

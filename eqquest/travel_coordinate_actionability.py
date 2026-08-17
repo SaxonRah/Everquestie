@@ -11,6 +11,26 @@ from typing import Any
 _ACTIONABLE_COORDINATE_SOURCE_KINDS = frozenset({"map_label"})
 
 
+def travel_coordinate_source_owns_point(
+    source_kind: str,
+    x: float | None,
+    y: float | None,
+) -> bool:
+    """Return whether one evidence kind intrinsically owns the stored X/Y point.
+
+    This deliberately says nothing about route direction. A reverse use of a
+    bidirectional map-label edge may still carry a trustworthy coordinate, but that
+    coordinate belongs to the opposite/source zone and is therefore not actionable
+    from the requested zone.
+    """
+    kind = str(source_kind or "").strip().casefold()
+    return bool(
+        kind in _ACTIONABLE_COORDINATE_SOURCE_KINDS
+        and x is not None
+        and y is not None
+    )
+
+
 def travel_coordinate_is_actionable(connection: Any, zone_entity_id: int) -> bool:
     """Return whether one travel edge can safely become a local Map/Nearby point.
 
@@ -29,11 +49,12 @@ def travel_coordinate_is_actionable(connection: Any, zone_entity_id: int) -> boo
     except (AttributeError, TypeError, ValueError):
         return False
 
-    source_kind = str(getattr(connection, "source_kind", "") or "").strip().casefold()
     return bool(
         getattr(connection, "usable_from_zone", False)
         and coordinate_zone_id == requested_zone_id
-        and getattr(connection, "x", None) is not None
-        and getattr(connection, "y", None) is not None
-        and source_kind in _ACTIONABLE_COORDINATE_SOURCE_KINDS
+        and travel_coordinate_source_owns_point(
+            str(getattr(connection, "source_kind", "") or ""),
+            getattr(connection, "x", None),
+            getattr(connection, "y", None),
+        )
     )

@@ -45,7 +45,7 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 engine = QuestEngine(db)
                 engine.seed_zone_context("East Zone")
 
-                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton", target="You"))
 
                 step = self._step(db, quest)
                 self.assertEqual(int(step["progress_count"]), 0)
@@ -60,7 +60,7 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 quest = self._tracked_kill_quest(db)
                 engine = QuestEngine(db)
                 engine.observe(Event(kind="zone", raw="zone", zone="West Zone"))
-                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton", target="You"))
 
                 step = self._step(db, quest)
                 self.assertEqual(int(step["progress_count"]), 1)
@@ -76,13 +76,13 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 engine = QuestEngine(db)
                 engine.seed_zone_context("West Zone")
                 engine.observe(Event(kind="welcome", raw="Welcome to EverQuest!"))
-                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton", target="You"))
 
                 step = self._step(db, quest)
                 self.assertEqual(int(step["progress_count"]), 0)
 
                 engine.observe(Event(kind="zone", raw="zone", zone="West Zone"))
-                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton"))
+                engine.observe(Event(kind="kill", raw="kill", actor="a skeleton", target="You"))
                 step = self._step(db, quest)
                 self.assertEqual(int(step["progress_count"]), 1)
                 self.assertEqual(int(step["complete"]), 0)
@@ -122,9 +122,9 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 events = [
                     Event(kind="zone", raw="east", zone="East Zone"),
                     Event(kind="task_assigned", raw="assigned", text="West Skeleton Hunt"),
-                    Event(kind="kill", raw="wrong", actor="a skeleton"),
+                    Event(kind="kill", raw="wrong", actor="a skeleton", target="You"),
                     Event(kind="zone", raw="west", zone="West Zone"),
-                    Event(kind="kill", raw="right", actor="a skeleton"),
+                    Event(kind="kill", raw="right", actor="a skeleton", target="You"),
                 ]
 
                 result = engine.reconcile_quest_from_events(quest, events)
@@ -149,7 +149,7 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 wrong_zone_events = [
                     Event(kind="zone", raw="east", zone="East Zone"),
                     Event(kind="say", raw="hail", text="Hail, Quest Guide"),
-                    Event(kind="kill", raw="wrong", actor="a skeleton"),
+                    Event(kind="kill", raw="wrong", actor="a skeleton", target="You"),
                 ]
                 result = engine.reconcile_quest_from_events(quest, wrong_zone_events)
                 self.assertEqual(result.boundary, "none")
@@ -158,7 +158,7 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 right_zone_events = [
                     Event(kind="zone", raw="west", zone="West Zone"),
                     Event(kind="say", raw="hail", text="Hail, Quest Guide"),
-                    Event(kind="kill", raw="right", actor="a skeleton"),
+                    Event(kind="kill", raw="right", actor="a skeleton", target="You"),
                 ]
                 result = engine.reconcile_quest_from_events(quest, right_zone_events)
                 self.assertEqual(result.boundary, "starter NPC hail")
@@ -174,7 +174,13 @@ class QuestProgressZoneContextTests(unittest.TestCase):
                 engine = QuestEngine(db)
 
                 engine.observe(
-                    Event(kind="kill", raw="kill", actor="a skeleton", zone="West Zone")
+                    Event(
+                        kind="kill",
+                        raw="kill",
+                        actor="a skeleton",
+                        target="You",
+                        zone="West Zone",
+                    )
                 )
 
                 step = self._step(db, quest)

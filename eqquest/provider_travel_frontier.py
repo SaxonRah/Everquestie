@@ -10,9 +10,10 @@ from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
+# Keep the default frontier current-live only. Historical/retired identities such as
+# North Freeport remain available through explicit --zone requests.
 DEFAULT_PROVIDER_TRAVEL_FRONTIER_ZONES: tuple[str, ...] = (
     "Labyrinth of Spite",
-    "North Freeport",
 )
 
 
@@ -77,6 +78,22 @@ class ProviderTravelZoneDiagnostic:
     def incoming_count(self) -> int:
         return sum(edge["direction"] == "incoming" for edge in self.canonical_edges)
 
+    @property
+    def provider_source_page_count(self) -> int:
+        return sum(binding.get("source_page_id") is not None for binding in self.bindings)
+
+    @property
+    def binding_status_counts(self) -> dict[str, int]:
+        return dict(
+            sorted(
+                Counter(str(binding.get("status") or "unknown") for binding in self.bindings).items()
+            )
+        )
+
+    @property
+    def relationship_status_counts(self) -> dict[str, int]:
+        return dict(sorted(Counter(row.classification for row in self.relationships).items()))
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
@@ -87,7 +104,10 @@ class ProviderTravelZoneDiagnostic:
             "classification": self.classification,
             "reason": self.reason,
             "binding_count": len(self.bindings),
+            "binding_status_counts": self.binding_status_counts,
+            "provider_source_page_count": self.provider_source_page_count,
             "relationship_count": len(self.relationships),
+            "relationship_status_counts": self.relationship_status_counts,
             "compiler_eligible_relationship_count": sum(
                 relationship.compiler_eligible for relationship in self.relationships
             ),
@@ -393,18 +413,28 @@ class ProviderTravelFrontierAudit:
             compiled=self._compiled_relationships(),
         )
         edges = self._edges(zone_id, names)
-        if any(r.classification == "compiler_eligible_missing_edge" for r in relationships):
+        relationship_classes = {row.classification for row in relationships}
+        if "compiler_eligible_missing_edge" in relationship_classes:
             classification = "provider_rows_uncompiled"
             reason = "stored provider topology is compiler-eligible but a canonical edge is missing"
-        elif any(r.classification == "compiled" for r in relationships):
+        elif "compiled" in relationship_classes:
             classification = "compiled"
             reason = "provider connected-zone evidence compiled into canonical travel"
+        elif relationship_classes & {"blocked_source", "blocked_target"}:
+            classification = "provider_rows_identity_blocked"
+            reason = "structured provider connected-zone rows exist but a canonical endpoint binding is blocked"
+        elif relationship_classes == {"ignored_unstructured"}:
+            classification = "provider_rows_unstructured"
+            reason = "connected-zone rows exist, but none are source-owned structured travel evidence"
         elif relationships:
             classification = "provider_rows_blocked"
             reason = "provider connected-zone rows exist but none currently compile"
+        elif bindings and any(binding.get("source_page_id") is not None for binding in bindings):
+            classification = "provider_page_no_connected_rows"
+            reason = "provider zone page/binding exists but no stored connected-zone row references it"
         elif bindings:
-            classification = "no_structured_provider_topology"
-            reason = "provider zone binding/page exists but no connected-zone rows reference it"
+            classification = "provider_zone_missing_source_page"
+            reason = "provider zone binding exists, but its provider entity has no stored source page"
         elif edges:
             classification = "non_provider_topology_only"
             reason = "canonical travel exists, but no provider-zone binding is associated with this zone"
@@ -449,11 +479,24 @@ def provider_travel_frontier_text(
             f"  canonical: {zone.canonical_zone_name or '(unresolved)'}"
             + (f" [{zone.canonical_zone_entity_id}]" if zone.canonical_zone_entity_id is not None else ""),
             f"  reason: {zone.reason}",
-            f"  provider bindings / connected rows: {len(zone.bindings)} / {len(zone.relationships)}",
+            f"  provider bindings / source pages / connected rows: "
+            f"{len(zone.bindings)} / {zone.provider_source_page_count} / {len(zone.relationships)}",
             f"  canonical outgoing / incoming: {zone.outgoing_count} / {zone.incoming_count}",
         ]
+        if zone.binding_status_counts:
+            lines.append(
+                "  binding states: "
+                + ", ".join(f"{key}={value}" for key, value in zone.binding_status_counts.items())
+            )
+        if zone.relationship_status_counts:
+            lines.append(
+                "  relationship decisions: "
+                + ", ".join(
+                    f"{key}={value}" for key, value in zone.relationship_status_counts.items()
+                )
+            )
         for binding in zone.bindings:
-            page = f" | page={binding['source_key']}" if binding["source_key"] else ""
+            page = f" | page={binding['source_key']}" if binding["source_key"] else " | page=(missing)"
             lines.append(
                 f"    binding {binding['provider_zone_name']} [{binding['provider_zone_entity_id']}] "
                 f"{binding['status']}: {binding['reason']}{page}"

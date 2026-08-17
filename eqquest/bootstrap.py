@@ -15,6 +15,7 @@ from .profile_availability_ui import install_profile_availability_ui
 from .quest_progress_zone_context_ui import install_quest_progress_zone_context_ui
 from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime_policy import install_runtime_policy
+from .session_geography_ui import install_session_geography_ui
 from .target_intelligence_ui import install_target_intelligence_ui
 from .target_known_drops_live_ui import install_target_known_drops_ui
 from .target_personal_sightings_live_ui import install_target_personal_sightings_ui
@@ -42,6 +43,7 @@ def install_application_layers() -> None:
     install_activity_pathways_ui()
     install_activity_pathway_zone_context_ui()
     install_quest_progress_zone_context_ui()
+    install_session_geography_ui()
     install_activity_pathway_dismiss_ui()
     install_activity_clusters_ui()
     install_zone_opportunities_ui()

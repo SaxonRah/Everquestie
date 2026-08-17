@@ -170,7 +170,7 @@ class ZoneCoverageCatalog:
         rows = self.db.conn.execute(
             """
             SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,
-                   source_kind,x,y
+                   source_kind,label_id,x,y
             FROM zone_travel_edges
             WHERE status='linked' AND target_zone_entity_id IS NOT NULL
             """
@@ -183,6 +183,7 @@ class ZoneCoverageCatalog:
                 str(row["source_kind"] or ""),
                 row["x"],
                 row["y"],
+                row["label_id"],
             ):
                 # Source-owned travel coordinates belong only to the stored edge source.
                 mappable.setdefault(source_id, set()).add(target_id)
@@ -352,7 +353,7 @@ class ZoneCoverageCatalog:
             return 0, 0
         rows = self.db.conn.execute(
             """
-            SELECT source_kind,x,y
+            SELECT source_kind,label_id,x,y
             FROM zone_travel_edges
             WHERE status='linked' AND target_zone_entity_id IS NOT NULL
             """
@@ -362,6 +363,7 @@ class ZoneCoverageCatalog:
                 str(row["source_kind"] or ""),
                 row["x"],
                 row["y"],
+                row["label_id"],
             )
             for row in rows
         )

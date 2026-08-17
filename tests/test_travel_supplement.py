@@ -161,6 +161,21 @@ class TravelSupplementTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "does not match eqclient zone ID"):
             TravelSupplementImporter(self.db).import_manifest(manifest)
+
+        # Endpoint identity validation happens before the derived travel catalog is
+        # created or replaced. A rejected manifest therefore leaves no travel schema
+        # or rows behind unless some other builder step had already created it.
+        table = self.db.conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type='table' AND name='zone_travel_edges'
+            """
+        ).fetchone()
+        self.assertIsNone(table)
+
+        catalog = ZoneTravelCatalog(self.db)
+        self.assertEqual(catalog.shortest_path(alpha, beta), [])
         self.assertEqual(
             self.db.conn.execute(
                 "SELECT COUNT(*) AS n FROM zone_travel_edges WHERE source_kind=?",
@@ -168,7 +183,6 @@ class TravelSupplementTests(unittest.TestCase):
             ).fetchone()["n"],
             0,
         )
-        self.assertEqual(ZoneTravelCatalog(self.db).shortest_path(alpha, beta), [])
 
     def test_bidirectional_is_explicit_not_inferred(self):
         alpha = self._zone("Alpha", 1001)

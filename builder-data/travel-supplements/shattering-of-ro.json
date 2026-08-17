@@ -1,16 +1,17 @@
 {
   "schema_version": 1,
   "source_name": "EverQuestie approved Shattering of Ro travel evidence",
-  "source_version": "2026-08-15",
+  "source_version": "2026-08-17",
   "edges": [
     {
       "source_key": "sor-west-freeport-to-arcstone",
       "source": "West Freeport",
+      "source_eq_zone_id": "383",
       "target": "Arcstone, Shattered Isles",
       "connection_kind": "portal",
       "bidirectional": false,
       "source_url": "https://everquest.fanra.info/wiki/Shattering_of_Ro",
-      "evidence": "Fanra's Shattering of Ro travel section states that Arcstone, Shattered Isles may be entered from West Freeport and requires completion of Partisan of Candlemaker's Workshop.",
+      "evidence": "Fanra's Shattering of Ro travel section states that Arcstone, Shattered Isles may be entered from West Freeport and requires completion of Partisan of Candlemaker's Workshop. The source zone is pinned to current Live West Freeport client zone 383 so the reviewed transition cannot bind the retired same-name Freeport identity.",
       "travel_requirements": [
         {
           "kind": "achievement",

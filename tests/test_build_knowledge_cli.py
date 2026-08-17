@@ -159,7 +159,7 @@ class BuildKnowledgeCliTests(unittest.TestCase):
                 external_namespace="eqclient:zone",
                 merge_by_name=False,
             )
-            db.upsert_entity(
+            beta = db.upsert_entity(
                 kind="zone",
                 name="Beta",
                 external_id="9202",
@@ -173,6 +173,29 @@ class BuildKnowledgeCliTests(unittest.TestCase):
                 external_namespace="eqclient:zone",
                 merge_by_name=False,
             )
+            beta_page = db.upsert_source_page(
+                url="https://everquest.allakhazam.com/db/zone.html?zstrat=beta-frontier",
+                title="Beta :: EverQuest",
+                entity_type="zone",
+                sha256="beta-frontier-sha",
+                plain_text="Beta provider page without Connected Zones rows",
+                raw_html="",
+                source_name="Allakhazam",
+                source_kind="local_mirror",
+                source_key="zone:beta-frontier",
+                source_version="test-capture",
+            )
+            provider_beta = db.upsert_entity(
+                kind="zone",
+                name="Beta",
+                external_id="zone:beta-frontier",
+                external_namespace="allakhazam:zone",
+                source_page_id=beta_page,
+                merge_by_name=False,
+            )
+            reconcile = ProviderZoneReconciliationCatalog(db).reconcile()
+            self.assertEqual(reconcile.candidate, 1)
+            self.assertNotEqual(beta, provider_beta)
             ZoneTravelCatalog(db).add_provider_connection(
                 alpha,
                 gamma,
@@ -182,12 +205,59 @@ class BuildKnowledgeCliTests(unittest.TestCase):
         finally:
             db.close()
 
+        before = path.read_bytes()
         summary = audit_snapshot_routes(
             path,
             (("Alpha", "Beta"), ("Alpha", "Gamma"), ("Missing Zone", "Gamma")),
         )
-        self.assertEqual(summary.status_counts, (("disconnected", 1), ("reachable", 1), ("source_unresolved", 1)))
+        self.assertEqual(
+            summary.status_counts,
+            (("disconnected", 1), ("reachable", 1), ("source_unresolved", 1)),
+        )
         self.assertEqual(route_failure_frontier_zones(summary), ("Alpha", "Beta"))
+
+        frontier = audit_snapshot_provider_travel_frontier(
+            path,
+            route_failure_frontier_zones(summary),
+        )
+        self.assertEqual(
+            tuple((zone.canonical_zone_name, zone.classification) for zone in frontier.zones),
+            (("Alpha", "no_provider_zone"), ("Beta", "provider_page_no_connected_rows")),
+        )
+
+        output = write_route_report(
+            self.root / "reports" / "combined-route-failures.json",
+            summary,
+            frontier_summary=frontier,
+        )
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["provider_frontier_status_counts"],
+            {"no_provider_zone": 1, "provider_page_no_connected_rows": 1},
+        )
+        disconnected, reachable, unresolved = payload["results"]
+        self.assertEqual(disconnected["status"], "disconnected")
+        self.assertEqual(
+            disconnected["source_provider_frontier"]["classification"],
+            "no_provider_zone",
+        )
+        self.assertEqual(
+            disconnected["target_provider_frontier"]["classification"],
+            "provider_page_no_connected_rows",
+        )
+        self.assertEqual(
+            disconnected["target_provider_frontier"]["provider_source_page_count"],
+            1,
+        )
+        self.assertEqual(
+            disconnected["target_provider_frontier"]["relationship_count"],
+            0,
+        )
+        self.assertNotIn("source_provider_frontier", reachable)
+        self.assertNotIn("target_provider_frontier", reachable)
+        self.assertNotIn("source_provider_frontier", unresolved)
+        self.assertNotIn("target_provider_frontier", unresolved)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_provider_frontier_report_is_machine_readable_and_read_only(self):
         path = self.root / "provider-frontier.sqlite3"
@@ -313,12 +383,20 @@ class BuildKnowledgeCliTests(unittest.TestCase):
             db.close()
 
         summary = audit_snapshot_routes(path, (("Alpha", "Beta"),))
-        output = write_route_report(self.root / "reports" / "routes.json", summary)
+        empty_frontier = audit_snapshot_provider_travel_frontier(path, ())
+        output = write_route_report(
+            self.root / "reports" / "routes.json",
+            summary,
+            frontier_summary=empty_frontier,
+        )
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["accepted"], 1)
         self.assertEqual(payload["failed"], 0)
         self.assertEqual(payload["results"][0]["status"], "reachable")
+        self.assertNotIn("provider_frontier_status_counts", payload)
+        self.assertNotIn("source_provider_frontier", payload["results"][0])
+        self.assertNotIn("target_provider_frontier", payload["results"][0])
 
 
 if __name__ == "__main__":

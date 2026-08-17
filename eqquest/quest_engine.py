@@ -131,6 +131,15 @@ class QuestEngine:
         if expected == "npc_say" and rule.get("verified_completion_signal") is not True:
             return False, 0
 
+        # Generic EQ kill lines describe a mob being slain and name the killer. They are
+        # valuable observation history, but "Mob was slain by OtherPlayer" does not prove
+        # this player received quest credit. Only an explicitly parsed killer of "You"
+        # may mutate tracked kill progress. Group/raid/shared task credit is intentionally
+        # not inferred from another character's kill line; the player can use the explicit
+        # manual-completion action when the log cannot prove credit.
+        if expected == "kill" and str(event.target or "").strip().casefold() != "you":
+            return False, 0
+
         matched, increment = self._match(rule, event)
         if not matched:
             return False, 0

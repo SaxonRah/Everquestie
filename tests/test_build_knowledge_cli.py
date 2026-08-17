@@ -222,7 +222,7 @@ class BuildKnowledgeCliTests(unittest.TestCase):
         )
         self.assertEqual(
             tuple((zone.canonical_zone_name, zone.classification) for zone in frontier.zones),
-            (("Alpha", "no_provider_zone"), ("Beta", "provider_page_no_connected_rows")),
+            (("Alpha", "non_provider_topology_only"), ("Beta", "provider_page_no_connected_rows")),
         )
 
         output = write_route_report(
@@ -233,13 +233,13 @@ class BuildKnowledgeCliTests(unittest.TestCase):
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(
             payload["provider_frontier_status_counts"],
-            {"no_provider_zone": 1, "provider_page_no_connected_rows": 1},
+            {"non_provider_topology_only": 1, "provider_page_no_connected_rows": 1},
         )
         disconnected, reachable, unresolved = payload["results"]
         self.assertEqual(disconnected["status"], "disconnected")
         self.assertEqual(
             disconnected["source_provider_frontier"]["classification"],
-            "no_provider_zone",
+            "non_provider_topology_only",
         )
         self.assertEqual(
             disconnected["target_provider_frontier"]["classification"],

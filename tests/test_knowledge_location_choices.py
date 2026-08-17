@@ -32,6 +32,7 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
         self.db = Database(self.root / "working.sqlite3")
+        self._npc_pages: dict[int, int] = {}
         self.stone = self.db.upsert_entity(
             kind="zone",
             name="The Stone Hive",
@@ -72,6 +73,7 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
             source_page_id=page,
             source_url=f"https://everquest.allakhazam.com/db/npc.html?id={external_id}",
         )
+        self._npc_pages[npc] = page
         self.db.add_location(
             npc,
             zone_entity_id=self.stone,
@@ -93,6 +95,7 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
             x=40.0,
             z=5.0,
             label="second spawn",
+            source_page_id=self._npc_pages[npc],
             evidence="second point",
         )
         result = knowledge_map_choices(self.db, npc, "The Stone Hive")
@@ -314,6 +317,7 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
             x=40.0,
             z=5.0,
             label="second spawn",
+            source_page_id=self._npc_pages[npc],
             evidence="second point",
         )
         choices = knowledge_map_choices(self.db, npc, "The Stone Hive").choices
@@ -358,6 +362,7 @@ class KnowledgeLocationChoiceTests(unittest.TestCase):
             x=40.0,
             z=5.0,
             label="second spawn",
+            source_page_id=self._npc_pages[npc],
             evidence="second point",
         )
         install_runtime_policy()

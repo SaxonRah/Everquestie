@@ -153,7 +153,7 @@ class ZoneActionabilityTests(unittest.TestCase):
         text = zone_actionability_text(self.db, "Zone A")
         self.assertIn("Route map actionability:", text)
         self.assertIn("Mappable exits: 1/2 usable canonical route direction(s)", text)
-        self.assertIn("→ Zone B | zone line | map target available | Y=34 X=12 Z=5", text)
+        self.assertIn("→ Zone B | travel | map target available | Y=34 X=12 Z=5", text)
         self.assertIn("source: Z Located test", text)
         self.assertIn("2 evidence rows", text)
         self.assertIn("→ Zone C | zone line | no source-side coordinate", text)

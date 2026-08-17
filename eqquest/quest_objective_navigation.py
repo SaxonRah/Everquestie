@@ -105,6 +105,11 @@ def _fallback_relation_label(step_rule: dict, description: str) -> tuple[str, st
 
 
 def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_TargetSpec, ...]:
+    # An actionable target claim must originate in a reviewed compiled step.  Exact
+    # canonical IDs are useful identity evidence, but they do not replace provenance.
+    if step["source_page_id"] is None:
+        return ()
+
     context = build_world_entity_context_for_id(db, int(quest_id))
     if context is None:
         return ()
@@ -125,6 +130,7 @@ def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_T
             fact.direction != "out"
             or fact.other_kind != "npc"
             or fact.relation not in _OBJECTIVE_NPC_RELATIONS
+            or fact.source_page_id is None
         ):
             continue
         spec = _TargetSpec(
@@ -143,16 +149,12 @@ def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_T
 
     # A loot objective may identify the item in the match rule while the exact source
     # creature is represented by item -> NPC : drops_from. Restrict this fallback to
-    # quest-derived evidence from the same source page when available so a global item
-    # drop table cannot silently redefine the active quest objective.
+    # quest-derived evidence from the same source page so a global item drop table cannot
+    # silently redefine the active quest objective.
     if not specs and rule.get("item_entity_id") is not None:
         item_id = int(rule["item_entity_id"])
         item_context = build_world_entity_context_for_id(db, item_id)
-        step_page_id = (
-            int(step["source_page_id"])
-            if step["source_page_id"] is not None
-            else None
-        )
+        step_page_id = int(step["source_page_id"])
         if item_context is not None:
             item_specs: list[_TargetSpec] = []
             for fact in item_context.relationships:
@@ -164,7 +166,7 @@ def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_T
                     continue
                 if str(fact.data.get("derived_from") or "") != "quest_objective":
                     continue
-                if step_page_id is not None and fact.source_page_id != step_page_id:
+                if fact.source_page_id != step_page_id:
                     continue
                 item_specs.append(
                     _TargetSpec(
@@ -177,8 +179,9 @@ def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_T
                 )
             specs = item_specs
 
-    # Last safe fallback: an explicit canonical NPC entity ID in the compiled step.
-    # This does not infer a target from prose; the importer already resolved identity.
+    # Last safe fallback: an explicit canonical NPC entity ID in the reviewed compiled
+    # step. This does not infer a target from prose; the importer already resolved
+    # identity and the step itself carries the reviewed source boundary.
     if not specs and npc_entity_id is not None:
         entity = db.entity(npc_entity_id)
         if entity is not None and str(entity["kind"] or "") == "npc":
@@ -311,9 +314,10 @@ def tracked_quest_objective_navigation(
     """Project one tracked quest objective into safe Map or Travel actionability.
 
     Progress ownership stays in QuestEngine. This function is a pure read projection
-    over the compiled active step, explicit objective relationships, canonical location
-    evidence and authoritative zone identity. It never guesses an NPC from prose and
-    never turns provider candidate/unresolved coordinates into gameplay targets.
+    over the reviewed compiled active step, explicit source-backed objective
+    relationships, canonical location evidence and authoritative zone identity. It never
+    guesses an NPC from prose, never makes an unsourced step actionable, and never turns
+    provider candidate/unresolved coordinates into gameplay targets.
     """
     quest = db.entity(int(quest_id))
     quest_name = str(quest["name"] or "") if quest is not None else ""
@@ -344,6 +348,21 @@ def tracked_quest_objective_navigation(
 
     order = int(step["step_order"])
     objective = str(step["description"] or "")
+    if step["source_page_id"] is None:
+        return QuestObjectiveNavigationResult(
+            "step_unprovenanced",
+            (
+                f"Structured step {order} has no reviewed source provenance; EverQuestie "
+                "will show its text but will not create Map/Travel actions from it."
+            ),
+            int(quest_id),
+            quest_name,
+            order,
+            objective,
+            None,
+            "",
+        )
+
     zone_text = " ".join(str(current_zone or "").split()).strip()
     if not zone_text:
         return QuestObjectiveNavigationResult(

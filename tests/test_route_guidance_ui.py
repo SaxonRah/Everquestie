@@ -120,7 +120,7 @@ class RouteGuidanceUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone A", 10.0, 20.0, 3.0, "zone line to Zone B")],
+            [("Zone A", 10.0, 20.0, 3.0, "travel to Zone B")],
         )
         self.assertIn("Map next hop", status.value)
         self.assertIn("Brewall", status.value)
@@ -132,7 +132,7 @@ class RouteGuidanceUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone B", 30.0, 40.0, 5.0, "zone line to Zone C")],
+            [("Zone B", 30.0, 40.0, 5.0, "travel to Zone C")],
         )
         self.assertIn("Brewall", status.value)
 

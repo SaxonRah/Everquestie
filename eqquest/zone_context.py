@@ -28,6 +28,8 @@ class ZoneConnection:
     ``direction`` is relative to the requested zone. Coordinates remain attached to
     the source zone of the underlying evidence; this matters for directed edges and
     prevents an incoming portal coordinate from being displayed on the wrong map.
+    ``label_id`` retains the concrete map-label source record when the coordinate came
+    from the map compiler; a source-kind string alone is not coordinate provenance.
     """
 
     edge_id: int
@@ -43,6 +45,7 @@ class ZoneConnection:
     source_version: str
     evidence: str
     coordinate_zone_entity_id: int
+    label_id: int | None
     x: float | None
     y: float | None
     z: float | None
@@ -187,6 +190,7 @@ def _connections_for_zone(db: Database, zone_entity_id: int) -> list[ZoneConnect
                 source_version=str(row["source_version"] or ""),
                 evidence=str(row["evidence"] or ""),
                 coordinate_zone_entity_id=source_id,
+                label_id=(int(row["label_id"]) if row["label_id"] is not None else None),
                 x=(float(row["x"]) if row["x"] is not None else None),
                 y=(float(row["y"]) if row["y"] is not None else None),
                 z=(float(row["z"]) if row["z"] is not None else None),

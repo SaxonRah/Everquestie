@@ -120,6 +120,17 @@ class QuestEngine:
         *,
         current_zone: str | None,
     ) -> tuple[bool, int]:
+        expected = str(rule.get("event", "")).casefold()
+
+        # Legacy Allakhazam interaction objectives used a named NPC's next speech as a
+        # completion surrogate for both "Speak/Hail" and item turn-in steps. EQ logs do
+        # not prove either player interaction merely because that NPC says something:
+        # the line can be ambient dialogue, combat speech, or another player's trigger.
+        # Existing packaged snapshots therefore fail closed. A future compiler may opt
+        # into npc_say only when it records a genuinely reviewed completion signal.
+        if expected == "npc_say" and rule.get("verified_completion_signal") is not True:
+            return False, 0
+
         matched, increment = self._match(rule, event)
         if not matched:
             return False, 0
@@ -128,7 +139,6 @@ class QuestEngine:
         # lives on quest_steps.zone, so qualify only kill objectives against explicit
         # ordered log/session geography. Loot/receive-item evidence is portable once
         # possessed and intentionally remains zone-independent.
-        expected = str(rule.get("event", "")).casefold()
         objective_zone = self._clean_zone(step["zone"])
         if expected == "kill" and objective_zone:
             observed_zone = self._clean_zone(event.zone) or self._clean_zone(current_zone)

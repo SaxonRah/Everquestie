@@ -83,7 +83,7 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         maps.mkdir()
         source_layers = {
             "paineel": [
-                "P -698.0000,-937.0000,12.0000,255,0,0,3,to_The_Ruins_of_Old_Paineel",
+                "P 942.0237,-605.7500,-97.3425,255,0,0,3,to_The_Ruins_of_Old_Paineel",
             ],
             "stonebrunt": [
                 "P -2919.0000,3724.0000,-39.0000,255,0,0,3,to_The_Warrens",

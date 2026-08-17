@@ -1,16 +1,29 @@
 {
   "schema_version": 1,
   "source_name": "EverQuest official Plane of Knowledge city portal evidence",
-  "source_version": "2007-11-30-reviewed-2026-08-15",
+  "source_version": "2007-11-30-reviewed-2026-08-17",
   "edges": [
     {
       "source_key": "pok-west-freeport-city-book",
       "source": "The Plane of Knowledge",
+      "source_eq_zone_id": "202",
       "target": "West Freeport",
+      "target_eq_zone_id": "383",
       "connection_kind": "portal",
       "bidirectional": true,
       "source_url": "https://www.everquest.com/news/imported-eq-enus-50703",
-      "evidence": "EverQuest's official teleportation guide states that Plane of Knowledge book statues in cities teleport players to the Plane of Knowledge and that Plane of Knowledge city stones teleport players back to the named city's book statue. The official Plane of Knowledge portal list explicitly includes West Freeport, supporting travel in both directions."
+      "evidence": "EverQuest's official teleportation guide states that Plane of Knowledge book statues in cities teleport players to the Plane of Knowledge and that Plane of Knowledge city stones teleport players back to the named city's book statue. The official Plane of Knowledge portal list explicitly includes West Freeport, supporting travel in both directions. The current Live West Freeport client identity is pinned to zone 383 so this reviewed edge cannot bind a retired same-name Freeport identity."
+    },
+    {
+      "source_key": "pok-toxxulia-city-book",
+      "source": "The Plane of Knowledge",
+      "source_eq_zone_id": "202",
+      "target": "Toxxulia Forest",
+      "target_eq_zone_id": "414",
+      "connection_kind": "portal",
+      "bidirectional": true,
+      "source_url": "https://www.everquest.com/news/imported-eq-enus-50703",
+      "evidence": "EverQuest's official teleportation guide states that Plane of Knowledge book statues in Norrath and Luclin teleport players to the Plane of Knowledge and that Plane of Knowledge city stones teleport players back to the named book statue. Its portal list explicitly includes Toxxula Forest, supporting travel in both directions. The current Live Toxxulia Forest client identity is pinned to zone 414 so this reviewed edge cannot bind the retired same-name tox identity."
     }
   ]
 }

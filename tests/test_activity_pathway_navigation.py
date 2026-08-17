@@ -141,6 +141,89 @@ class ActivityPathwayNavigationTests(unittest.TestCase):
         self.assertEqual(result.contact_kind, "turn-in NPC")
         self.assertEqual(result.map_choices[0].location_entity_id, turnin)
 
+    def test_unproven_starter_cannot_outrank_reviewed_turn_in_contact(self):
+        quest, page = self._quest("Mixed Contact Priority")
+        rumored_starter = self._npc(
+            "Rumored Starter", "npc:rumored-starter", self.current_zone, 8.0, 9.0
+        )
+        reviewed_turnin = self._npc(
+            "Reviewed Turnin", "npc:reviewed-turnin", self.current_zone, 18.0, 19.0
+        )
+        self.db.upsert_relationship(
+            quest,
+            rumored_starter,
+            "started_by",
+            evidence="synthetic starter without source provenance",
+        )
+        self.db.upsert_relationship(
+            quest,
+            reviewed_turnin,
+            "objective_turn_in_to",
+            source_page_id=page,
+            evidence="Give the item to Reviewed Turnin.",
+        )
+
+        result = pathway_contact_navigation(self.db, quest, "Current Test Zone")
+
+        self.assertEqual(result.status, "map_ready")
+        self.assertEqual(result.contact_kind, "turn-in NPC")
+        self.assertEqual(
+            tuple(choice.location_entity_id for choice in result.map_choices),
+            (reviewed_turnin,),
+        )
+        self.assertNotIn(
+            rumored_starter,
+            {choice.location_entity_id for choice in result.map_choices},
+        )
+
+    def test_mixed_remote_starters_route_only_reviewed_exact_npc(self):
+        quest, page = self._quest("Mixed Remote Starters")
+        reviewed = self._npc(
+            "Reviewed Remote Starter", "npc:reviewed-remote", self.remote_zone, 1.0, 2.0
+        )
+        rumored = self._npc(
+            "Rumored Remote Starter", "npc:rumored-remote", self.remote_zone, 3.0, 4.0
+        )
+        self.db.upsert_relationship(
+            quest,
+            reviewed,
+            "started_by",
+            source_page_id=page,
+            evidence="Quest Started By: Reviewed Remote Starter",
+        )
+        self.db.upsert_relationship(
+            quest,
+            rumored,
+            "started_by",
+            evidence="synthetic remote starter without source provenance",
+        )
+
+        result = pathway_contact_navigation(self.db, quest, "Current Test Zone")
+
+        self.assertEqual(result.status, "route_ready")
+        self.assertEqual(result.contact_kind, "quest starter")
+        self.assertEqual(len(result.route_choices), 1)
+        labels = result.route_choices[0].target_labels
+        self.assertTrue(any("Reviewed Remote Starter" in label for label in labels))
+        self.assertFalse(any("Rumored Remote Starter" in label for label in labels))
+
+    def test_only_unproven_contact_relationships_are_not_actionable(self):
+        quest, _page = self._quest("Unproven Contacts")
+        rumored = self._npc("Rumored Starter", "npc:only-rumored", self.current_zone, 5.0, 6.0)
+        self.db.upsert_relationship(
+            quest,
+            rumored,
+            "started_by",
+            evidence="synthetic starter without source provenance",
+        )
+
+        result = pathway_contact_navigation(self.db, quest, "Current Test Zone")
+
+        self.assertEqual(result.status, "no_contact_location")
+        self.assertFalse(result.map_ready)
+        self.assertFalse(result.route_ready)
+        self.assertIn("reviewed quest starter or turn-in NPC", result.reason)
+
     def test_other_objective_actor_is_not_substituted_for_quest_contact(self):
         quest, page = self._quest()
         target = self._npc("Quest Target", "npc:target", self.current_zone, 7.0, 8.0)

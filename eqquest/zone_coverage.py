@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from .db import Database
+from .travel_coordinate_actionability import travel_coordinate_source_owns_point
 
 
 ZONE_COVERAGE_VERSION = "3"
@@ -133,8 +134,10 @@ class ZoneCoverageCatalog:
 
     Travel evidence rows and player-usable route directions are intentionally audited
     separately. One bidirectional evidence row creates two traversable directions, but
-    its stored X/Y belongs only to the row's canonical source zone. A reverse direction
-    becomes mappable only when independent direct evidence supplies a source-owned X/Y.
+    its stored X/Y belongs only to the row's canonical source zone. A route direction
+    becomes mappable only when the coordinate is also owned by a coordinate-bearing
+    source compiler, currently the exact map-label record that supplied the travel point.
+    Merely populating X/Y on generic provider topology never upgrades it to map evidence.
 
     Route connectivity is also measured separately from raw edge counts. Weakly
     connected components expose disconnected navigation islands while strongly
@@ -166,7 +169,8 @@ class ZoneCoverageCatalog:
 
         rows = self.db.conn.execute(
             """
-            SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,x,y
+            SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,
+                   source_kind,x,y
             FROM zone_travel_edges
             WHERE status='linked' AND target_zone_entity_id IS NOT NULL
             """
@@ -175,8 +179,12 @@ class ZoneCoverageCatalog:
             source_id = int(row["source_zone_entity_id"])
             target_id = int(row["target_zone_entity_id"])
             routes.setdefault(source_id, set()).add(target_id)
-            if row["x"] is not None and row["y"] is not None:
-                # Stored travel coordinates always belong to the stored edge source.
+            if travel_coordinate_source_owns_point(
+                str(row["source_kind"] or ""),
+                row["x"],
+                row["y"],
+            ):
+                # Source-owned travel coordinates belong only to the stored edge source.
                 mappable.setdefault(source_id, set()).add(target_id)
             if bool(row["bidirectional"]):
                 # Topology is usable in reverse, but the stored coordinate is not.
@@ -342,16 +350,22 @@ class ZoneCoverageCatalog:
     def _travel_coordinate_counts(self) -> tuple[int, int]:
         if not self._object_exists("zone_travel_edges"):
             return 0, 0
-        row = self.db.conn.execute(
+        rows = self.db.conn.execute(
             """
-            SELECT
-                SUM(CASE WHEN x IS NOT NULL AND y IS NOT NULL THEN 1 ELSE 0 END) AS present,
-                SUM(CASE WHEN x IS NULL OR y IS NULL THEN 1 ELSE 0 END) AS missing
+            SELECT source_kind,x,y
             FROM zone_travel_edges
             WHERE status='linked' AND target_zone_entity_id IS NOT NULL
             """
-        ).fetchone()
-        return int(row["present"] or 0), int(row["missing"] or 0)
+        ).fetchall()
+        present = sum(
+            travel_coordinate_source_owns_point(
+                str(row["source_kind"] or ""),
+                row["x"],
+                row["y"],
+            )
+            for row in rows
+        )
+        return int(present), max(0, len(rows) - int(present))
 
     def summary(self) -> ZoneCoverageSummary:
         rows = self.rows()
@@ -441,13 +455,13 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
         f"linked={summary.travel_edges_linked}, "
         f"ambiguous={summary.travel_edges_ambiguous}, "
         f"unresolved={summary.travel_edges_unresolved}",
-        "Linked travel edge source coordinates: "
+        "Linked travel edge source-owned coordinates: "
         f"present={summary.travel_edges_with_source_coordinates}, "
-        f"missing={summary.travel_edges_without_source_coordinates}",
+        f"missing/unreviewed={summary.travel_edges_without_source_coordinates}",
         "Canonical route directions: "
         f"linked={summary.route_directions_linked}, "
         f"mappable={summary.route_directions_mappable}, "
-        f"without source coordinate={summary.route_directions_unmappable}",
+        f"without reviewed source coordinate={summary.route_directions_unmappable}",
         "Route graph: "
         f"zones={summary.route_zones}/{summary.zones}, "
         f"weak components={summary.route_weak_components}, "
@@ -468,7 +482,7 @@ def zone_coverage_audit_text(db: Database, *, detail_limit: int = 30) -> str:
     add_gap("Zones without confirmed map binding", summary.zones_without_maps)
     add_gap("Zones without confirmed travel", summary.zones_without_travel)
     add_gap(
-        "Zones with confirmed outgoing route but no mappable source coordinate",
+        "Zones with confirmed outgoing route but no mappable reviewed source coordinate",
         summary.zones_with_route_but_no_mappable_exit,
     )
     add_gap(

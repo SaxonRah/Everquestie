@@ -5,8 +5,10 @@ import tempfile
 import unittest
 
 from eqquest.db import Database
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import build_route_guidance, route_guidance_text
 from eqquest.travel_requirements import travel_requirements_for_hop
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -216,23 +218,27 @@ class GatedRouteGuidanceTests(unittest.TestCase):
         source = self._zone("Requirement Source", 8300)
         target = self._zone("Requirement Target", 8301)
 
-        self._edge(
-            source,
-            target,
-            1,
-            kind="portal",
-            source_name="Map pack",
-            source_kind="map_label",
+        maps_root = self.root / "maps"
+        maps_root.mkdir(exist_ok=True)
+        (maps_root / "requirementsource.txt").write_text(
+            "P -123,-456,7,255,0,0,2,Portal_to_Requirement_Target\n",
+            encoding="utf-8",
         )
-        self.db.conn.execute(
+        maps = MapCatalog(self.db)
+        maps.index_root(maps_root, source_name="Map pack", source_version="test-v1")
+        ZoneMapCatalog(self.db).reconcile(source_name="Map pack")
+        maps.reconcile_all(force=True)
+        map_stats = ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Map pack")
+        self.assertEqual(map_stats.linked, 1)
+        map_edge = self.db.conn.execute(
             """
-            UPDATE zone_travel_edges
-            SET x=123.0,y=456.0,z=7.0
+            SELECT label_id FROM zone_travel_edges
             WHERE source_kind='map_label' AND source_zone_entity_id=? AND target_zone_entity_id=?
             """,
             (source, target),
-        )
-        self.db.conn.commit()
+        ).fetchone()
+        self.assertIsNotNone(map_edge)
+        self.assertIsNotNone(map_edge["label_id"])
 
         self._edge(
             source,
@@ -255,6 +261,7 @@ class GatedRouteGuidanceTests(unittest.TestCase):
         hop = guidance.hops[0]
         self.assertEqual(hop.evidence_source, "Map pack")
         self.assertEqual(hop.source_coordinate, (123.0, 456.0, 7.0))
+        self.assertIsNotNone(hop.coordinate_source_record_id)
         self.assertEqual(len(hop.requirements), 1)
         self.assertEqual(hop.requirements[0].source_names, ("Allakhazam",))
 

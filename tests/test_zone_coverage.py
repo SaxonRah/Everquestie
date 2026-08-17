@@ -64,6 +64,29 @@ class ZoneCoverageTests(unittest.TestCase):
         )
         return stone, mesa, future
 
+    def _compile_map_travel(
+        self,
+        filename: str,
+        label: str,
+        *,
+        source_name: str = "Coverage Map Fixture",
+        coordinate: tuple[float, float, float] = (-10.0, -20.0, 3.0),
+    ) -> ZoneTravelCatalog:
+        maps_root = self.root / "maps"
+        maps_root.mkdir(exist_ok=True)
+        x, y, z = coordinate
+        (maps_root / filename).write_text(
+            f"P {x:g},{y:g},{z:g},255,0,0,2,{label}\n",
+            encoding="utf-8",
+        )
+        maps = MapCatalog(self.db)
+        maps.index_root(maps_root, source_name=source_name, source_version="1")
+        ZoneMapCatalog(self.db).reconcile(source_name=source_name)
+        maps.reconcile_all(force=True)
+        catalog = ZoneTravelCatalog(self.db)
+        catalog.reconcile_from_maps(source_name=source_name)
+        return catalog
+
     def test_summary_projects_identity_map_and_travel_coverage(self):
         stone, mesa, future = self._zones()
         MapCatalog(self.db)
@@ -121,24 +144,33 @@ class ZoneCoverageTests(unittest.TestCase):
 
     def test_bidirectional_route_counts_two_directions_but_only_source_side_coordinate(self):
         stone, mesa, future = self._zones()
-        catalog = ZoneTravelCatalog(self.db)
-        catalog.add_provider_connection(
-            stone,
-            mesa,
-            connection_kind="zone_line",
-            bidirectional=True,
-            source_name="Two Way Map Fixture",
-            source_kind="map_label",
-            source_key="stone-mesa-two-way",
-            evidence="one coordinate-owning stored row usable both ways",
+        source_name = "Two Way Map Fixture"
+        catalog = self._compile_map_travel(
+            "stonehive.txt",
+            "To_Goru'kar_Mesa",
+            source_name=source_name,
+            coordinate=(-10.0, -20.0, 3.0),
         )
+        edge = self.db.conn.execute(
+            """
+            SELECT id,label_id FROM zone_travel_edges
+            WHERE source_kind='map_label' AND source_zone_entity_id=? AND target_zone_entity_id=?
+            """,
+            (stone, mesa),
+        ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertIsNotNone(edge["label_id"])
+        # The coordinate still belongs only to Stone Hive even when another source
+        # proves this transition is usable in both directions.
         self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='stone-mesa-two-way'"
+            "UPDATE zone_travel_edges SET bidirectional=1 WHERE id=?",
+            (int(edge["id"]),),
         )
         self.db.conn.commit()
 
         first = ZoneCoverageCatalog(self.db).summary()
         self.assertEqual(first.travel_edges_linked, 1)
+        self.assertEqual(first.travel_edges_with_source_coordinates, 1)
         self.assertEqual(first.route_directions_linked, 2)
         self.assertEqual(first.route_directions_mappable, 1)
         self.assertEqual(first.route_directions_unmappable, 1)
@@ -156,20 +188,12 @@ class ZoneCoverageTests(unittest.TestCase):
 
         # Independent reverse map evidence with a Mesa-owned coordinate closes the
         # actionability gap without creating a third canonical route direction.
-        catalog.add_provider_connection(
-            mesa,
-            stone,
-            connection_kind="zone_line",
-            bidirectional=False,
-            source_name="Reverse Map Fixture",
-            source_kind="map_label",
-            source_key="mesa-stone-direct",
-            evidence="independent reverse-side map coordinate",
+        self._compile_map_travel(
+            "gorukarmesa.txt",
+            "To_Stone_Hive",
+            source_name=source_name,
+            coordinate=(-30.0, -40.0, 5.0),
         )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=30,y=40,z=5 WHERE source_key='mesa-stone-direct'"
-        )
-        self.db.conn.commit()
 
         second = ZoneCoverageCatalog(self.db).summary()
         self.assertEqual(second.travel_edges_linked, 2)
@@ -197,6 +221,36 @@ class ZoneCoverageTests(unittest.TestCase):
             "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='provider-with-xy'"
         )
         self.db.conn.commit()
+
+        summary = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(summary.travel_edges_linked, 1)
+        self.assertEqual(summary.travel_edges_with_source_coordinates, 0)
+        self.assertEqual(summary.travel_edges_without_source_coordinates, 1)
+        self.assertEqual(summary.route_directions_linked, 1)
+        self.assertEqual(summary.route_directions_mappable, 0)
+        self.assertEqual(summary.zones_with_route_but_no_mappable_exit, ("Stone Hive",))
+
+    def test_map_label_kind_without_label_record_is_not_counted_as_mappable(self):
+        stone, mesa, future = self._zones()
+        catalog = ZoneTravelCatalog(self.db)
+        catalog.add_provider_connection(
+            stone,
+            mesa,
+            source_name="Spoofed Map Kind",
+            source_kind="map_label",
+            source_key="map-kind-without-record",
+            evidence="topology row merely claims map-label kind",
+        )
+        self.db.conn.execute(
+            "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='map-kind-without-record'"
+        )
+        self.db.conn.commit()
+
+        edge = self.db.conn.execute(
+            "SELECT label_id FROM zone_travel_edges WHERE source_key='map-kind-without-record'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertIsNone(edge["label_id"])
 
         summary = ZoneCoverageCatalog(self.db).summary()
         self.assertEqual(summary.travel_edges_linked, 1)

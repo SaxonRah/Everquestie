@@ -108,7 +108,7 @@ class RouteGuidanceTests(unittest.TestCase):
         self.assertEqual((first.source_entity_id, first.target_entity_id), (self.a, self.b))
         self.assertEqual(first.coordinate_owner_entity_id, self.a)
         self.assertEqual(first.source_coordinate, (10.0, 20.0, 3.0))
-        self.assertEqual(first.map_label, "zone line to Zone B")
+        self.assertEqual(first.map_label, "travel to Zone B")
         self.assertEqual(first.evidence_source, "Brewall")
 
     def test_reverse_bidirectional_hop_never_reuses_opposite_side_coordinate(self):

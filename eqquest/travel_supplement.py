@@ -33,6 +33,8 @@ class _ResolvedEdge:
     evidence: str
     source_url: str
     requirements: tuple[Any, ...]
+    source_eq_zone_id: str = ""
+    target_eq_zone_id: str = ""
 
 
 def _clean(value: Any) -> str:
@@ -49,6 +51,12 @@ class TravelSupplementImporter:
     The importer deliberately reuses EverQuestie's authoritative zone identity policy.
     It never creates zones or aliases, performs fuzzy matching, infers reverse travel,
     or adds topology merely to satisfy a route-acceptance case.
+
+    An approved edge may optionally pin ``source_eq_zone_id`` and/or
+    ``target_eq_zone_id``. The client ID is an additional identity constraint, not an
+    override: the human-readable name must still resolve to, or ambiguously include,
+    that exact client-backed zone. This lets reviewed manifests distinguish real
+    legacy/current duplicate zone identities without guessing between them.
     """
 
     def __init__(self, db):
@@ -74,17 +82,57 @@ class TravelSupplementImporter:
         return payload
 
     @staticmethod
-    def _resolve_zone(index: ZoneIdentityIndex, query: str, *, field: str) -> int:
-        resolution = prefer_eqclient_zone_resolution(index.resolve(query), query)
-        if resolution.status == "ambiguous":
+    def _resolve_zone(
+        index: ZoneIdentityIndex,
+        query: str,
+        *,
+        field: str,
+        eq_zone_id: str = "",
+    ) -> int:
+        name_resolution = prefer_eqclient_zone_resolution(index.resolve(query), query)
+        pinned_id = _clean(eq_zone_id)
+        if not pinned_id:
+            if name_resolution.status == "ambiguous":
+                raise ValueError(
+                    f"{field} {query!r} matches {len(name_resolution.candidates)} canonical zones"
+                )
+            if name_resolution.status != "linked" or name_resolution.entity_id is None:
+                raise ValueError(
+                    f"{field} {query!r} has no authoritative canonical zone identity"
+                )
+            return int(name_resolution.entity_id)
+
+        id_resolution = index.resolve(pinned_id)
+        if (
+            id_resolution.status != "linked"
+            or id_resolution.identity is None
+            or id_resolution.entity_id is None
+            or pinned_id not in id_resolution.identity.client_zone_ids
+        ):
             raise ValueError(
-                f"{field} {query!r} matches {len(resolution.candidates)} canonical zones"
+                f"{field} eqclient zone ID {pinned_id!r} has no unique EverQuest client zone identity"
             )
-        if resolution.status != "linked" or resolution.entity_id is None:
+        pinned_entity_id = int(id_resolution.entity_id)
+
+        if name_resolution.status == "linked" and name_resolution.entity_id is not None:
+            if int(name_resolution.entity_id) != pinned_entity_id:
+                raise ValueError(
+                    f"{field} {query!r} does not match eqclient zone ID {pinned_id!r}"
+                )
+            return pinned_entity_id
+
+        if name_resolution.status == "ambiguous":
+            candidate_ids = {int(candidate.entity_id) for candidate in name_resolution.candidates}
+            if pinned_entity_id in candidate_ids:
+                return pinned_entity_id
             raise ValueError(
-                f"{field} {query!r} has no authoritative canonical zone identity"
+                f"{field} {query!r} does not include eqclient zone ID {pinned_id!r} "
+                "among its canonical candidates"
             )
-        return int(resolution.entity_id)
+
+        raise ValueError(
+            f"{field} {query!r} does not match eqclient zone ID {pinned_id!r}"
+        )
 
     def _validated_edges(
         self,
@@ -122,6 +170,8 @@ class TravelSupplementImporter:
 
             source_query = _clean(raw.get("source"))
             target_query = _clean(raw.get("target"))
+            source_eq_zone_id = _clean(raw.get("source_eq_zone_id"))
+            target_eq_zone_id = _clean(raw.get("target_eq_zone_id"))
             source_key = _clean(raw.get("source_key"))
             evidence = _clean(raw.get("evidence"))
             if not source_query or not target_query:
@@ -146,11 +196,13 @@ class TravelSupplementImporter:
                 index,
                 source_query,
                 field=f"edge {position} source",
+                eq_zone_id=source_eq_zone_id,
             )
             target_id = self._resolve_zone(
                 index,
                 target_query,
                 field=f"edge {position} target",
+                eq_zone_id=target_eq_zone_id,
             )
             if source_id == target_id:
                 raise ValueError(
@@ -191,6 +243,8 @@ class TravelSupplementImporter:
                     evidence=evidence,
                     source_url=_clean(raw.get("source_url")) or default_source_url,
                     requirements=tuple(requirements),
+                    source_eq_zone_id=source_eq_zone_id,
+                    target_eq_zone_id=target_eq_zone_id,
                 )
             )
 
@@ -224,6 +278,10 @@ class TravelSupplementImporter:
                 }
                 if edge.source_url:
                     data["source_url"] = edge.source_url
+                if edge.source_eq_zone_id:
+                    data["source_eq_zone_id"] = edge.source_eq_zone_id
+                if edge.target_eq_zone_id:
+                    data["target_eq_zone_id"] = edge.target_eq_zone_id
 
                 catalog.add_provider_connection(
                     edge.source_zone_entity_id,

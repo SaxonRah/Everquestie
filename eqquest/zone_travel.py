@@ -13,7 +13,7 @@ from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
-ZONE_TRAVEL_CATALOG_VERSION = "3"
+ZONE_TRAVEL_CATALOG_VERSION = "4"
 
 # Keep map-derived travel parsing deliberately explicit. These spellings all contain
 # a direction/zone-line/portal/exit/connection marker supplied by the map author; a
@@ -54,6 +54,13 @@ _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"^(.+?)\s+(?:zone\s*line|zoneline|zl|z/l)$", re.I),
     ),
 )
+
+# Some trusted map authors append a narrow interaction hint after an otherwise exact
+# travel destination (for example Brewall's ``to_The_Plane_of_Knowledge_(Click_Book)``).
+# These hints describe how to use the already-explicit travel point; they are not part
+# of zone identity. Keep the whitelist deliberately small so arbitrary parentheticals
+# remain identity text and can still fail closed.
+_TRAVEL_ACTION_SUFFIX = re.compile(r"\s*\((?:click|click\s+book)\)\s*$", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,13 +151,18 @@ class ZoneTravelCatalog:
             SELECT 1 FROM sqlite_master
             WHERE type IN ('table','view') AND name='zone_travel_edges'
             LIMIT 1
-            """
+            """,
         ).fetchone() is not None
 
     @staticmethod
     def _human_text(value: str) -> str:
         text = (value or "").replace("_", " ").replace("->", " to ").replace("=>", " to ")
         return " ".join(text.strip(" \t\r\n.-:=><").split())
+
+    @classmethod
+    def _travel_destination_text(cls, value: str) -> str:
+        text = cls._human_text(value)
+        return _TRAVEL_ACTION_SUFFIX.sub("", text).strip()
 
     @classmethod
     def _travel_candidate(cls, label: str) -> tuple[str, str] | None:
@@ -161,7 +173,7 @@ class ZoneTravelCatalog:
             match = pattern.match(text)
             if not match:
                 continue
-            destination = cls._human_text(match.group(1))
+            destination = cls._travel_destination_text(match.group(1))
             if destination:
                 return kind, destination
         return None

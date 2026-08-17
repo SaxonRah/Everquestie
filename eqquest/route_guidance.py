@@ -23,6 +23,7 @@ class RouteHopGuidance:
     evidence: str
     coordinate_owner_entity_id: int | None
     coordinate_owner_name: str
+    coordinate_source_record_id: int | None
     stored_x: float | None
     stored_y: float | None
     stored_z: float | None
@@ -70,8 +71,9 @@ def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
     Direction ownership is the primary invariant: any direct source→target evidence
     outranks reverse use of a bidirectional target→source row. Within the same
     direction rank, prefer a row whose coordinate evidence is independently
-    source-owned by the map-label compiler. Merely having X/Y columns populated on a
-    provider/curated topology row never makes that edge a map waypoint.
+    source-owned by the map-label compiler and retains its concrete label record.
+    Merely having X/Y columns populated—or merely claiming ``source_kind=map_label``—
+    never makes a provider/curated topology row a map waypoint.
 
     Travel requirements are deliberately aggregated separately from *all* eligible
     evidence rows, so choosing a coordinate-rich map row here cannot hide a gate or
@@ -101,6 +103,7 @@ def _best_guidance_edge_for_hop(db: Database, source_id: int, target_id: int):
             str(row["source_kind"] or ""),
             row["x"],
             row["y"],
+            row["label_id"],
         )
         return (
             int(row["reverse_rank"]),
@@ -134,6 +137,7 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
             evidence="",
             coordinate_owner_entity_id=None,
             coordinate_owner_name="",
+            coordinate_source_record_id=None,
             stored_x=None,
             stored_y=None,
             stored_z=None,
@@ -146,6 +150,7 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
         str(edge["source_kind"] or ""),
         edge["x"],
         edge["y"],
+        edge["label_id"],
     )
     return RouteHopGuidance(
         source_entity_id=source_id,
@@ -161,6 +166,11 @@ def _hop_from_edge(db: Database, source_id: int, target_id: int) -> RouteHopGuid
         evidence=str(edge["evidence"] or "").strip(),
         coordinate_owner_entity_id=owner_id,
         coordinate_owner_name=(str(owner["name"]) if owner is not None else f"zone {owner_id}"),
+        coordinate_source_record_id=(
+            int(edge["label_id"])
+            if coordinate_owned and edge["label_id"] is not None
+            else None
+        ),
         stored_x=(float(edge["x"]) if coordinate_owned else None),
         stored_y=(float(edge["y"]) if coordinate_owned else None),
         stored_z=(

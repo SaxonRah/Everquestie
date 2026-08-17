@@ -19,8 +19,9 @@ class TravelFrontierCliTests(unittest.TestCase):
         self.path = self.root / "travel-frontier.sqlite3"
         maps = self.root / "maps"
         maps.mkdir()
-        # Connection to is deliberately explicit enough for the audit but is not
-        # currently production travel syntax. ZL/Portal/Exit forms graduated in v2.
+        # Connection forms graduated into production travel syntax in catalog v3.
+        # This fixture intentionally stops before travel reconciliation so the read-only
+        # audit must report a current compiler candidate whose stored edge is missing.
         (maps / "stonehive.txt").write_text(
             "P 10,20,3,255,0,0,2,Connection_to_Blightfire_Moors\n",
             encoding="utf-8",
@@ -56,18 +57,19 @@ class TravelFrontierCliTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_json_report_exposes_resolvable_explicit_frontier(self):
+    def test_json_report_exposes_current_candidate_missing_stored_edge(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             code = main([str(self.path), "--json", "--examples", "5"])
         self.assertEqual(code, 0)
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["current_explicit_candidates"], 0)
-        self.assertEqual(payload["frontier_explicit"], 1)
-        self.assertEqual(payload["frontier_explicit_linked"], 1)
-        self.assertEqual(payload["frontier_explicit_unresolved"], 0)
-        self.assertEqual(payload["examples"][0]["destination"], "Blightfire Moors")
-        self.assertEqual(payload["examples"][0]["target_zone"], "Blightfire Moors")
+        self.assertEqual(payload["current_explicit_candidates"], 1)
+        self.assertEqual(payload["current_explicit_linked"], 1)
+        self.assertEqual(payload["current_explicit_unresolved"], 0)
+        self.assertEqual(payload["current_explicit_missing_stored_edge"], 1)
+        self.assertEqual(payload["frontier_explicit"], 0)
+        self.assertEqual(payload["frontier_explicit_linked"], 0)
+        self.assertEqual(payload["examples"], [])
 
     def test_human_report_is_readable(self):
         stdout = io.StringIO()
@@ -76,9 +78,10 @@ class TravelFrontierCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         text = stdout.getvalue()
         self.assertIn("EverQuestie travel frontier audit", text)
-        self.assertIn("additional explicit travel spellings: 1", text)
-        self.assertIn("Connection to Blightfire Moors", text)
-        self.assertIn("Good's Maps", text)
+        self.assertIn("explicit candidates: 1", text)
+        self.assertIn("explicit candidates missing stored edge: 1", text)
+        self.assertIn("additional explicit travel spellings: 0", text)
+        self.assertNotIn("[unsupported_explicit]", text)
 
 
 if __name__ == "__main__":

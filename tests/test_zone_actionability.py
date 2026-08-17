@@ -7,9 +7,11 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance_ui import RouteGuidanceFrame
 from eqquest.runtime import RuntimeDatabase
 from eqquest.zone_actionability import build_zone_actionability, zone_actionability_text
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -28,6 +30,8 @@ class ZoneActionabilityTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
+        self.maps = self.root / "maps"
+        self.maps.mkdir()
         self.db = Database(self.root / "working.sqlite3")
         self.a = self.db.upsert_entity(
             kind="zone",
@@ -35,6 +39,7 @@ class ZoneActionabilityTests(unittest.TestCase):
             external_id="3001",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonea"},
         )
         self.b = self.db.upsert_entity(
             kind="zone",
@@ -42,6 +47,7 @@ class ZoneActionabilityTests(unittest.TestCase):
             external_id="3002",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zoneb"},
         )
         self.c = self.db.upsert_entity(
             kind="zone",
@@ -59,9 +65,7 @@ class ZoneActionabilityTests(unittest.TestCase):
         )
         catalog = ZoneTravelCatalog(self.db)
 
-        # Two direct statements describe A→B. Only the map-label row owns an exact
-        # coordinate, so it must represent the mappable canonical route direction even
-        # though its source sorts later than the generic topology row.
+        # Generic topology proves A→B but does not supply a map coordinate.
         catalog.add_provider_connection(
             self.a,
             self.b,
@@ -72,23 +76,9 @@ class ZoneActionabilityTests(unittest.TestCase):
             source_key="a-b-missing",
             evidence="direct statement without coordinate",
         )
-        catalog.add_provider_connection(
-            self.a,
-            self.b,
-            connection_kind="portal",
-            bidirectional=False,
-            source_name="Z Located",
-            source_kind="map_label",
-            source_key="a-b-located",
-            evidence="direct map label with source coordinate",
-        )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=12,y=34,z=5 WHERE source_key='a-b-located'"
-        )
 
-        # C→A is explicitly two-way provider topology. A can route back to C, but this
-        # row's manually populated coordinate has no coordinate-owning provenance and
-        # therefore cannot become a Map target in either direction.
+        # C→A is explicitly two-way provider topology. Its manually populated X/Y is
+        # intentionally not a coordinate-owning source and must remain non-actionable.
         catalog.add_provider_connection(
             self.c,
             self.a,
@@ -115,6 +105,18 @@ class ZoneActionabilityTests(unittest.TestCase):
             evidence="one-way incoming topology",
         )
         self.db.conn.commit()
+
+        # Real map-label evidence owns A's exact source-side coordinate for Zone B and
+        # survives builder refresh/finalized snapshot reconstruction.
+        (self.maps / "zonea.txt").write_text(
+            "P -12,-34,5,255,0,0,2,To_Zone_B\n",
+            encoding="utf-8",
+        )
+        maps = MapCatalog(self.db)
+        maps.index_root(self.maps, source_name="Z Located", source_version="test")
+        ZoneMapCatalog(self.db).reconcile(source_name="Z Located")
+        maps.reconcile_all(force=True)
+        ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Z Located")
 
     def tearDown(self):
         self.db.close()
@@ -151,21 +153,18 @@ class ZoneActionabilityTests(unittest.TestCase):
         text = zone_actionability_text(self.db, "Zone A")
         self.assertIn("Route map actionability:", text)
         self.assertIn("Mappable exits: 1/2 usable canonical route direction(s)", text)
-        self.assertIn("→ Zone B | portal | map target available | Y=34 X=12 Z=5", text)
-        self.assertIn("source: Z Located", text)
+        self.assertIn("→ Zone B | zone line | map target available | Y=34 X=12 Z=5", text)
+        self.assertIn("source: Z Located test", text)
         self.assertIn("2 evidence rows", text)
         self.assertIn("→ Zone C | zone line | no source-side coordinate", text)
         self.assertIn("selected topology evidence is stored from the opposite zone", text)
 
         actionability = text.split("Route map actionability:", 1)[1]
         self.assertNotIn("Zone X", actionability)
-        # The base canonical context still preserves the incoming-only evidence.
         self.assertIn("← Zone X", text)
         self.assertIn("incoming only", text)
 
     def test_provider_xy_does_not_create_a_mappable_direct_exit(self):
-        # The C→A provider row has X/Y populated, but C itself must still see that
-        # direct route as topology-only because the provider fact does not own /loc.
         view, status = build_zone_actionability(self.db, "Zone C")
         self.assertEqual(status, "linked")
         self.assertIsNotNone(view)
@@ -179,7 +178,6 @@ class ZoneActionabilityTests(unittest.TestCase):
         view, status = build_zone_actionability(self.db, "Zone X")
         self.assertEqual(status, "linked")
         self.assertEqual(view.usable_route_directions, 1)
-        # X→A is direct but coordinate-less, so it is usable but not mappable.
         self.assertEqual(view.mappable_route_directions, 0)
         self.assertFalse(view.route_directions[0].mappable)
 

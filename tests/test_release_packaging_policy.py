@@ -35,6 +35,12 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         self.assertIn('--fail-unreachable', self.script)
         self.assertIn('Route acceptance failed', self.script)
         self.assertIn('approved_travel_supplements_compiled = $true', self.script)
+        self.assertIn('approved_zone_aliases_compiled = $true', self.script)
+
+    def test_release_compiles_reviewed_zone_aliases_before_finalization(self):
+        self.assertIn('builder-data\\zone-aliases', self.script)
+        self.assertIn('--zone-alias-dir $ApprovedZoneAliasDir', self.script)
+        self.assertIn('approved zone aliases + travel supplements', self.script)
 
 
 if __name__ == "__main__":

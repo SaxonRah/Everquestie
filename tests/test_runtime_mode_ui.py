@@ -6,18 +6,30 @@ from eqquest.runtime_mode_ui import (
     database_mode_text,
     install_runtime_mode_ui,
     profile_capability_text,
+    release_knowledge_inputs_text,
 )
 
 
 class RuntimeModeUiTests(unittest.TestCase):
     @staticmethod
-    def _profile_db(profile_id: str):
+    def _profile_db(profile_id: str, extra_meta: dict[str, str] | None = None):
+        meta = {"world_profile": profile_id}
+        meta.update(extra_meta or {})
         return SimpleNamespace(
             knowledge_writable=False,
             knowledge_path=Path(r"C:\Everquestie\dist\everquestie-knowledge.sqlite3"),
             state_path=Path(r"C:\Users\Player\.eqquest\everquestie-user.sqlite3"),
-            get_meta=lambda key, default="": profile_id if key == "world_profile" else default,
+            get_meta=lambda key, default="": meta.get(key, default),
         )
+
+    @staticmethod
+    def _release_meta() -> dict[str, str]:
+        return {
+            "approved_zone_alias_supplement_count": "1",
+            "approved_zone_alias_count": "1",
+            "approved_travel_supplement_count": "3",
+            "approved_travel_supplement_edge_count": "22",
+        }
 
     def test_packaged_mode_names_both_databases_and_profile(self):
         db = self._profile_db("p99")
@@ -70,6 +82,20 @@ class RuntimeModeUiTests(unittest.TestCase):
         self.assertIn("unrestricted confirmed topology / lifecycle projection", text)
         self.assertIn("not a custom-server ruleset projection", text)
 
+    def test_packaged_release_inputs_report_reviewed_counts(self):
+        text = release_knowledge_inputs_text(self._profile_db("live", self._release_meta()))
+        self.assertIn("Release knowledge inputs:", text)
+        self.assertIn("Reviewed zone aliases: 1 aliases from 1 supplement(s)", text)
+        self.assertIn("Reviewed travel: 22 edges from 3 supplement(s)", text)
+
+    def test_builder_release_inputs_stay_hidden_even_if_counters_exist(self):
+        meta = self._release_meta()
+        db = SimpleNamespace(
+            knowledge_writable=True,
+            get_meta=lambda key, default="": meta.get(key, default),
+        )
+        self.assertEqual(release_knowledge_inputs_text(db), "")
+
     def test_installer_appends_capabilities_to_database_diagnostics(self):
         from eqquest import app as app_module
 
@@ -88,12 +114,14 @@ class RuntimeModeUiTests(unittest.TestCase):
         try:
             app_module.EverQuestieApp = FakeApp
             install_runtime_mode_ui()
-            fake = SimpleNamespace(db=self._profile_db("p99"))
+            fake = SimpleNamespace(db=self._profile_db("p99", self._release_meta()))
             text = app_module.EverQuestieApp._database_diagnostic_text(fake)
             self.assertTrue(text.startswith("BASE DATABASE DIAGNOSTICS"))
             self.assertIn("Server profile capabilities:", text)
             self.assertIn("Classic / P99-style", text)
             self.assertIn("Live-client source facts only", text)
+            self.assertIn("Release knowledge inputs:", text)
+            self.assertIn("Reviewed travel: 22 edges from 3 supplement(s)", text)
         finally:
             app_module.EverQuestieApp = original
 

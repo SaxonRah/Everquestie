@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 from typing import Callable
 
+from .approved_zone_aliases import compile_approved_zone_aliases
 from .db import Database
 from .knowledge_build import (
     KnowledgeBuildReport,
@@ -85,14 +86,18 @@ def stage_builder_with_approved_travel_supplements(
     staged_db: str | Path,
     supplement_dir: str | Path,
     *,
+    zone_alias_dir: str | Path | None = None,
     overwrite: bool = False,
     progress: ProgressCallback = None,
 ) -> tuple[TravelSupplementBuildStats, ...]:
     """Clone a builder DB safely, then compile approved supplements into the clone.
 
     The source is opened read-only and copied with SQLite's backup API so committed WAL
-    content is included without mutating the builder database. The staged file is only
-    published after every approved manifest validates and compiles successfully.
+    content is included without mutating the builder database. If a reviewed zone-alias
+    directory is supplied, identity aliases are compiled first so subsequent travel
+    compilation and finalization can resolve source labels through ordinary canonical
+    identity. The staged file is only published after every requested manifest set
+    validates and compiles successfully.
     """
     source = Path(source_db).expanduser().resolve()
     staged = Path(staged_db).expanduser().resolve()
@@ -120,6 +125,12 @@ def stage_builder_with_approved_travel_supplements(
         source_conn.close()
         source_conn = None
 
+        if zone_alias_dir is not None:
+            compile_approved_zone_aliases(
+                temp,
+                zone_alias_dir,
+                progress=progress,
+            )
         results = compile_approved_travel_supplements(
             temp,
             supplement_dir,
@@ -153,11 +164,12 @@ def build_and_finalize_with_approved_travel_supplements(
     *,
     snapshot_version: str,
     supplement_dir: str | Path,
+    zone_alias_dir: str | Path | None = None,
     registry: KnowledgeProviderRegistry | None = None,
     overwrite: bool = False,
     progress: ProgressCallback = None,
 ) -> KnowledgeBuildReport:
-    """Build providers, compile reviewed supplements, then finalize the snapshot."""
+    """Build providers, compile reviewed identity/travel data, then finalize."""
     report = build_working_knowledge_db(
         working_db,
         invocations,
@@ -165,6 +177,12 @@ def build_and_finalize_with_approved_travel_supplements(
         overwrite=overwrite,
         progress=progress,
     )
+    if zone_alias_dir is not None:
+        compile_approved_zone_aliases(
+            report.working_db,
+            zone_alias_dir,
+            progress=progress,
+        )
     compile_approved_travel_supplements(
         report.working_db,
         supplement_dir,

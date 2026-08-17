@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source_name": "EverQuest official Old Paineel identity evidence",
+  "source_version": "official-pages-reviewed-2026-08-17",
+  "aliases": [
+    {
+      "source_key": "hole-ruins-of-old-paineel",
+      "canonical_name": "The Hole",
+      "eq_zone_id": "39",
+      "alias": "The Ruins of Old Paineel",
+      "source_urls": [
+        "https://www.everquest.com/news/imported-eq-enus-50994",
+        "https://www.everquest.com/news/eq-vaniki-server-faq"
+      ],
+      "evidence": "EverQuest's official Paineel article states that Paineel connects to The Hole and describes the ruined pavilions of Old Paineel as marking the entrance to the underground areas of The Hole. EverQuest's official Vaniki progression FAQ independently names The Ruins of Old Paineel as the zone whose launch-state behavior is preserved. Together these official sources support The Ruins of Old Paineel as a reviewed identity alias for the current client zone The Hole, pinned here to EverQuest client zone ID 39."
+    }
+  ]
+}

@@ -18,6 +18,7 @@ $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
 $RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
 $ApprovedTravelDir = Join-Path $ProjectRoot "builder-data\travel-supplements"
+$ApprovedZoneAliasDir = Join-Path $ProjectRoot "builder-data\zone-aliases"
 
 function Resolve-FromProject([string]$Value, [string]$DefaultValue) {
     $Chosen = $Value
@@ -67,7 +68,7 @@ if (-not (Test-Path $WorkingDb -PathType Leaf)) {
 $ResolvedOutputRoot = Resolve-FromProject $OutputRoot "release"
 $ReleaseDir = Join-Path $ResolvedOutputRoot $VersionSafe
 $StagingRoot = Join-Path (Join-Path $ProjectRoot "build\release") $VersionSafe
-$StagedWorkingDb = Join-Path $StagingRoot "working-with-approved-travel.sqlite3"
+$StagedWorkingDb = Join-Path $StagingRoot "working-with-approved-data.sqlite3"
 $Snapshot = Join-Path $StagingRoot $KnowledgeName
 
 if (Test-Path $ReleaseDir) {
@@ -91,6 +92,9 @@ foreach ($RequiredTool in @($StageTool, $FinalizeTool, $RouteAuditTool, $Windows
 if (-not (Test-Path $ApprovedTravelDir -PathType Container)) {
     throw "Approved travel supplement directory was not found: $ApprovedTravelDir"
 }
+if (-not (Test-Path $ApprovedZoneAliasDir -PathType Container)) {
+    throw "Approved zone alias directory was not found: $ApprovedZoneAliasDir"
+}
 
 Write-Host "=== EverQuestie release $Version ==="
 Write-Host "Builder DB: $WorkingDb"
@@ -98,11 +102,12 @@ Write-Host "Release output: $ReleaseDir"
 Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
-Write-Host "[1/6] Staging builder DB and compiling approved travel supplements..."
+Write-Host "[1/6] Staging builder DB and compiling approved zone aliases + travel supplements..."
 & $PythonCommand $StageTool `
     --input $WorkingDb `
     --output $StagedWorkingDb `
     --supplement-dir $ApprovedTravelDir `
+    --zone-alias-dir $ApprovedZoneAliasDir `
     --force
 if ($LASTEXITCODE -ne 0) {
     throw "Release staging failed with exit code $LASTEXITCODE."
@@ -213,6 +218,7 @@ $Manifest = [ordered]@{
         bytes = $SnapshotBytes
         embedded = [bool]$OneFile
         immutable_runtime = $true
+        approved_zone_aliases_compiled = $true
         approved_travel_supplements_compiled = $true
         route_acceptance_verified = [bool](-not $SkipRouteAudit)
     }
@@ -250,5 +256,5 @@ else {
 }
 Write-Host "  manifest:   $ManifestPath"
 Write-Host "  archive:    $Archive"
-Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved supplements"
+Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved identity/travel supplements"
 Write-Host "  user DB:    NOT included; created/preserved separately on each player machine"

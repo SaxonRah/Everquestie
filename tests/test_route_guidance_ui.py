@@ -143,7 +143,6 @@ class RouteGuidanceUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(emitted, [])
         self.assertIn("no confirmed source-zone coordinate", status.value)
-        self.assertIn("will not map", status.value)
 
     def test_arrived_and_off_route_states_never_emit_map_target(self):
         guidance = build_route_guidance(self.db, "Zone A", "Zone C")

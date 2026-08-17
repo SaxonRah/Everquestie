@@ -265,7 +265,7 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         try:
             alias = ZoneIdentityIndex(runtime).resolve("The Ruins of Old Paineel")
             self.assertEqual(alias.status, "linked")
-            self.assertEqual(alias.canonical_name, "The Hole")
+            self.assertEqual(alias.zone_name, "The Hole")
             runtime_summary = evaluate_route_acceptance(
                 runtime,
                 DEFAULT_ROUTE_ACCEPTANCE_CASES,

@@ -37,8 +37,9 @@ class PlaneOfKnowledgeCityPortalManifestTests(unittest.TestCase):
             merge_by_name=False,
         )
 
-    def test_official_city_portals_pin_current_duplicate_client_identities(self):
+    def test_official_city_portals_pin_current_client_identities(self):
         pok = self._zone("The Plane of Knowledge", 202)
+        greater_faydark = self._zone("The Greater Faydark", 54)
         legacy_west_freeport = self._zone("West Freeport", 9)
         current_west_freeport = self._zone("West Freeport", 383)
         legacy_toxxulia = self._zone("Toxxulia Forest", 38)
@@ -49,11 +50,19 @@ class PlaneOfKnowledgeCityPortalManifestTests(unittest.TestCase):
             stats.source_name,
             "EverQuest official Plane of Knowledge city portal evidence",
         )
-        self.assertEqual(stats.edges, 2)
-        self.assertEqual(stats.bidirectional_edges, 2)
+        self.assertEqual(stats.edges, 3)
+        self.assertEqual(stats.bidirectional_edges, 3)
         self.assertEqual(stats.requirements, 0)
 
         catalog = ZoneTravelCatalog(self.db)
+        self.assertEqual(
+            catalog.shortest_path(pok, greater_faydark),
+            [pok, greater_faydark],
+        )
+        self.assertEqual(
+            catalog.shortest_path(greater_faydark, pok),
+            [greater_faydark, pok],
+        )
         self.assertEqual(
             catalog.shortest_path(pok, current_west_freeport),
             [pok, current_west_freeport],
@@ -82,8 +91,17 @@ class PlaneOfKnowledgeCityPortalManifestTests(unittest.TestCase):
             ORDER BY source_key
             """
         ).fetchall()
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         by_key = {str(row["source_key"]): row for row in rows}
+
+        faydark = by_key["pok-greater-faydark-city-book"]
+        self.assertEqual(int(faydark["source_zone_entity_id"]), pok)
+        self.assertEqual(int(faydark["target_zone_entity_id"]), greater_faydark)
+        self.assertEqual(int(faydark["bidirectional"]), 1)
+        self.assertIn("Greater Faydark (2)", faydark["evidence"])
+        faydark_data = json.loads(faydark["data_json"])
+        self.assertEqual(faydark_data["source_eq_zone_id"], "202")
+        self.assertEqual(faydark_data["target_eq_zone_id"], "54")
 
         freeport = by_key["pok-west-freeport-city-book"]
         self.assertEqual(int(freeport["source_zone_entity_id"]), pok)

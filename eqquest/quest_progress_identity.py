@@ -100,6 +100,32 @@ def known_entity_zone_names(db, entity_id: int) -> tuple[str, ...]:
     return tuple(names[key] for key in sorted(names))
 
 
+def unique_npc_candidate_in_zone(
+    engine,
+    candidate_ids: tuple[int, ...],
+    zone: str | None,
+) -> int | None:
+    """Resolve duplicate NPC text only through complete provenanced geography.
+
+    Every competing identity must have source-backed geography. Missing geography is
+    unresolved evidence, never evidence that a candidate cannot occur in the observed
+    zone. Exactly one candidate must be known in the requested zone.
+    """
+    observed = engine._clean_zone(zone)
+    if not observed or len(candidate_ids) < 2:
+        return None
+
+    matching: list[int] = []
+    for candidate_id in candidate_ids:
+        zones = known_entity_zone_names(engine.db, candidate_id)
+        if not zones:
+            return None
+        if any(engine._zones_match(candidate_zone, observed) for candidate_zone in zones):
+            matching.append(int(candidate_id))
+
+    return matching[0] if len(matching) == 1 else None
+
+
 def _event_npc_name(event) -> str | None:
     kind = str(event.kind or "").casefold()
     if kind == "kill":
@@ -121,18 +147,7 @@ def _unique_npc_for_objective_zone(
     observed = engine._clean_zone(observed_zone)
     if not objective or not observed or not engine._zones_match(observed, objective):
         return False
-
-    matching: list[int] = []
-    for candidate_id in candidate_ids:
-        zones = known_entity_zone_names(engine.db, candidate_id)
-        # Unknown or unprovenanced geography is unresolved evidence, not evidence that
-        # this identity cannot occur in the objective zone.
-        if not zones:
-            return False
-        if any(engine._zones_match(zone, objective) for zone in zones):
-            matching.append(int(candidate_id))
-
-    return len(matching) == 1 and matching[0] == int(target_entity_id)
+    return unique_npc_candidate_in_zone(engine, candidate_ids, objective) == int(target_entity_id)
 
 
 def _entity_bound_step_is_identified(engine, step, rule: dict, event, current_zone: str | None) -> bool:
@@ -162,16 +177,93 @@ def _entity_bound_step_is_identified(engine, step, rule: dict, event, current_zo
             observed_zone,
         )
 
+    if "quest_entity_id" in rule:
+        candidates = exact_entity_name_candidates(engine.db, "quest", event.text)
+        return (
+            candidates.unique_entity_id is not None
+            and int(candidates.unique_entity_id) == int(rule["quest_entity_id"])
+        )
+
     return True
 
 
+def hail_target_text(text: str | None) -> str | None:
+    """Return the target from the explicit EQ player-say form ``Hail, Name`` only."""
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned.casefold().startswith("hail,"):
+        return None
+    target = cleaned.split(",", 1)[1].strip()
+    return target or None
+
+
+def _strict_reconcile_boundary(engine, quest_id: int, events: list):
+    """Find a replay boundary without letting ambiguous names reset player progress."""
+    quest_id = int(quest_id)
+    zone_contexts = engine._zone_contexts(events)
+
+    # A modern task-assignment line is the strongest boundary, but only when its logged
+    # name uniquely identifies the tracked quest. If a later assignment could refer to
+    # this quest *or* a same-name sibling, do not search behind that ambiguity for an
+    # older assignment. A safe starter hail after the ambiguous assignment may still
+    # establish a lower-confidence boundary.
+    ambiguous_assignment_floor = -1
+    for i in range(len(events) - 1, -1, -1):
+        event = events[i]
+        if str(event.kind or "").casefold() != "task_assigned" or not event.text:
+            continue
+        candidates = exact_entity_name_candidates(engine.db, "quest", event.text)
+        if candidates.unique_entity_id == quest_id:
+            return i, "task assignment", "high"
+        if quest_id in candidates.entity_ids and len(candidates.entity_ids) > 1:
+            ambiguous_assignment_floor = i
+            break
+
+    starters = set(engine._quest_starter_ids(quest_id))
+    if not starters:
+        return None, "none", "none"
+
+    for i in range(len(events) - 1, ambiguous_assignment_floor, -1):
+        event = events[i]
+        if str(event.kind or "").casefold() != "say":
+            continue
+        hail_target = hail_target_text(event.text)
+        if not hail_target:
+            continue
+
+        candidates = exact_entity_name_candidates(engine.db, "npc", hail_target)
+        resolved: int | None = None
+        if candidates.unique_entity_id is not None:
+            resolved = int(candidates.unique_entity_id)
+        elif len(candidates.entity_ids) > 1:
+            resolved = unique_npc_candidate_in_zone(
+                engine,
+                candidates.entity_ids,
+                zone_contexts[i],
+            )
+        if resolved is None or resolved not in starters:
+            continue
+
+        if any(
+            engine._event_matches_any_count_objective(
+                quest_id,
+                events[later_index],
+                current_zone=zone_contexts[later_index],
+            )
+            for later_index in range(i + 1, len(events))
+        ):
+            return i, "starter NPC hail", "medium"
+
+    return None, "none", "none"
+
+
 def install_quest_progress_identity_policy() -> None:
-    """Make canonical entity-bound quest progress fail closed on name ambiguity.
+    """Make quest progress and replay boundaries fail closed on name ambiguity.
 
     `name_matches_entity()` remains useful elsewhere as a permissive "could be this
-    entity" check. Quest progress has a stronger mutation contract: the log text must
-    uniquely establish the bound canonical identity, or provenanced NPC geography must
-    eliminate every competing same-name identity.
+    entity" check. Player-state mutation has a stronger contract: log text must uniquely
+    establish a canonical identity, or complete provenanced NPC geography must eliminate
+    every competing same-name identity. Reconciliation uses the same identity policy
+    before it is allowed to reset and replay progress.
     """
     from .quest_engine import QuestEngine
 
@@ -197,5 +289,9 @@ def install_quest_progress_identity_policy() -> None:
             current_zone=current_zone,
         )
 
+    def _find_reconcile_boundary(self, quest_id, events):
+        return _strict_reconcile_boundary(self, int(quest_id), list(events))
+
     QuestEngine._step_match = _step_match
+    QuestEngine._find_reconcile_boundary = _find_reconcile_boundary
     setattr(QuestEngine, _QUEST_PROGRESS_IDENTITY_MARKER, True)

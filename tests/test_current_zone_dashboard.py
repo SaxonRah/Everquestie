@@ -229,7 +229,7 @@ class CurrentZoneDashboardTests(unittest.TestCase):
         self.assertEqual(choices[self.location_only].category, "NPC")
         self.assertIn("Allakhazam mirror-2026-08-14", choices[self.npc].source_text)
 
-    def test_incoming_edge_is_visible_but_not_counted_as_usable_or_mappable(self):
+    def test_provider_coordinates_do_not_make_topology_edges_mappable(self):
         dashboard, _ = build_current_zone_dashboard(self.db, "The Stone Hive")
         assert dashboard is not None
         self.assertEqual(len(dashboard.exits), 2)
@@ -237,18 +237,19 @@ class CurrentZoneDashboardTests(unittest.TestCase):
         incoming = next(row for row in dashboard.exits if row.zone_entity_id == self.mesa)
 
         self.assertTrue(outgoing.usable)
-        self.assertTrue(outgoing.source_owned_coordinate)
+        self.assertFalse(outgoing.source_owned_coordinate)
         self.assertIn("Exit via zone line", outgoing.role_text)
         self.assertFalse(incoming.usable)
         self.assertFalse(incoming.source_owned_coordinate)
         self.assertIn("Incoming-only portal", incoming.role_text)
         self.assertEqual(dashboard.usable_exit_count, 1)
-        self.assertEqual(dashboard.mappable_exit_count, 1)
+        self.assertEqual(dashboard.mappable_exit_count, 0)
 
         text = current_zone_dashboard_text(self.db, "The Stone Hive")
         self.assertIn("usable exits: 1", text)
-        self.assertIn("mappable exits: 1", text)
+        self.assertIn("mappable exits: 0", text)
         self.assertIn("Incoming-only portal", text)
+        self.assertNotIn("source-side coordinate", text)
         self.assertIn("Evidence-backed entities (not exhaustive):", text)
 
     def test_finalized_runtime_exposes_same_dashboard_read_only(self):

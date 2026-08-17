@@ -15,6 +15,7 @@ $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $KnowledgeName = "everquestie-knowledge.sqlite3"
 $StageTool = Join-Path $PSScriptRoot "stage_release_working_db.py"
 $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
+$ReleaseInputAuditTool = Join-Path $PSScriptRoot "audit_release_inputs.py"
 $RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
 $ApprovedTravelDir = Join-Path $ProjectRoot "builder-data\travel-supplements"
@@ -84,7 +85,7 @@ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
 $PythonCommand = Resolve-Python $PythonExe
-foreach ($RequiredTool in @($StageTool, $FinalizeTool, $RouteAuditTool, $WindowsBuilder)) {
+foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $RouteAuditTool, $WindowsBuilder)) {
     if (-not (Test-Path $RequiredTool -PathType Leaf)) {
         throw "Required release helper was not found: $RequiredTool"
     }
@@ -102,7 +103,7 @@ Write-Host "Release output: $ReleaseDir"
 Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
-Write-Host "[1/6] Staging builder DB and compiling approved zone aliases + travel supplements..."
+Write-Host "[1/7] Staging builder DB and compiling approved zone aliases + travel supplements..."
 & $PythonCommand $StageTool `
     --input $WorkingDb `
     --output $StagedWorkingDb `
@@ -116,7 +117,7 @@ if (-not (Test-Path $StagedWorkingDb -PathType Leaf)) {
     throw "Release staging completed without producing '$StagedWorkingDb'."
 }
 
-Write-Host "[2/6] Finalizing immutable knowledge snapshot..."
+Write-Host "[2/7] Finalizing immutable knowledge snapshot..."
 & $PythonCommand $FinalizeTool --input $StagedWorkingDb --output $Snapshot --version $Version --force
 if ($LASTEXITCODE -ne 0) {
     throw "Knowledge finalization failed with exit code $LASTEXITCODE."
@@ -125,11 +126,17 @@ if (-not (Test-Path $Snapshot -PathType Leaf)) {
     throw "Knowledge finalizer completed without producing '$Snapshot'."
 }
 
+Write-Host "[3/7] Verifying reviewed release inputs against finalized evidence..."
+& $PythonCommand $ReleaseInputAuditTool $Snapshot --require-release-inputs
+if ($LASTEXITCODE -ne 0) {
+    throw "Reviewed release-input audit failed with exit code $LASTEXITCODE. Release packaging aborted."
+}
+
 if ($SkipRouteAudit) {
-    Write-Host "[3/6] Route acceptance gate skipped by -SkipRouteAudit."
+    Write-Host "[4/7] Route acceptance gate skipped by -SkipRouteAudit."
 }
 else {
-    Write-Host "[3/6] Verifying canonical route acceptance..."
+    Write-Host "[4/7] Verifying canonical route acceptance..."
     & $PythonCommand $RouteAuditTool $Snapshot --full-paths --fail-unreachable
     if ($LASTEXITCODE -ne 0) {
         throw "Route acceptance failed with exit code $LASTEXITCODE. Release packaging aborted."
@@ -137,10 +144,10 @@ else {
 }
 
 if ($SkipTests) {
-    Write-Host "[4/6] Regression suite skipped by -SkipTests."
+    Write-Host "[5/7] Regression suite skipped by -SkipTests."
 }
 else {
-    Write-Host "[4/6] Running complete regression suite..."
+    Write-Host "[5/7] Running complete regression suite..."
     Push-Location $ProjectRoot
     try {
         & $PythonCommand -m unittest discover -s tests -v
@@ -153,7 +160,7 @@ else {
     }
 }
 
-Write-Host "[5/6] Building Windows application and attaching knowledge snapshot..."
+Write-Host "[6/7] Building Windows application and attaching knowledge snapshot..."
 $BuilderParams = @{
     KnowledgeDb = $Snapshot
     DistPath = $ReleaseDir
@@ -190,7 +197,7 @@ if (-not $OneFile) {
     }
 }
 
-Write-Host "[6/6] Writing manifest and distributable ZIP..."
+Write-Host "[7/7] Writing manifest and distributable ZIP..."
 $SnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
 $ExecutableHash = (Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
 $SnapshotBytes = (Get-Item $Snapshot).Length
@@ -220,6 +227,7 @@ $Manifest = [ordered]@{
         immutable_runtime = $true
         approved_zone_aliases_compiled = $true
         approved_travel_supplements_compiled = $true
+        reviewed_release_inputs_verified = $true
         route_acceptance_verified = [bool](-not $SkipRouteAudit)
     }
     user_state_included = $false

@@ -37,6 +37,23 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         self.assertIn('approved_travel_supplements_compiled = $true', self.script)
         self.assertIn('approved_zone_aliases_compiled = $true', self.script)
 
+    def test_publishable_release_audits_finalized_reviewed_inputs_before_other_gates(self):
+        self.assertIn('audit_release_inputs.py', self.script)
+        self.assertIn('$ReleaseInputAuditTool $Snapshot --require-release-inputs', self.script)
+        self.assertIn('Reviewed release-input audit failed', self.script)
+        self.assertIn('reviewed_release_inputs_verified = $true', self.script)
+        self.assertNotIn('SkipReleaseInputAudit', self.script)
+
+        finalize = self.script.index('$FinalizeTool --input $StagedWorkingDb')
+        reviewed = self.script.index('$ReleaseInputAuditTool $Snapshot --require-release-inputs')
+        route = self.script.index('$RouteAuditTool $Snapshot --full-paths --fail-unreachable')
+        tests = self.script.index('-m unittest discover -s tests -v')
+        windows = self.script.index('$WindowsBuilder @BuilderParams')
+        self.assertLess(finalize, reviewed)
+        self.assertLess(reviewed, route)
+        self.assertLess(reviewed, tests)
+        self.assertLess(reviewed, windows)
+
     def test_release_compiles_reviewed_zone_aliases_before_finalization(self):
         self.assertIn('builder-data\\zone-aliases', self.script)
         self.assertIn('--zone-alias-dir $ApprovedZoneAliasDir', self.script)

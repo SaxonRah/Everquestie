@@ -47,7 +47,6 @@ class StoneHiveLiveBridgeTests(unittest.TestCase):
         blight = self._zone("Blightfire Moors", 395, map_short_name="moors")
         pok = self._zone("The Plane of Knowledge", 202, map_short_name="poknowledge")
         self._zone("The Greater Faydark", 54)
-        legacy_west_freeport = self._zone("West Freeport", 9)
         current_west_freeport = self._zone("West Freeport", 383)
         self._zone("Toxxulia Forest", 38)
         self._zone("Toxxulia Forest", 414)
@@ -88,8 +87,9 @@ class StoneHiveLiveBridgeTests(unittest.TestCase):
         self.assertEqual(map_travel.ambiguous, 0)
         self.assertEqual(map_travel.unresolved, 0)
 
-        # The city-book manifest is a separate reviewed source. Its exact client IDs
-        # must still select current West Freeport rather than the retired same-name ID.
+        # The city-book manifest is a separate reviewed source. This fixture contains
+        # only the current-Live West Freeport identity; duplicate historical identity
+        # pinning is covered by the dedicated portal-manifest regression.
         TravelSupplementImporter(self.db).import_manifest(PORTAL_MANIFEST)
 
         catalog = ZoneTravelCatalog(self.db)
@@ -101,7 +101,6 @@ class StoneHiveLiveBridgeTests(unittest.TestCase):
             catalog.shortest_path(stone, current_west_freeport),
             [stone, blight, pok, current_west_freeport],
         )
-        self.assertEqual(catalog.shortest_path(stone, legacy_west_freeport), [])
 
         # Preserve the map-owned handoff coordinates for player guidance.
         stone_exit = next(

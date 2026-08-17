@@ -7,6 +7,7 @@ import unittest
 from eqquest.db import Database
 from eqquest.events import Event
 from eqquest.quest_engine import QuestEngine
+from eqquest.quest_interaction_guidance_ui import install_quest_interaction_guidance_ui
 
 
 class QuestInteractionProgressTests(unittest.TestCase):
@@ -150,6 +151,7 @@ class QuestInteractionProgressTests(unittest.TestCase):
                 db.close()
 
     def test_guidance_explains_unverified_interaction_is_not_auto_completed(self):
+        install_quest_interaction_guidance_ui()
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:
@@ -168,6 +170,7 @@ class QuestInteractionProgressTests(unittest.TestCase):
                 db.close()
 
     def test_reviewed_interaction_guidance_does_not_show_automation_warning(self):
+        install_quest_interaction_guidance_ui()
         with tempfile.TemporaryDirectory() as tempdir:
             db = self._db(tempdir)
             try:

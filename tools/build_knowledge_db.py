@@ -186,10 +186,12 @@ def route_report_payload(summary, frontier_summary=None) -> dict:
     Route acceptance remains the owner of route/identity/connectivity status. Provider
     frontier diagnostics are attached only to topology-shaped failures and are copied
     verbatim from ``ProviderTravelZoneDiagnostic.as_dict()``. Successful routes and
-    identity failures therefore retain their existing result shape.
+    identity failures therefore retain their existing result shape. When no topology-
+    shaped failures exist, the entire report remains byte-schema-compatible with the
+    pre-diagnostic payload apart from normal JSON formatting/order.
     """
     payload = summary.as_dict()
-    if frontier_summary is None:
+    if frontier_summary is None or not frontier_summary.zones:
         return payload
 
     frontier_by_entity_id = {

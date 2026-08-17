@@ -35,6 +35,7 @@ class ZoneRouteDirection:
     source_version: str
     evidence: str
     coordinate_owner_entity_id: int
+    coordinate_source_record_id: int | None
     x: float | None
     y: float | None
     z: float | None
@@ -44,7 +45,12 @@ class ZoneRouteDirection:
         return (
             not self.uses_reverse_evidence
             and self.coordinate_owner_entity_id == self.source_zone_entity_id
-            and travel_coordinate_source_owns_point(self.source_kind, self.x, self.y)
+            and travel_coordinate_source_owns_point(
+                self.source_kind,
+                self.x,
+                self.y,
+                self.coordinate_source_record_id,
+            )
         )
 
     @property
@@ -109,6 +115,7 @@ def _route_directions(context: ZoneContext) -> tuple[ZoneRouteDirection, ...]:
             chosen.source_kind,
             chosen.x,
             chosen.y,
+            chosen.label_id,
         )
         directions.append(
             ZoneRouteDirection(
@@ -126,6 +133,7 @@ def _route_directions(context: ZoneContext) -> tuple[ZoneRouteDirection, ...]:
                 source_version=chosen.source_version,
                 evidence=chosen.evidence,
                 coordinate_owner_entity_id=chosen.coordinate_zone_entity_id,
+                coordinate_source_record_id=chosen.label_id,
                 x=chosen.x if coordinate_owned else None,
                 y=chosen.y if coordinate_owned else None,
                 z=chosen.z if coordinate_owned else None,

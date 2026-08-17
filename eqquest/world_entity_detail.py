@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .db import Database
+from .location_actionability import location_actionability_note
 from .vendor import VENDOR_RELATIONS
 from .world_entity_context import (
     QUEST_ACTOR_RELATIONS,
@@ -94,7 +95,10 @@ def _location_summary(row) -> str:
     if row.label:
         details.append(row.label)
     details.append(row.source_label)
-    if not row.navigable and row.original_zone_entity_id is not None:
+    actionability_note = location_actionability_note(row)
+    if actionability_note:
+        details.append(actionability_note)
+    elif not row.navigable and row.original_zone_entity_id is not None:
         details.append(f"{row.zone_projection_status}; not map-targetable")
     return " | ".join(details)
 

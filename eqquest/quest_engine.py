@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .db import Database
+from .db import Database, normalize_name
 from .events import Event
+from .zone_authority import resolve_authoritative_zone
 
 
 def eq(a: str | None, b: str | None) -> bool:
@@ -51,12 +52,98 @@ class ReconcileResult:
 class QuestEngine:
     def __init__(self, db: Database):
         self.db = db
+        self._live_zone_context: str | None = None
+
+    @staticmethod
+    def _clean_zone(value: str | None) -> str | None:
+        cleaned = " ".join(str(value or "").split()).strip()
+        return cleaned or None
+
+    def seed_zone_context(self, zone: str | None) -> None:
+        """Seed live quest progress from explicit log-derived geography only.
+
+        The application integration deliberately calls this with a zone reconstructed
+        from EQ log boundaries, never from manual or quest-inferred UI state. New zone
+        and Welcome events then remain authoritative while monitoring continues.
+        """
+        self._live_zone_context = self._clean_zone(zone)
+
+    def _zone_after_event(self, current_zone: str | None, event: Event) -> str | None:
+        kind = str(event.kind or "").casefold()
+        if kind == "welcome":
+            return None
+        if kind == "zone":
+            return self._clean_zone(event.zone)
+        return self._clean_zone(current_zone)
+
+    def _zone_contexts(self, events: list[Event]) -> list[str | None]:
+        """Return authoritative logged zone context after each ordered event."""
+        contexts: list[str | None] = []
+        current: str | None = None
+        for event in events:
+            current = self._zone_after_event(current, event)
+            contexts.append(current)
+        return contexts
+
+    def _zones_match(self, observed_zone: str | None, objective_zone: str | None) -> bool:
+        """Compare two explicit zone tokens without fuzzy geography inference."""
+        observed = self._clean_zone(observed_zone)
+        objective = self._clean_zone(objective_zone)
+        if not observed or not objective:
+            return False
+        if normalize_name(observed) == normalize_name(objective):
+            return True
+
+        observed_resolution = resolve_authoritative_zone(self.db, observed)
+        objective_resolution = resolve_authoritative_zone(self.db, objective)
+        return bool(
+            observed_resolution.identity is not None
+            and objective_resolution.identity is not None
+            and int(observed_resolution.identity.entity_id)
+            == int(objective_resolution.identity.entity_id)
+        )
 
     def observe(self, event: Event) -> None:
+        self._live_zone_context = self._zone_after_event(self._live_zone_context, event)
         for quest in self.db.tracked_quests():
-            self._observe_quest(int(quest["id"]), event)
+            self._observe_quest(
+                int(quest["id"]),
+                event,
+                current_zone=self._live_zone_context,
+            )
 
-    def _observe_quest(self, quest_id: int, event: Event) -> bool:
+    def _step_match(
+        self,
+        step,
+        rule: dict,
+        event: Event,
+        *,
+        current_zone: str | None,
+    ) -> tuple[bool, int]:
+        matched, increment = self._match(rule, event)
+        if not matched:
+            return False, 0
+
+        # EQ kill lines do not carry zone text. Imported structured quest geography
+        # lives on quest_steps.zone, so qualify only kill objectives against explicit
+        # ordered log/session geography. Loot/receive-item evidence is portable once
+        # possessed and intentionally remains zone-independent.
+        expected = str(rule.get("event", "")).casefold()
+        objective_zone = self._clean_zone(step["zone"])
+        if expected == "kill" and objective_zone:
+            observed_zone = self._clean_zone(event.zone) or self._clean_zone(current_zone)
+            if not self._zones_match(observed_zone, objective_zone):
+                return False, 0
+
+        return True, increment
+
+    def _observe_quest(
+        self,
+        quest_id: int,
+        event: Event,
+        *,
+        current_zone: str | None = None,
+    ) -> bool:
         """Apply one observation to one quest. Returns True if any step progressed."""
         tracked_now = next(
             (q for q in self.db.tracked_quests() if int(q["id"]) == quest_id),
@@ -82,7 +169,12 @@ class QuestEngine:
                 if int(step["step_order"]) != active_step:
                     continue
 
-            matched, increment = self._match(rule, event)
+            matched, increment = self._step_match(
+                step,
+                rule,
+                event,
+                current_zone=current_zone,
+            )
             if not matched:
                 continue
 
@@ -157,17 +249,30 @@ class QuestEngine:
             if r["kind"] == "npc"
         ]
 
-    def _event_matches_any_count_objective(self, quest_id: int, event: Event) -> bool:
+    def _event_matches_any_count_objective(
+        self,
+        quest_id: int,
+        event: Event,
+        *,
+        current_zone: str | None = None,
+    ) -> bool:
         for step in self.db.quest_steps(quest_id):
             rule = json.loads(step["match_json"] or "{}")
             if rule.get("event") not in {"kill", "loot", "receive_item"}:
                 continue
-            matched, _ = self._match(rule, event)
+            matched, _ = self._step_match(
+                step,
+                rule,
+                event,
+                current_zone=current_zone,
+            )
             if matched:
                 return True
         return False
 
     def _find_reconcile_boundary(self, quest_id: int, events: list[Event]):
+        zone_contexts = self._zone_contexts(events)
+
         for i in range(len(events) - 1, -1, -1):
             e = events[i]
             if (
@@ -188,8 +293,12 @@ class QuestEngine:
                            for npc_id in starters):
                     continue
                 if any(
-                    self._event_matches_any_count_objective(quest_id, later)
-                    for later in events[i + 1:]
+                    self._event_matches_any_count_objective(
+                        quest_id,
+                        events[later_index],
+                        current_zone=zone_contexts[later_index],
+                    )
+                    for later_index in range(i + 1, len(events))
                 ):
                     return i, "starter NPC hail", "medium"
 
@@ -220,9 +329,14 @@ class QuestEngine:
             )
 
         self.db.reset_quest_progress(quest_id)
+        zone_contexts = self._zone_contexts(materialized)
         replay = materialized[start:]
-        for event in replay:
-            self._observe_quest(quest_id, event)
+        for index in range(start, len(materialized)):
+            self._observe_quest(
+                quest_id,
+                materialized[index],
+                current_zone=zone_contexts[index],
+            )
 
         steps = self.db.quest_steps(quest_id)
         stamp = materialized[start].timestamp

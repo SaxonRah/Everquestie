@@ -37,7 +37,7 @@ class ExplicitZoneLineTravelTests(unittest.TestCase):
         self.assertIsNone(ZoneTravelCatalog._travel_candidate("Blightfire_Moors"))
         self.assertIsNone(ZoneTravelCatalog._travel_candidate("Bank"))
         self.assertEqual(ZONE_TRAVEL_CATALOG_VERSION, "3")
-        self.assertEqual(NAVIGATION_CATALOG_VERSION, "4")
+        self.assertEqual(NAVIGATION_CATALOG_VERSION, "5")
 
     def test_existing_clean_builder_catalog_recompiles_stored_labels_for_new_syntax(self):
         with tempfile.TemporaryDirectory() as td:
@@ -105,7 +105,7 @@ class ExplicitZoneLineTravelTests(unittest.TestCase):
                 self.assertIsNotNone(refresh.travel)
                 self.assertEqual(refresh.travel.candidates, 4)
                 self.assertEqual(refresh.travel.linked, 4)
-                self.assertEqual(db.get_meta("navigation_catalog_version"), "4")
+                self.assertEqual(db.get_meta("navigation_catalog_version"), "5")
                 self.assertEqual(db.get_meta("navigation_catalog_dirty"), "0")
 
                 edges = ZoneTravelCatalog(db).edges_from(stone)
@@ -129,7 +129,7 @@ class ExplicitZoneLineTravelTests(unittest.TestCase):
                 self.assertEqual(ZoneTravelCatalog(db).shortest_path(crescent, stone), [])
                 self.assertEqual(ZoneTravelCatalog(db).shortest_path(nektulos, stone), [])
 
-                # Once v4 is clean, repeated Travel reads do not rebuild again.
+                # Once v5 is clean, repeated Travel reads do not rebuild again.
                 second = ensure_builder_navigation_catalog(db)
                 self.assertFalse(second.refreshed)
             finally:

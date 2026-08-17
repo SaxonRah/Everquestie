@@ -70,13 +70,13 @@ def exact_entity_name_candidates(db, kind: str, observed_name: str | None) -> Ex
 
 
 def known_entity_zone_names(db, entity_id: int) -> tuple[str, ...]:
-    """Return source-known geography for one entity without inferring missing zones."""
+    """Return provenanced geography for one entity without inferring missing zones."""
     names: dict[str, str] = {}
     row = db.conn.execute(
-        "SELECT zone FROM entities WHERE id=?",
+        "SELECT zone,source_page_id FROM entities WHERE id=?",
         (int(entity_id),),
     ).fetchone()
-    if row is not None:
+    if row is not None and row["source_page_id"] is not None:
         zone = " ".join(str(row["zone"] or "").split()).strip()
         if zone:
             names.setdefault(normalize_name(zone), zone)
@@ -86,7 +86,9 @@ def known_entity_zone_names(db, entity_id: int) -> tuple[str, ...]:
         SELECT DISTINCT z.name AS zone_name
         FROM entity_locations l
         JOIN entities z ON z.id=l.zone_entity_id
-        WHERE l.entity_id=? AND z.kind='zone'
+        WHERE l.entity_id=?
+          AND z.kind='zone'
+          AND l.source_page_id IS NOT NULL
         ORDER BY z.name
         """,
         (int(entity_id),),
@@ -123,8 +125,8 @@ def _unique_npc_for_objective_zone(
     matching: list[int] = []
     for candidate_id in candidate_ids:
         zones = known_entity_zone_names(engine.db, candidate_id)
-        # Unknown geography is unresolved evidence, not evidence that this identity
-        # cannot occur in the objective zone.
+        # Unknown or unprovenanced geography is unresolved evidence, not evidence that
+        # this identity cannot occur in the objective zone.
         if not zones:
             return False
         if any(engine._zones_match(zone, objective) for zone in zones):
@@ -168,7 +170,7 @@ def install_quest_progress_identity_policy() -> None:
 
     `name_matches_entity()` remains useful elsewhere as a permissive "could be this
     entity" check. Quest progress has a stronger mutation contract: the log text must
-    uniquely establish the bound canonical identity, or source-known NPC geography must
+    uniquely establish the bound canonical identity, or provenanced NPC geography must
     eliminate every competing same-name identity.
     """
     from .quest_engine import QuestEngine

@@ -18,6 +18,7 @@ $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
 $ReleaseInputAuditTool = Join-Path $PSScriptRoot "audit_release_inputs.py"
 $RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
+$ArchiveVerifier = Join-Path $PSScriptRoot "verify_release_archive.py"
 $ApprovedTravelDir = Join-Path $ProjectRoot "builder-data\travel-supplements"
 $ApprovedZoneAliasDir = Join-Path $ProjectRoot "builder-data\zone-aliases"
 
@@ -85,7 +86,7 @@ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
 $PythonCommand = Resolve-Python $PythonExe
-foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $RouteAuditTool, $WindowsBuilder)) {
+foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $RouteAuditTool, $WindowsBuilder, $ArchiveVerifier)) {
     if (-not (Test-Path $RequiredTool -PathType Leaf)) {
         throw "Required release helper was not found: $RequiredTool"
     }
@@ -103,7 +104,7 @@ Write-Host "Release output: $ReleaseDir"
 Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
-Write-Host "[1/7] Staging builder DB and compiling approved zone aliases + travel supplements..."
+Write-Host "[1/8] Staging builder DB and compiling approved zone aliases + travel supplements..."
 & $PythonCommand $StageTool `
     --input $WorkingDb `
     --output $StagedWorkingDb `
@@ -117,7 +118,7 @@ if (-not (Test-Path $StagedWorkingDb -PathType Leaf)) {
     throw "Release staging completed without producing '$StagedWorkingDb'."
 }
 
-Write-Host "[2/7] Finalizing immutable knowledge snapshot..."
+Write-Host "[2/8] Finalizing immutable knowledge snapshot..."
 & $PythonCommand $FinalizeTool --input $StagedWorkingDb --output $Snapshot --version $Version --force
 if ($LASTEXITCODE -ne 0) {
     throw "Knowledge finalization failed with exit code $LASTEXITCODE."
@@ -126,7 +127,7 @@ if (-not (Test-Path $Snapshot -PathType Leaf)) {
     throw "Knowledge finalizer completed without producing '$Snapshot'."
 }
 
-Write-Host "[3/7] Verifying reviewed release inputs against finalized evidence..."
+Write-Host "[3/8] Verifying reviewed release inputs against finalized evidence..."
 & $PythonCommand $ReleaseInputAuditTool $Snapshot --require-release-inputs
 if ($LASTEXITCODE -ne 0) {
     throw "Reviewed release-input audit failed with exit code $LASTEXITCODE. Release packaging aborted."
@@ -135,10 +136,10 @@ $AuditedSnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerIn
 $AuditedSnapshotBytes = (Get-Item $Snapshot).Length
 
 if ($SkipRouteAudit) {
-    Write-Host "[4/7] Route acceptance gate skipped by -SkipRouteAudit."
+    Write-Host "[4/8] Route acceptance gate skipped by -SkipRouteAudit."
 }
 else {
-    Write-Host "[4/7] Verifying canonical route acceptance..."
+    Write-Host "[4/8] Verifying canonical route acceptance..."
     & $PythonCommand $RouteAuditTool $Snapshot --full-paths --fail-unreachable
     if ($LASTEXITCODE -ne 0) {
         throw "Route acceptance failed with exit code $LASTEXITCODE. Release packaging aborted."
@@ -146,10 +147,10 @@ else {
 }
 
 if ($SkipTests) {
-    Write-Host "[5/7] Regression suite skipped by -SkipTests."
+    Write-Host "[5/8] Regression suite skipped by -SkipTests."
 }
 else {
-    Write-Host "[5/7] Running complete regression suite..."
+    Write-Host "[5/8] Running complete regression suite..."
     Push-Location $ProjectRoot
     try {
         & $PythonCommand -m unittest discover -s tests -v
@@ -162,7 +163,7 @@ else {
     }
 }
 
-Write-Host "[6/7] Building Windows application and attaching knowledge snapshot..."
+Write-Host "[6/8] Building Windows application and attaching knowledge snapshot..."
 $BuilderParams = @{
     KnowledgeDb = $Snapshot
     DistPath = $ReleaseDir
@@ -212,7 +213,7 @@ if (-not $OneFile) {
     $KnowledgePackagingIntegrity = "byte-identical-copy"
 }
 
-Write-Host "[7/7] Writing manifest and distributable ZIP..."
+Write-Host "[7/8] Writing manifest and distributable ZIP..."
 $SnapshotHash = $AuditedSnapshotHash
 $ExecutableHash = (Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
 $SnapshotBytes = $AuditedSnapshotBytes
@@ -268,6 +269,21 @@ if ($OneFile) {
 else {
     Compress-Archive -Path $Target -DestinationPath $Archive -Force
 }
+if (-not (Test-Path $Archive -PathType Leaf)) {
+    throw "Release archive was not created: $Archive"
+}
+
+Write-Host "[8/8] Re-opening and verifying final distributable ZIP..."
+& $PythonCommand $ArchiveVerifier $Archive `
+    --source-knowledge $Snapshot `
+    --require-source-knowledge `
+    --expected-version $Version
+if ($LASTEXITCODE -ne 0) {
+    throw "Final release archive verification failed with exit code $LASTEXITCODE. Release packaging aborted."
+}
+$ArchiveHash = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
+$ArchiveHashPath = "$Archive.sha256"
+"$ArchiveHash  $(Split-Path $Archive -Leaf)" | Set-Content -Encoding ASCII -Path $ArchiveHashPath
 
 Write-Host
 Write-Host "Release ready."
@@ -280,6 +296,8 @@ else {
 }
 Write-Host "  manifest:   $ManifestPath"
 Write-Host "  archive:    $Archive"
+Write-Host "  archive SHA-256: $ArchiveHash"
+Write-Host "  checksum:   $ArchiveHashPath"
 Write-Host "  knowledge packaging integrity: $KnowledgePackagingIntegrity"
 Write-Host "  source DB:  NOT modified; release staging used SQLite backup + approved identity/travel supplements"
 Write-Host "  user DB:    NOT included; created/preserved separately on each player machine"

@@ -6,6 +6,7 @@ import sqlite3
 
 from .db import Database
 from .eqmap import map_to_game
+from .location_actionability import location_actionability_note
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,7 +334,10 @@ def _location_line(location: LocationEvidence, *, prefix: str = "") -> str:
         details.append(label)
     if location.source_label:
         details.append(location.source_label)
-    if not location.navigable and location.zone_projection_status in {
+    actionability_note = location_actionability_note(location)
+    if actionability_note:
+        details.append(actionability_note)
+    elif not location.navigable and location.zone_projection_status in {
         "provider_candidate",
         "provider_ambiguous",
         "provider_unresolved",
@@ -349,7 +353,8 @@ def where_text(db: Database, entity_id: int, current_zone: str | None = None) ->
 
     Provider locations are projected into canonical gameplay zones only through
     finalized linked provider-zone bindings. Candidate/unresolved provider facts remain
-    visible and sourced but cannot masquerade as map/navigation targets.
+    visible and sourced but cannot masquerade as map/navigation targets. Canonical
+    coordinates without reviewed provenance remain visible as evidence-only rows.
     """
     entity = db.entity(entity_id)
     if not entity:

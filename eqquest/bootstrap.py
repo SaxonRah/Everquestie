@@ -22,6 +22,7 @@ from .session_geography_ui import install_session_geography_ui
 from .target_intelligence_ui import install_target_intelligence_ui
 from .target_known_drops_live_ui import install_target_known_drops_ui
 from .target_personal_sightings_live_ui import install_target_personal_sightings_ui
+from .task_assignment_tracking_ui import install_task_assignment_tracking_ui
 from .travel_output_ui import install_travel_output_ui
 from .world_profile_ui import install_world_profile_ui
 from .zone_opportunities_ui import install_zone_opportunities_ui
@@ -47,6 +48,7 @@ def install_application_layers() -> None:
     install_activity_pathway_zone_context_ui()
     install_quest_progress_zone_context_ui()
     install_quest_progress_identity_policy()
+    install_task_assignment_tracking_ui()
     install_session_geography_ui()
     install_quest_interaction_guidance_ui()
     install_quest_manual_progress_ui()

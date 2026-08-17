@@ -7,9 +7,11 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.local_map_readiness import LocalMapReadiness
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import build_route_guidance
 from eqquest.route_guidance_ui import RouteGuidanceFrame
 from eqquest.runtime_policy import install_runtime_policy
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
 
@@ -28,6 +30,8 @@ class LocalMapReadinessUITests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
+        self.maps = self.root / "maps"
+        self.maps.mkdir()
         self.db = Database(self.root / "working.sqlite3")
         self.a = self.db.upsert_entity(
             kind="zone",
@@ -35,6 +39,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
             external_id="4101",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonea"},
         )
         self.b = self.db.upsert_entity(
             kind="zone",
@@ -42,6 +47,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
             external_id="4102",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zoneb"},
         )
         ZoneTravelCatalog(self.db).add_provider_connection(
             self.a,
@@ -50,13 +56,18 @@ class LocalMapReadinessUITests(unittest.TestCase):
             bidirectional=False,
             source_name="Topology Source",
             source_kind="provider",
-            source_key="a-b",
-            evidence="source-owned portal coordinate",
+            source_key="a-b-provider",
+            evidence="confirmed portal topology",
         )
-        self.db.conn.execute(
-            "UPDATE zone_travel_edges SET x=12,y=34,z=5 WHERE source_key='a-b'"
+        (self.maps / "zonea.txt").write_text(
+            "P -12,-34,5,255,0,0,2,To_Zone_B\n",
+            encoding="utf-8",
         )
-        self.db.conn.commit()
+        maps = MapCatalog(self.db)
+        maps.index_root(self.maps, source_name="Brewall", source_version="test")
+        ZoneMapCatalog(self.db).reconcile(source_name="Brewall")
+        maps.reconcile_all(force=True)
+        ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Brewall")
 
     def tearDown(self):
         self.db.close()
@@ -98,7 +109,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
     def test_zone_overview_appends_local_map_readiness_without_replacing_knowledge(self):
         rendered: list[str] = []
         status = _Var()
-        local_path = self.root / "maps" / "zonea.txt"
+        local_path = self.maps / "zonea.txt"
         readiness = self._readiness(
             "ready",
             path=local_path,
@@ -134,7 +145,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
         self.assertIn("Local map missing for Zone A", status.value)
 
     def test_map_next_hop_ready_preserves_game_space_handoff_and_names_local_file(self):
-        local_path = self.root / "maps" / "zonea.txt"
+        local_path = self.maps / "zonea.txt"
         fake, emitted, status = self._route_fake(
             lambda zone: self._readiness(
                 "ready",
@@ -146,10 +157,10 @@ class LocalMapReadinessUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone A", 12.0, 34.0, 5.0, "portal to Zone B")],
+            [("Zone A", 12.0, 34.0, 5.0, "travel to Zone B")],
         )
         self.assertIn("local map: zonea.txt", status.value)
-        self.assertIn("Topology Source", status.value)
+        self.assertIn("Brewall", status.value)
 
     def test_readiness_callback_failure_is_supplemental_and_does_not_break_navigation(self):
         def unavailable(_zone):
@@ -159,7 +170,7 @@ class LocalMapReadinessUITests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone A", 12.0, 34.0, 5.0, "portal to Zone B")],
+            [("Zone A", 12.0, 34.0, 5.0, "travel to Zone B")],
         )
         self.assertIn("Map next hop", status.value)
 

@@ -5,6 +5,7 @@ import math
 
 from .db import Database
 from .location_actionability import location_is_actionable
+from .travel_coordinate_actionability import travel_coordinate_is_actionable
 from .zone_context import ZoneContext, build_zone_context
 
 
@@ -115,15 +116,13 @@ def _travel_points(
 ) -> list[NearbyPoint]:
     result: list[NearbyPoint] = []
     for connection in context.connections:
-        # A coordinate on a topology edge always belongs to the edge's source zone.
-        # Only show it as navigable from this zone when the edge can actually be used
-        # from here and that coordinate is known to lie in the requested zone.
-        if not connection.usable_from_zone:
+        # Topology evidence and coordinate evidence are separate claims. A provider
+        # may safely prove that two zones connect without proving an exact local /loc.
+        # Only coordinate-bearing evidence types whose source record owns the point
+        # may become Nearby/Map targets.
+        if not travel_coordinate_is_actionable(connection, context.identity.entity_id):
             continue
-        if connection.coordinate_zone_entity_id != context.identity.entity_id:
-            continue
-        if connection.x is None or connection.y is None:
-            continue
+        assert connection.x is not None and connection.y is not None
         horizontal, vertical, delta_x, delta_y = _point_distance(
             player_location,
             float(connection.x),
@@ -166,9 +165,11 @@ def nearby_points(
 
     This is a read projection over shipped knowledge. It never writes observed player
     coordinates into the knowledge database. Unprovenanced entity-location rows remain
-    visible elsewhere as Knowledge evidence but cannot become Nearby/Map targets. Multiple
-    reviewed source statements for the same entity remain separate points because they
-    may represent distinct spawns/locations rather than duplicate records.
+    visible elsewhere as Knowledge evidence but cannot become Nearby/Map targets. Travel
+    topology remains visible/routeable independently; only source-owned travel coordinates
+    can become Nearby points. Multiple reviewed source statements for the same entity
+    remain separate points because they may represent distinct spawns/locations rather
+    than duplicate records.
     """
     if player_location is None:
         return [], "location_unknown"

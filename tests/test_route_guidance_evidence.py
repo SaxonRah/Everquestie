@@ -7,9 +7,11 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import build_route_guidance
 from eqquest.route_guidance_ui import RouteGuidanceFrame
 from eqquest.runtime import RuntimeDatabase
+from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_coverage import ZoneCoverageCatalog
 from eqquest.zone_travel import ZoneTravelCatalog
 
@@ -33,6 +35,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             external_id="2001",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zonea"},
         )
         self.b = self.db.upsert_entity(
             kind="zone",
@@ -40,6 +43,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             external_id="2002",
             external_namespace="eqclient:zone",
             merge_by_name=True,
+            data={"map_short_name": "zoneb"},
         )
 
     def tearDown(self):
@@ -53,6 +57,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         *,
         source_name: str,
         source_key: str,
+        source_kind: str = "provider",
         bidirectional: bool = False,
         coordinate: tuple[float, float, float] | None = None,
     ) -> None:
@@ -62,7 +67,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             connection_kind="portal",
             bidirectional=bidirectional,
             source_name=source_name,
-            source_kind="provider",
+            source_kind=source_kind,
             source_key=source_key,
             evidence=f"evidence from {source_name}",
         )
@@ -74,21 +79,33 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             )
             self.db.conn.commit()
 
-    def test_direct_coordinate_row_beats_coordinate_less_direct_row(self):
-        # Alphabetical evidence ordering alone would choose A Missing first.
+    def _add_real_map_edge(
+        self,
+        *,
+        source_name: str = "Z Located",
+        coordinate: tuple[float, float, float] = (12.0, 34.0, 5.0),
+    ) -> None:
+        x, y, z = coordinate
+        maps_root = self.root / "maps"
+        maps_root.mkdir(exist_ok=True)
+        (maps_root / "zonea.txt").write_text(
+            f"P {-x:g},{-y:g},{z:g},255,0,0,2,To_Zone_B\n",
+            encoding="utf-8",
+        )
+        maps = MapCatalog(self.db)
+        maps.index_root(maps_root, source_name=source_name, source_version="test")
+        ZoneMapCatalog(self.db).reconcile(source_name=source_name)
+        maps.reconcile_all(force=True)
+        ZoneTravelCatalog(self.db).reconcile_from_maps(source_name=source_name)
+
+    def test_source_owned_map_coordinate_beats_coordinate_less_direct_row(self):
         self._add(
             self.a,
             self.b,
             source_name="A Missing",
             source_key="direct-missing",
         )
-        self._add(
-            self.a,
-            self.b,
-            source_name="Z Located",
-            source_key="direct-located",
-            coordinate=(12.0, 34.0, 5.0),
-        )
+        self._add_real_map_edge()
 
         guidance = build_route_guidance(self.db, "Zone A", "Zone B")
         hop = guidance.hops[0]
@@ -100,6 +117,26 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         self.assertEqual(coverage.route_directions_linked, 1)
         self.assertEqual(coverage.route_directions_mappable, 1)
 
+    def test_provider_xy_never_becomes_actionable_coordinate(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="A Provider Located",
+            source_key="provider-located",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        hop = guidance.hops[0]
+        self.assertEqual(hop.evidence_source, "A Provider Located")
+        self.assertIsNone(hop.source_coordinate)
+
+        coverage = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(coverage.route_directions_linked, 1)
+        self.assertEqual(coverage.route_directions_mappable, 0)
+        self.assertEqual(coverage.travel_edges_with_source_coordinates, 0)
+        self.assertEqual(coverage.travel_edges_without_source_coordinates, 1)
+
     def test_map_next_hop_uses_actionable_direct_evidence(self):
         self._add(
             self.a,
@@ -107,13 +144,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             source_name="A Missing",
             source_key="direct-missing",
         )
-        self._add(
-            self.a,
-            self.b,
-            source_name="Z Located",
-            source_key="direct-located",
-            coordinate=(12.0, 34.0, 5.0),
-        )
+        self._add_real_map_edge()
         guidance = build_route_guidance(self.db, "Zone A", "Zone B")
         emitted: list[tuple] = []
         fake = SimpleNamespace(
@@ -127,11 +158,33 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         RouteGuidanceFrame.map_next_hop(fake)
         self.assertEqual(
             emitted,
-            [("Zone A", 12.0, 34.0, 5.0, "portal to Zone B")],
+            [("Zone A", 12.0, 34.0, 5.0, "travel to Zone B")],
         )
         self.assertIn("Z Located", fake.status_var.value)
 
-    def test_direct_without_coordinate_beats_reverse_coordinate(self):
+    def test_map_next_hop_refuses_provider_coordinate(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="Provider Located",
+            source_key="provider-located",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        emitted: list[tuple] = []
+        fake = SimpleNamespace(
+            db=self.db,
+            _route_guidance=guidance,
+            _live_current_zone=lambda: "Zone A",
+            status_var=_Status(),
+            on_map_target=lambda *args: emitted.append(args),
+        )
+
+        RouteGuidanceFrame.map_next_hop(fake)
+        self.assertEqual(emitted, [])
+        self.assertIn("no confirmed source-zone coordinate", fake.status_var.value)
+
+    def test_direct_without_coordinate_beats_reverse_provider_coordinate(self):
         self._add(
             self.a,
             self.b,
@@ -156,12 +209,10 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
 
         coverage = ZoneCoverageCatalog(self.db).summary()
         self.assertEqual(coverage.route_directions_linked, 2)
-        # The B→A direction is mappable. A→B remains unmappable despite the reverse
-        # evidence row carrying a B-owned coordinate.
-        self.assertEqual(coverage.route_directions_mappable, 1)
+        self.assertEqual(coverage.route_directions_mappable, 0)
         rows = {row.name: row for row in ZoneCoverageCatalog(self.db).rows()}
         self.assertEqual(rows["Zone A"].route_outgoing_mappable, 0)
-        self.assertEqual(rows["Zone B"].route_outgoing_mappable, 1)
+        self.assertEqual(rows["Zone B"].route_outgoing_mappable, 0)
 
     def test_finalized_runtime_preserves_actionable_evidence_choice_read_only(self):
         self._add(
@@ -170,13 +221,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             source_name="A Missing",
             source_key="direct-missing",
         )
-        self._add(
-            self.a,
-            self.b,
-            source_name="Z Located",
-            source_key="direct-located",
-            coordinate=(12.0, 34.0, 5.0),
-        )
+        self._add_real_map_edge()
         snapshot = self.root / "everquestie-knowledge.sqlite3"
         create_knowledge_snapshot(
             self.root / "working.sqlite3",

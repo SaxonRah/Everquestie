@@ -16,6 +16,7 @@ from .map_portability import normalize_legacy_map_sources
 from .mechanics_catalog import MechanicsCatalog
 from .provider_zone_travel import ProviderZoneTravelCatalog
 from .quest_faction_reconciliation import QuestFactionReconciliationCatalog
+from .release_input_audit import audit_reviewed_release_inputs
 from .search_index import rebuild_compact_search_index
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
@@ -309,6 +310,13 @@ def finalize_knowledge_snapshot(
     db.set_meta("knowledge_snapshot_version", version)
     db.set_meta("knowledge_snapshot_built_at", built)
 
+    reviewed_inputs = audit_reviewed_release_inputs(db)
+    if reviewed_inputs.recorded and not reviewed_inputs.ok:
+        raise ValueError(
+            "Reviewed release inputs are inconsistent:\n- "
+            + "\n- ".join(reviewed_inputs.errors)
+        )
+
     fts_rows = rebuild_compact_search_index(db)
     identity = identity_audit_text(db)
 
@@ -339,6 +347,7 @@ def finalize_knowledge_snapshot(
         raise ValueError(
             f"Final knowledge snapshot failed integrity_check: {diagnostics.get('integrity')!r}"
         )
+    diagnostics["reviewed_release_inputs"] = reviewed_inputs.as_dict()
 
     return KnowledgeSnapshotReport(
         path=db.path,

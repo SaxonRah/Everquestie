@@ -7,13 +7,6 @@ _RUNTIME_MODE_UI_MARKER = "_everquestie_runtime_mode_ui"
 _RUNTIME_PROFILE_REFRESH_MARKER = "_everquestie_runtime_profile_refresh"
 _RUNTIME_DATABASE_DIAGNOSTIC_MARKER = "_everquestie_profile_capability_diagnostic"
 
-_RELEASE_INPUT_META_KEYS = (
-    "approved_zone_alias_supplement_count",
-    "approved_zone_alias_count",
-    "approved_travel_supplement_count",
-    "approved_travel_supplement_edge_count",
-)
-
 
 def _server_profile_label(db) -> str:
     """Return the persisted global server profile without making diagnostics fragile."""
@@ -59,51 +52,60 @@ def profile_capability_text(db) -> str:
 
 
 def release_knowledge_inputs_text(db) -> str:
-    """Describe reviewed inputs retained by an immutable release snapshot.
+    """Describe reviewed inputs proven inside an immutable release snapshot.
 
-    Old packaged snapshots contain none of these counters and remain quiet. A partially
-    populated or malformed set is surfaced explicitly instead of silently implying that
-    a release was fully staged.
+    The renderer deliberately consumes the read-only release-input auditor rather than
+    ``db.get_meta()``. RuntimeDatabase allows writable user metadata to shadow ordinary
+    metadata reads, but user state must never be able to rewrite release provenance in
+    diagnostics. Alias and travel families are shown independently because supported
+    lower-level builders can compile either family without the other.
     """
     if getattr(db, "knowledge_writable", True):
         return ""
 
-    get_meta = getattr(db, "get_meta", None)
-    if not callable(get_meta):
-        return ""
-
     try:
-        raw = {
-            key: str(get_meta(key, "") or "").strip()
-            for key in _RELEASE_INPUT_META_KEYS
-        }
+        from .release_input_audit import audit_reviewed_release_inputs
+
+        audit = audit_reviewed_release_inputs(db)
     except Exception:
-        return ""
-
-    if not any(raw.values()):
-        return ""
-    if not all(raw.values()):
         return (
             "Release knowledge inputs:\n"
-            "  Reviewed-input counters: incomplete"
+            "  Reviewed-input audit: unavailable"
         )
 
-    try:
-        alias_supplements = int(raw["approved_zone_alias_supplement_count"])
-        aliases = int(raw["approved_zone_alias_count"])
-        travel_supplements = int(raw["approved_travel_supplement_count"])
-        travel_edges = int(raw["approved_travel_supplement_edge_count"])
-    except ValueError:
+    if not audit.recorded:
+        return ""
+    if not audit.ok:
+        detail = audit.errors[0] if audit.errors else "unknown inconsistency"
         return (
             "Release knowledge inputs:\n"
-            "  Reviewed-input counters: invalid"
+            "  Reviewed-input audit: FAILED\n"
+            f"  {detail}"
         )
 
-    return (
-        "Release knowledge inputs:\n"
-        f"  Reviewed zone aliases: {aliases} aliases from {alias_supplements} supplement(s)\n"
-        f"  Reviewed travel: {travel_edges} edges from {travel_supplements} supplement(s)"
+    lines = ["Release knowledge inputs:"]
+    alias_recorded = (
+        audit.metadata.get("approved_zone_alias_supplement_count") is not None
+        or audit.metadata.get("approved_zone_alias_count") is not None
     )
+    if alias_recorded:
+        lines.append(
+            "  Reviewed zone aliases: "
+            f"{audit.actual['zone_aliases']} aliases from "
+            f"{audit.actual['zone_alias_supplements']} supplement(s)"
+        )
+
+    travel_recorded = (
+        audit.metadata.get("approved_travel_supplement_count") is not None
+        or audit.metadata.get("approved_travel_supplement_edge_count") is not None
+    )
+    if travel_recorded:
+        lines.append(
+            "  Reviewed travel: "
+            f"{audit.actual['travel_edges']} edges from "
+            f"{audit.actual['travel_supplements']} supplement(s)"
+        )
+    return "\n".join(lines)
 
 
 def database_mode_text(db) -> str:
@@ -164,7 +166,7 @@ def install_runtime_mode_ui() -> None:
 
     # Append the profile capability boundary to the normal Database diagnostics rather
     # than making the persistent top banner excessively long. Packaged snapshots also
-    # expose the compact reviewed release-input counters retained by finalization.
+    # expose reviewed release-input evidence after immutable self-consistency auditing.
     current_database_text = getattr(current_app, "_database_diagnostic_text", None)
     if current_database_text is not None and not getattr(
         current_database_text,

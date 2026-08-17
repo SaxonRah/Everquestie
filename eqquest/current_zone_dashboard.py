@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import Database
+from .travel_coordinate_actionability import travel_coordinate_is_actionable
 from .zone_context import ZoneContext, build_zone_context
 
 
@@ -192,6 +193,8 @@ def build_current_zone_dashboard(
     synthesize locations, promote incoming-only travel edges, or mutate knowledge.
     Duplicate topology evidence for the same neighboring zone is collapsed for display
     while preserving every role/source/evidence row and the strongest safe actionability.
+    Routeable topology remains separate from exact coordinate actionability: a provider
+    may prove an exit exists without proving a local Map/Nearby point for it.
     """
     context, status = build_zone_context(
         db,
@@ -267,7 +270,9 @@ def build_current_zone_dashboard(
     # Finalization may compile additional provider topology for the same canonical
     # neighbor already represented by another source. A player dashboard should show
     # one neighbor row, not one row per evidence provider. Keep all source semantics and
-    # let any safe source-owned coordinate make that aggregate neighbor mappable.
+    # let any independently safe coordinate-bearing edge make that aggregate neighbor
+    # mappable; generic routeable provider edges do not gain coordinate authority merely
+    # because X/Y/Z happen to be present on their row.
     exit_groups: dict[int, dict[str, object]] = {}
     for connection in context.connections:
         neighbor_id = int(connection.neighbor_zone_entity_id)
@@ -293,12 +298,7 @@ def build_current_zone_dashboard(
             item["evidence"].append(str(connection.evidence))
         if connection.usable_from_zone:
             item["usable"] = True
-        if (
-            connection.usable_from_zone
-            and int(connection.coordinate_zone_entity_id) == int(context.identity.entity_id)
-            and connection.x is not None
-            and connection.y is not None
-        ):
+        if travel_coordinate_is_actionable(connection, context.identity.entity_id):
             item["mappable"] = True
 
     exits = tuple(

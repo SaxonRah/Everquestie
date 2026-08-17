@@ -13,11 +13,12 @@ from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
-ZONE_TRAVEL_CATALOG_VERSION = "2"
+ZONE_TRAVEL_CATALOG_VERSION = "3"
 
 # Keep map-derived travel parsing deliberately explicit. These spellings all contain
-# a direction/zone-line/portal/exit marker supplied by the map author; a bare zone
-# name is still not promoted into topology because it may only be a landmark label.
+# a direction/zone-line/portal/exit/connection marker supplied by the map author; a
+# bare zone name is still not promoted into topology because it may only be a landmark
+# label.
 _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "portal",
@@ -30,6 +31,13 @@ _TRAVEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "zone_line",
         re.compile(
             r"^(?:zone\s*line|zoneline|zone|zl|z/l)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
+            re.I,
+        ),
+    ),
+    (
+        "zone_line",
+        re.compile(
+            r"^(?:connection|boundary)\s*(?:(?:to|:|-|=)\s*)?(.+)$",
             re.I,
         ),
     ),

@@ -10,6 +10,7 @@ from .knowledge_map_choices import (
     KnowledgeRouteChoice,
     knowledge_route_choices,
 )
+from .location_actionability import location_is_actionable
 from .locations import location_evidence_for_entity
 from .world_entity_detail import build_world_entity_context_for_id
 from .zone_authority import resolve_authoritative_zone
@@ -105,7 +106,7 @@ def _fallback_relation_label(step_rule: dict, description: str) -> tuple[str, st
 
 
 def _quest_objective_target_specs(db: Database, quest_id: int, step) -> tuple[_TargetSpec, ...]:
-    # An actionable target claim must originate in a reviewed compiled step.  Exact
+    # An actionable target claim must originate in a reviewed compiled step. Exact
     # canonical IDs are useful identity evidence, but they do not replace provenance.
     if step["source_page_id"] is None:
         return ()
@@ -236,7 +237,7 @@ def _location_choices(
     ] = {}
     for spec in specs:
         for row in location_evidence_for_entity(db, spec.entity_id):
-            if not row.navigable:
+            if not location_is_actionable(row):
                 continue
             assert row.zone_entity_id is not None and row.x is not None and row.y is not None
             if (
@@ -315,9 +316,9 @@ def tracked_quest_objective_navigation(
 
     Progress ownership stays in QuestEngine. This function is a pure read projection
     over the reviewed compiled active step, explicit source-backed objective
-    relationships, canonical location evidence and authoritative zone identity. It never
-    guesses an NPC from prose, never makes an unsourced step actionable, and never turns
-    provider candidate/unresolved coordinates into gameplay targets.
+    relationships, reviewed canonical location evidence and authoritative zone identity.
+    It never guesses an NPC from prose, never makes an unsourced step/location actionable,
+    and never turns provider candidate/unresolved coordinates into gameplay targets.
     """
     quest = db.entity(int(quest_id))
     quest_name = str(quest["name"] or "") if quest is not None else ""

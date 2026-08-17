@@ -35,6 +35,7 @@ class TravelCoordinateActionabilityTests(unittest.TestCase):
             "y": 2.0,
             "z": 3.0,
             "source_kind": "map_label",
+            "label_id": 123,
         }
         values.update(overrides)
         return SimpleNamespace(**values)
@@ -53,6 +54,20 @@ class TravelCoordinateActionabilityTests(unittest.TestCase):
     def test_map_label_coordinate_is_actionable_from_its_source_zone(self):
         connection = self._connection(source_kind="map_label")
         self.assertTrue(travel_coordinate_is_actionable(connection, 10))
+
+    def test_map_label_kind_without_concrete_source_record_is_not_actionable(self):
+        self.assertFalse(
+            travel_coordinate_is_actionable(
+                self._connection(source_kind="map_label", label_id=None),
+                10,
+            )
+        )
+        self.assertFalse(
+            travel_coordinate_is_actionable(
+                self._connection(source_kind="map_label", label_id=0),
+                10,
+            )
+        )
 
     def test_provider_coordinate_is_not_actionable_even_when_edge_is_usable(self):
         connection = self._connection(source_kind="provider")
@@ -92,6 +107,12 @@ class TravelCoordinateActionabilityTests(unittest.TestCase):
         maps.reconcile_all(force=True)
         stats = ZoneTravelCatalog(self.db).reconcile_from_maps(source_name="Brewall")
         self.assertEqual(stats.linked, 1)
+
+        edge = self.db.conn.execute(
+            "SELECT label_id FROM zone_travel_edges WHERE source_kind='map_label'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertIsNotNone(edge["label_id"])
 
         points, status = nearby_points(
             self.db,

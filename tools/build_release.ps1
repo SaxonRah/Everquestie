@@ -16,6 +16,7 @@ $KnowledgeName = "everquestie-knowledge.sqlite3"
 $StageTool = Join-Path $PSScriptRoot "stage_release_working_db.py"
 $FinalizeTool = Join-Path $PSScriptRoot "finalize_knowledge_snapshot.py"
 $ReleaseInputAuditTool = Join-Path $PSScriptRoot "audit_release_inputs.py"
+$MapCatalogAuditTool = Join-Path $PSScriptRoot "audit_map_catalog.py"
 $RouteAuditTool = Join-Path $PSScriptRoot "audit_route_acceptance.py"
 $WindowsBuilder = Join-Path $PSScriptRoot "build_windows_exe.ps1"
 $ApprovedTravelDir = Join-Path $ProjectRoot "builder-data\travel-supplements"
@@ -71,6 +72,7 @@ $ReleaseDir = Join-Path $ResolvedOutputRoot $VersionSafe
 $StagingRoot = Join-Path (Join-Path $ProjectRoot "build\release") $VersionSafe
 $StagedWorkingDb = Join-Path $StagingRoot "working-with-approved-data.sqlite3"
 $Snapshot = Join-Path $StagingRoot $KnowledgeName
+$MapCatalogAuditReport = Join-Path $StagingRoot "map-catalog-audit.json"
 
 if (Test-Path $ReleaseDir) {
     if (-not $Force) {
@@ -85,7 +87,7 @@ New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $StagingRoot | Out-Null
 
 $PythonCommand = Resolve-Python $PythonExe
-foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $RouteAuditTool, $WindowsBuilder)) {
+foreach ($RequiredTool in @($StageTool, $FinalizeTool, $ReleaseInputAuditTool, $MapCatalogAuditTool, $RouteAuditTool, $WindowsBuilder)) {
     if (-not (Test-Path $RequiredTool -PathType Leaf)) {
         throw "Required release helper was not found: $RequiredTool"
     }
@@ -103,7 +105,7 @@ Write-Host "Release output: $ReleaseDir"
 Write-Host "Python interpreter: $PythonCommand"
 Write-Host
 
-Write-Host "[1/7] Staging builder DB and compiling approved zone aliases + travel supplements..."
+Write-Host "[1/8] Staging builder DB and compiling approved zone aliases + travel supplements..."
 & $PythonCommand $StageTool `
     --input $WorkingDb `
     --output $StagedWorkingDb `
@@ -117,7 +119,7 @@ if (-not (Test-Path $StagedWorkingDb -PathType Leaf)) {
     throw "Release staging completed without producing '$StagedWorkingDb'."
 }
 
-Write-Host "[2/7] Finalizing immutable knowledge snapshot..."
+Write-Host "[2/8] Finalizing immutable knowledge snapshot..."
 & $PythonCommand $FinalizeTool --input $StagedWorkingDb --output $Snapshot --version $Version --force
 if ($LASTEXITCODE -ne 0) {
     throw "Knowledge finalization failed with exit code $LASTEXITCODE."
@@ -126,17 +128,27 @@ if (-not (Test-Path $Snapshot -PathType Leaf)) {
     throw "Knowledge finalizer completed without producing '$Snapshot'."
 }
 
-Write-Host "[3/7] Verifying reviewed release inputs against finalized evidence..."
+Write-Host "[3/8] Verifying reviewed release inputs against finalized evidence..."
 & $PythonCommand $ReleaseInputAuditTool $Snapshot --require-release-inputs
 if ($LASTEXITCODE -ne 0) {
     throw "Reviewed release-input audit failed with exit code $LASTEXITCODE. Release packaging aborted."
 }
 
+Write-Host "[4/8] Auditing prebuilt shipped map catalog..."
+& $PythonCommand $MapCatalogAuditTool $Snapshot `
+    --require-source Goods `
+    --require-source Brewall `
+    --require-versioned-sources `
+    --output $MapCatalogAuditReport
+if ($LASTEXITCODE -ne 0) {
+    throw "Map catalog audit failed with exit code $LASTEXITCODE. Release packaging aborted."
+}
+
 if ($SkipRouteAudit) {
-    Write-Host "[4/7] Route acceptance gate skipped by -SkipRouteAudit."
+    Write-Host "[5/8] Route acceptance gate skipped by -SkipRouteAudit."
 }
 else {
-    Write-Host "[4/7] Verifying canonical route acceptance..."
+    Write-Host "[5/8] Verifying canonical route acceptance..."
     & $PythonCommand $RouteAuditTool $Snapshot --full-paths --fail-unreachable
     if ($LASTEXITCODE -ne 0) {
         throw "Route acceptance failed with exit code $LASTEXITCODE. Release packaging aborted."
@@ -144,10 +156,10 @@ else {
 }
 
 if ($SkipTests) {
-    Write-Host "[5/7] Regression suite skipped by -SkipTests."
+    Write-Host "[6/8] Regression suite skipped by -SkipTests."
 }
 else {
-    Write-Host "[5/7] Running complete regression suite..."
+    Write-Host "[6/8] Running complete regression suite..."
     Push-Location $ProjectRoot
     try {
         & $PythonCommand -m unittest discover -s tests -v
@@ -160,7 +172,7 @@ else {
     }
 }
 
-Write-Host "[6/7] Building Windows application and attaching knowledge snapshot..."
+Write-Host "[7/8] Building Windows application and attaching knowledge snapshot..."
 $BuilderParams = @{
     KnowledgeDb = $Snapshot
     DistPath = $ReleaseDir
@@ -197,7 +209,7 @@ if (-not $OneFile) {
     }
 }
 
-Write-Host "[7/7] Writing manifest and distributable ZIP..."
+Write-Host "[8/8] Writing manifest and distributable ZIP..."
 $SnapshotHash = (Get-FileHash -Algorithm SHA256 $Snapshot).Hash.ToLowerInvariant()
 $ExecutableHash = (Get-FileHash -Algorithm SHA256 $Executable).Hash.ToLowerInvariant()
 $SnapshotBytes = (Get-Item $Snapshot).Length
@@ -225,6 +237,8 @@ $Manifest = [ordered]@{
         bytes = $SnapshotBytes
         embedded = [bool]$OneFile
         immutable_runtime = $true
+        map_catalog_verified = $true
+        map_catalog_sources = @("Goods", "Brewall")
         approved_zone_aliases_compiled = $true
         approved_travel_supplements_compiled = $true
         reviewed_release_inputs_verified = $true

@@ -94,6 +94,26 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         self.assertLess(after_hash, copy)
         self.assertLess(copy, packaged_hash)
 
+    def test_release_reopens_final_zip_before_checksum_sidecar_and_success(self):
+        self.assertIn('verify_release_archive.py', self.script)
+        self.assertIn('$ArchiveVerifier $Archive', self.script)
+        self.assertIn('--source-knowledge $Snapshot', self.script)
+        self.assertIn('--require-source-knowledge', self.script)
+        self.assertIn('--expected-version $Version', self.script)
+        self.assertIn('Final release archive verification failed', self.script)
+        self.assertIn('$ArchiveHashPath = "$Archive.sha256"', self.script)
+        self.assertNotIn('SkipArchiveVerification', self.script)
+
+        compress = self.script.index('Compress-Archive -Path')
+        verify = self.script.index('$ArchiveVerifier $Archive')
+        archive_hash = self.script.index('$ArchiveHash = (Get-FileHash -Algorithm SHA256 $Archive)')
+        checksum = self.script.index('Set-Content -Encoding ASCII -Path $ArchiveHashPath')
+        ready = self.script.index('Write-Host "Release ready."')
+        self.assertLess(compress, verify)
+        self.assertLess(verify, archive_hash)
+        self.assertLess(archive_hash, checksum)
+        self.assertLess(checksum, ready)
+
     def test_release_compiles_reviewed_zone_aliases_before_finalization(self):
         self.assertIn('builder-data\\zone-aliases', self.script)
         self.assertIn('--zone-alias-dir $ApprovedZoneAliasDir', self.script)

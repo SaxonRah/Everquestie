@@ -44,3 +44,34 @@ remain diagnostic-compatible. Publish mode requires both reviewed families to be
 recorded, internally complete, and equal to the persisted curated evidence. The audit
 opens SQLite in `mode=ro`; it never imports manifests, rebuilds topology, or modifies
 the knowledge file.
+
+## Final distributable ZIP gate
+
+The official release coordinator does not stop after writing the ZIP. It re-opens the
+finished archive with `tools/verify_release_archive.py` and checks the exact members
+that will be distributed:
+
+- ZIP paths must be portable and free of duplicate/case-colliding members;
+- the archive must contain exactly one `release-manifest.json`;
+- the archived executable hash and byte count must match the manifest;
+- one-folder releases must contain exactly the declared knowledge SQLite file, and its
+  hash/size must match both the manifest and the already-audited source snapshot;
+- one-file releases must not ship an external SQLite database, and the manifest's
+  embedded-knowledge hash/size must still match the exact source snapshot passed to
+  PyInstaller;
+- user-state or builder SQLite files are not allowed in the distributable;
+- the archive's CRC test must pass before publication.
+
+The one-file check intentionally does **not** claim that PyInstaller's embedded payload
+was extracted and independently re-hashed. Its release manifest therefore keeps the
+narrower `source-hash-stable-during-embed` claim, while one-folder releases can truthfully
+claim `byte-identical-copy`.
+
+A successful official build writes a `.zip.sha256` sidecar only after the archive gate
+passes. The verifier is also usable directly:
+
+```powershell
+python .\tools\verify_release_archive.py .\release\0.99\EverQuestie-0.99-windows.zip `
+  --source-knowledge .\build\release\0.99\everquestie-knowledge.sqlite3 `
+  --require-source-knowledge --expected-version 0.99
+```

@@ -54,29 +54,52 @@ def _bounded(text: str, limit: int = 500) -> str:
 
 
 def _unique_item_name_index(db) -> dict[str, int]:
-    """Map exact normalized item names/aliases that identify exactly one item."""
-    rows = db.conn.execute(
+    """Map exact item text to one canonical item using exact-first identity semantics.
+
+    A canonical exact name is stronger evidence than an alias on another item.  Aliases
+    are consulted only when no canonical item carries that normalized name at all.  True
+    duplicate canonical names and duplicate aliases remain ambiguous and are omitted.
+    This mirrors the fail-closed identity policy used by tracked quest progress without
+    introducing fuzzy or substring matching into Recent Loot.
+    """
+    exact_rows = db.conn.execute(
         """
         SELECT e.id AS entity_id, e.normalized_name AS value
         FROM entities e
         WHERE e.kind='item'
-        UNION ALL
+        """
+    ).fetchall()
+    exact_owners: dict[str, set[int]] = {}
+    for row in exact_rows:
+        key = str(row["value"] or "")
+        if key:
+            exact_owners.setdefault(key, set()).add(int(row["entity_id"]))
+
+    aliases = db.conn.execute(
+        """
         SELECT e.id AS entity_id, a.normalized_alias AS value
         FROM entity_aliases a
         JOIN entities e ON e.id=a.entity_id
         WHERE e.kind='item'
         """
     ).fetchall()
-    owners: dict[str, set[int]] = {}
-    for row in rows:
+    alias_owners: dict[str, set[int]] = {}
+    for row in aliases:
         key = str(row["value"] or "")
         if key:
-            owners.setdefault(key, set()).add(int(row["entity_id"]))
-    return {
+            alias_owners.setdefault(key, set()).add(int(row["entity_id"]))
+
+    resolved: dict[str, int] = {
         key: next(iter(entity_ids))
-        for key, entity_ids in owners.items()
+        for key, entity_ids in exact_owners.items()
         if len(entity_ids) == 1
     }
+    for key, entity_ids in alias_owners.items():
+        if key in exact_owners:
+            continue
+        if len(entity_ids) == 1:
+            resolved[key] = next(iter(entity_ids))
+    return resolved
 
 
 def _quest_uses_for_items(db, item_ids: Iterable[int]) -> dict[int, tuple[LootQuestUse, ...]]:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .runtime_map_diagnostics import release_map_catalog_text
+
 
 _RUNTIME_MODE_UI_MARKER = "_everquestie_runtime_mode_ui"
 _RUNTIME_PROFILE_REFRESH_MARKER = "_everquestie_runtime_profile_refresh"
@@ -166,7 +168,7 @@ def install_runtime_mode_ui() -> None:
 
     # Append the profile capability boundary to the normal Database diagnostics rather
     # than making the persistent top banner excessively long. Packaged snapshots also
-    # expose reviewed release-input evidence after immutable self-consistency auditing.
+    # expose reviewed release-input evidence and their already-compiled map catalog.
     current_database_text = getattr(current_app, "_database_diagnostic_text", None)
     if current_database_text is not None and not getattr(
         current_database_text,
@@ -178,6 +180,9 @@ def install_runtime_mode_ui() -> None:
             release_inputs = release_knowledge_inputs_text(self.db)
             if release_inputs:
                 parts.append(release_inputs)
+            map_catalog = release_map_catalog_text(self.db)
+            if map_catalog:
+                parts.append(map_catalog)
             return "\n\n".join(parts)
 
         setattr(_database_diagnostic_text, _RUNTIME_DATABASE_DIAGNOSTIC_MARKER, True)

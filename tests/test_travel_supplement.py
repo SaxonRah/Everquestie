@@ -102,6 +102,88 @@ class TravelSupplementTests(unittest.TestCase):
         self.assertEqual(requirements[0].text, "Minimum level 10")
         self.assertEqual(requirements[0].minimum_level, 10)
 
+    def test_exact_client_zone_id_disambiguates_duplicate_name_without_overriding_name(self):
+        legacy = self._zone("Toxxulia Forest", 38)
+        current = self._zone("Toxxulia Forest", 414)
+        pok = self._zone("The Plane of Knowledge", 202)
+        manifest = self._manifest(
+            {
+                "source_name": "Reviewed portal evidence",
+                "source_version": "test-v1",
+                "edges": [
+                    {
+                        "source_key": "pok-to-current-toxxulia",
+                        "source": "The Plane of Knowledge",
+                        "source_eq_zone_id": "202",
+                        "target": "Toxxulia Forest",
+                        "target_eq_zone_id": "414",
+                        "bidirectional": True,
+                        "evidence": "Reviewed source identifies the current Toxxulia portal.",
+                    }
+                ],
+            }
+        )
+
+        stats = TravelSupplementImporter(self.db).import_manifest(manifest)
+        self.assertEqual(stats.edges, 1)
+        self.assertEqual(stats.bidirectional_edges, 1)
+        catalog = ZoneTravelCatalog(self.db)
+        self.assertEqual(catalog.shortest_path(pok, current), [pok, current])
+        self.assertEqual(catalog.shortest_path(current, pok), [current, pok])
+        self.assertEqual(catalog.shortest_path(pok, legacy), [])
+
+        row = self.db.conn.execute(
+            "SELECT data_json FROM zone_travel_edges WHERE source_key='pok-to-current-toxxulia'"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        data = json.loads(row["data_json"])
+        self.assertEqual(data["source_eq_zone_id"], "202")
+        self.assertEqual(data["target_eq_zone_id"], "414")
+
+    def test_exact_client_zone_id_name_mismatch_is_rejected(self):
+        alpha = self._zone("Alpha", 1001)
+        beta = self._zone("Beta", 1002)
+        manifest = self._manifest(
+            {
+                "source_name": "Curated EQ travel",
+                "source_version": "test-v1",
+                "edges": [
+                    {
+                        "source_key": "mismatch",
+                        "source": "Alpha",
+                        "source_eq_zone_id": "1002",
+                        "target": "Beta",
+                        "evidence": "The ID intentionally disagrees with the source name.",
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not match eqclient zone ID"):
+            TravelSupplementImporter(self.db).import_manifest(manifest)
+
+        # Endpoint identity validation happens before the derived travel catalog is
+        # created or replaced. A rejected manifest therefore leaves no travel schema
+        # or rows behind unless some other builder step had already created it.
+        table = self.db.conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type='table' AND name='zone_travel_edges'
+            """
+        ).fetchone()
+        self.assertIsNone(table)
+
+        catalog = ZoneTravelCatalog(self.db)
+        self.assertEqual(catalog.shortest_path(alpha, beta), [])
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) AS n FROM zone_travel_edges WHERE source_kind=?",
+                (TRAVEL_SUPPLEMENT_SOURCE_KIND,),
+            ).fetchone()["n"],
+            0,
+        )
+
     def test_bidirectional_is_explicit_not_inferred(self):
         alpha = self._zone("Alpha", 1001)
         beta = self._zone("Beta", 1002)

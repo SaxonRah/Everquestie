@@ -111,6 +111,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         hop = guidance.hops[0]
         self.assertEqual(hop.evidence_source, "Z Located")
         self.assertEqual(hop.source_coordinate, (12.0, 34.0, 5.0))
+        self.assertIsNotNone(hop.coordinate_source_record_id)
         self.assertFalse(hop.uses_reverse_evidence)
 
         coverage = ZoneCoverageCatalog(self.db).summary()
@@ -130,6 +131,35 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
         hop = guidance.hops[0]
         self.assertEqual(hop.evidence_source, "A Provider Located")
         self.assertIsNone(hop.source_coordinate)
+        self.assertIsNone(hop.coordinate_source_record_id)
+
+        coverage = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(coverage.route_directions_linked, 1)
+        self.assertEqual(coverage.route_directions_mappable, 0)
+        self.assertEqual(coverage.travel_edges_with_source_coordinates, 0)
+        self.assertEqual(coverage.travel_edges_without_source_coordinates, 1)
+
+    def test_map_label_kind_without_label_record_is_not_coordinate_provenance(self):
+        self._add(
+            self.a,
+            self.b,
+            source_name="Spoofed Map Kind",
+            source_key="spoofed-map-kind",
+            source_kind="map_label",
+            coordinate=(12.0, 34.0, 5.0),
+        )
+
+        row = self.db.conn.execute(
+            "SELECT label_id FROM zone_travel_edges WHERE source_key='spoofed-map-kind'"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["label_id"])
+
+        guidance = build_route_guidance(self.db, "Zone A", "Zone B")
+        hop = guidance.hops[0]
+        self.assertEqual(hop.evidence_source, "Spoofed Map Kind")
+        self.assertIsNone(hop.source_coordinate)
+        self.assertIsNone(hop.coordinate_source_record_id)
 
         coverage = ZoneCoverageCatalog(self.db).summary()
         self.assertEqual(coverage.route_directions_linked, 1)
@@ -239,6 +269,7 @@ class RouteGuidanceEvidenceTests(unittest.TestCase):
             hop = guidance.hops[0]
             self.assertEqual(hop.evidence_source, "Z Located")
             self.assertEqual(hop.source_coordinate, (12.0, 34.0, 5.0))
+            self.assertIsNotNone(hop.coordinate_source_record_id)
             with self.assertRaises(Exception):
                 runtime.conn.execute("UPDATE zone_travel_edges SET x=999")
         finally:

@@ -59,8 +59,9 @@ class ZoneActionabilityTests(unittest.TestCase):
         )
         catalog = ZoneTravelCatalog(self.db)
 
-        # Two direct statements describe A→B. The coordinate-bearing direct row must
-        # represent this canonical route direction even though its source sorts later.
+        # Two direct statements describe A→B. Only the map-label row owns an exact
+        # coordinate, so it must represent the mappable canonical route direction even
+        # though its source sorts later than the generic topology row.
         catalog.add_provider_connection(
             self.a,
             self.b,
@@ -77,16 +78,17 @@ class ZoneActionabilityTests(unittest.TestCase):
             connection_kind="portal",
             bidirectional=False,
             source_name="Z Located",
-            source_kind="provider",
+            source_kind="map_label",
             source_key="a-b-located",
-            evidence="direct statement with source coordinate",
+            evidence="direct map label with source coordinate",
         )
         self.db.conn.execute(
             "UPDATE zone_travel_edges SET x=12,y=34,z=5 WHERE source_key='a-b-located'"
         )
 
-        # C→A is explicitly two-way. A can route back to C, but this row's coordinate
-        # belongs to C, so A has no safe map target for the reverse direction.
+        # C→A is explicitly two-way provider topology. A can route back to C, but this
+        # row's manually populated coordinate has no coordinate-owning provenance and
+        # therefore cannot become a Map target in either direction.
         catalog.add_provider_connection(
             self.c,
             self.a,
@@ -95,7 +97,7 @@ class ZoneActionabilityTests(unittest.TestCase):
             source_name="Two Way Source",
             source_kind="provider",
             source_key="c-a-two-way",
-            evidence="two-way topology with C-side coordinate",
+            evidence="two-way topology with unreviewed C-side coordinate",
         )
         self.db.conn.execute(
             "UPDATE zone_travel_edges SET x=50,y=60,z=7 WHERE source_key='c-a-two-way'"
@@ -134,6 +136,7 @@ class ZoneActionabilityTests(unittest.TestCase):
         to_b = by_neighbor["Zone B"]
         self.assertTrue(to_b.mappable)
         self.assertEqual(to_b.source_name, "Z Located")
+        self.assertEqual(to_b.source_kind, "map_label")
         self.assertEqual(to_b.evidence_count, 2)
         self.assertEqual((to_b.x, to_b.y, to_b.z), (12.0, 34.0, 5.0))
         self.assertEqual(to_b.loc_text, "Y=34 X=12 Z=5")
@@ -142,7 +145,7 @@ class ZoneActionabilityTests(unittest.TestCase):
         self.assertFalse(to_c.mappable)
         self.assertTrue(to_c.uses_reverse_evidence)
         self.assertEqual(to_c.coordinate_owner_entity_id, self.c)
-        self.assertEqual((to_c.x, to_c.y, to_c.z), (50.0, 60.0, 7.0))
+        self.assertEqual((to_c.x, to_c.y, to_c.z), (None, None, None))
 
     def test_text_separates_mappable_reverse_and_incoming_only_evidence(self):
         text = zone_actionability_text(self.db, "Zone A")
@@ -159,6 +162,18 @@ class ZoneActionabilityTests(unittest.TestCase):
         # The base canonical context still preserves the incoming-only evidence.
         self.assertIn("← Zone X", text)
         self.assertIn("incoming only", text)
+
+    def test_provider_xy_does_not_create_a_mappable_direct_exit(self):
+        # The C→A provider row has X/Y populated, but C itself must still see that
+        # direct route as topology-only because the provider fact does not own /loc.
+        view, status = build_zone_actionability(self.db, "Zone C")
+        self.assertEqual(status, "linked")
+        self.assertIsNotNone(view)
+        assert view is not None
+        to_a = next(row for row in view.route_directions if row.neighbor_zone_entity_id == self.a)
+        self.assertFalse(to_a.uses_reverse_evidence)
+        self.assertFalse(to_a.mappable)
+        self.assertEqual((to_a.x, to_a.y, to_a.z), (None, None, None))
 
     def test_zone_with_no_usable_routes_reports_zero_actionability(self):
         view, status = build_zone_actionability(self.db, "Zone X")

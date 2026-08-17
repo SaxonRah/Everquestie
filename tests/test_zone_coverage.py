@@ -127,10 +127,10 @@ class ZoneCoverageTests(unittest.TestCase):
             mesa,
             connection_kind="zone_line",
             bidirectional=True,
-            source_name="Two Way Fixture",
-            source_kind="provider",
+            source_name="Two Way Map Fixture",
+            source_kind="map_label",
             source_key="stone-mesa-two-way",
-            evidence="one stored row usable both ways",
+            evidence="one coordinate-owning stored row usable both ways",
         )
         self.db.conn.execute(
             "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='stone-mesa-two-way'"
@@ -154,17 +154,17 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertEqual((rows["Stone Hive"].route_outgoing, rows["Stone Hive"].route_outgoing_mappable), (1, 1))
         self.assertEqual((rows["Goru'kar Mesa"].route_outgoing, rows["Goru'kar Mesa"].route_outgoing_mappable), (1, 0))
 
-        # Independent reverse evidence with a Mesa-owned coordinate closes the
+        # Independent reverse map evidence with a Mesa-owned coordinate closes the
         # actionability gap without creating a third canonical route direction.
         catalog.add_provider_connection(
             mesa,
             stone,
             connection_kind="zone_line",
             bidirectional=False,
-            source_name="Reverse Fixture",
-            source_kind="provider",
+            source_name="Reverse Map Fixture",
+            source_kind="map_label",
             source_key="mesa-stone-direct",
-            evidence="independent reverse-side coordinate",
+            evidence="independent reverse-side map coordinate",
         )
         self.db.conn.execute(
             "UPDATE zone_travel_edges SET x=30,y=40,z=5 WHERE source_key='mesa-stone-direct'"
@@ -181,6 +181,30 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertEqual(second.zones_with_route_but_no_mappable_exit, ())
         self.assertEqual(second.route_strong_components, 1)
         self.assertEqual(second.largest_strong_route_component, 2)
+
+    def test_provider_xy_is_not_counted_as_source_owned_coordinate(self):
+        stone, mesa, future = self._zones()
+        catalog = ZoneTravelCatalog(self.db)
+        catalog.add_provider_connection(
+            stone,
+            mesa,
+            source_name="Provider Fixture",
+            source_kind="provider",
+            source_key="provider-with-xy",
+            evidence="topology only",
+        )
+        self.db.conn.execute(
+            "UPDATE zone_travel_edges SET x=10,y=20,z=3 WHERE source_key='provider-with-xy'"
+        )
+        self.db.conn.commit()
+
+        summary = ZoneCoverageCatalog(self.db).summary()
+        self.assertEqual(summary.travel_edges_linked, 1)
+        self.assertEqual(summary.travel_edges_with_source_coordinates, 0)
+        self.assertEqual(summary.travel_edges_without_source_coordinates, 1)
+        self.assertEqual(summary.route_directions_linked, 1)
+        self.assertEqual(summary.route_directions_mappable, 0)
+        self.assertEqual(summary.zones_with_route_but_no_mappable_exit, ("Stone Hive",))
 
     def test_route_graph_components_separate_islands_and_directionality(self):
         stone, mesa, future = self._zones()
@@ -237,7 +261,7 @@ class ZoneCoverageTests(unittest.TestCase):
         self.assertIn("Canonical route directions: linked=1, mappable=0", text)
         self.assertIn("Route graph: zones=2/3, weak components=1", text)
         self.assertIn("largest mutually reachable component=1", text)
-        self.assertIn("confirmed outgoing route but no mappable source coordinate", text)
+        self.assertIn("confirmed outgoing route but no mappable reviewed source coordinate", text)
         self.assertIn("Directed route sinks", text)
         self.assertIn("Stone Hive", text)
         self.assertIn("Goru'kar Mesa", text)

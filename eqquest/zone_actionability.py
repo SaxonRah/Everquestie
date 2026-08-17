@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import Database
+from .travel_coordinate_actionability import (
+    travel_coordinate_is_actionable,
+    travel_coordinate_source_owns_point,
+)
 from .zone_context import ZoneConnection, ZoneContext, build_zone_context, zone_context_text
 
 
@@ -12,8 +16,9 @@ class ZoneRouteDirection:
 
     Multiple provenance rows can describe the same source→neighbor direction. The
     representative row follows the same actionability precedence used by route
-    guidance: direct evidence beats reverse two-way evidence, and an X/Y-bearing
-    direct row beats a coordinate-less direct row.
+    guidance: direct evidence beats reverse two-way evidence, and a direct row with
+    source-owned coordinate evidence beats a direct row whose topology is known but
+    whose X/Y is not independently actionable.
     """
 
     source_zone_entity_id: int
@@ -39,8 +44,7 @@ class ZoneRouteDirection:
         return (
             not self.uses_reverse_evidence
             and self.coordinate_owner_entity_id == self.source_zone_entity_id
-            and self.x is not None
-            and self.y is not None
+            and travel_coordinate_source_owns_point(self.source_kind, self.x, self.y)
         )
 
     @property
@@ -78,10 +82,10 @@ class ZoneActionabilityContext:
 
 def _connection_rank(zone_entity_id: int, connection: ZoneConnection) -> tuple:
     direct = connection.coordinate_zone_entity_id == zone_entity_id
-    has_xy = connection.x is not None and connection.y is not None
+    actionable_coordinate = travel_coordinate_is_actionable(connection, zone_entity_id)
     return (
         0 if direct else 1,
-        0 if direct and has_xy else 1,
+        0 if actionable_coordinate else 1,
         connection.source_kind.casefold(),
         connection.source_name.casefold(),
         connection.source_key.casefold(),
@@ -101,6 +105,11 @@ def _route_directions(context: ZoneContext) -> tuple[ZoneRouteDirection, ...]:
     for neighbor_id, rows in grouped.items():
         chosen = min(rows, key=lambda row: _connection_rank(zone_id, row))
         direct = chosen.coordinate_zone_entity_id == zone_id
+        coordinate_owned = travel_coordinate_source_owns_point(
+            chosen.source_kind,
+            chosen.x,
+            chosen.y,
+        )
         directions.append(
             ZoneRouteDirection(
                 source_zone_entity_id=zone_id,
@@ -117,9 +126,9 @@ def _route_directions(context: ZoneContext) -> tuple[ZoneRouteDirection, ...]:
                 source_version=chosen.source_version,
                 evidence=chosen.evidence,
                 coordinate_owner_entity_id=chosen.coordinate_zone_entity_id,
-                x=chosen.x,
-                y=chosen.y,
-                z=chosen.z,
+                x=chosen.x if coordinate_owned else None,
+                y=chosen.y if coordinate_owned else None,
+                z=chosen.z if coordinate_owned else None,
             )
         )
     directions.sort(key=lambda row: (row.neighbor_zone_name.casefold(), row.neighbor_zone_entity_id))
@@ -175,7 +184,7 @@ def zone_actionability_text(
                 "no source-side coordinate | selected topology evidence is stored from the opposite zone"
             )
         else:
-            action = "no source-side coordinate"
+            action = "no reviewed source-side coordinate"
         evidence_count = (
             f" | {direction.evidence_count} evidence rows"
             if direction.evidence_count > 1

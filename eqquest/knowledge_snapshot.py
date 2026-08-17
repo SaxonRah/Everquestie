@@ -62,6 +62,13 @@ KNOWLEDGE_META_KEYS = {
     "eq_mcp_detail_counts",
     "eq_mcp_detail_errors",
     "eq_mcp_detail_missing_systems",
+    # Compact reviewed-input provenance is part of the released artifact contract.
+    # Keep exact counters rather than a broad approved_* prefix so builder-only fields
+    # cannot become distributable metadata by accident.
+    "approved_zone_alias_supplement_count",
+    "approved_zone_alias_count",
+    "approved_travel_supplement_count",
+    "approved_travel_supplement_edge_count",
 }
 KNOWLEDGE_META_PREFIXES = (
     "map_catalog_source_version::",

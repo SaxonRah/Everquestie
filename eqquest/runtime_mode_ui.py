@@ -7,6 +7,13 @@ _RUNTIME_MODE_UI_MARKER = "_everquestie_runtime_mode_ui"
 _RUNTIME_PROFILE_REFRESH_MARKER = "_everquestie_runtime_profile_refresh"
 _RUNTIME_DATABASE_DIAGNOSTIC_MARKER = "_everquestie_profile_capability_diagnostic"
 
+_RELEASE_INPUT_META_KEYS = (
+    "approved_zone_alias_supplement_count",
+    "approved_zone_alias_count",
+    "approved_travel_supplement_count",
+    "approved_travel_supplement_edge_count",
+)
+
 
 def _server_profile_label(db) -> str:
     """Return the persisted global server profile without making diagnostics fragile."""
@@ -48,6 +55,54 @@ def profile_capability_text(db) -> str:
         f"  Profile: {profile.label}\n"
         f"  Routing / entity availability: {routing}\n"
         f"  Class/level Mechanics: {mechanics}"
+    )
+
+
+def release_knowledge_inputs_text(db) -> str:
+    """Describe reviewed inputs retained by an immutable release snapshot.
+
+    Old packaged snapshots contain none of these counters and remain quiet. A partially
+    populated or malformed set is surfaced explicitly instead of silently implying that
+    a release was fully staged.
+    """
+    if getattr(db, "knowledge_writable", True):
+        return ""
+
+    get_meta = getattr(db, "get_meta", None)
+    if not callable(get_meta):
+        return ""
+
+    try:
+        raw = {
+            key: str(get_meta(key, "") or "").strip()
+            for key in _RELEASE_INPUT_META_KEYS
+        }
+    except Exception:
+        return ""
+
+    if not any(raw.values()):
+        return ""
+    if not all(raw.values()):
+        return (
+            "Release knowledge inputs:\n"
+            "  Reviewed-input counters: incomplete"
+        )
+
+    try:
+        alias_supplements = int(raw["approved_zone_alias_supplement_count"])
+        aliases = int(raw["approved_zone_alias_count"])
+        travel_supplements = int(raw["approved_travel_supplement_count"])
+        travel_edges = int(raw["approved_travel_supplement_edge_count"])
+    except ValueError:
+        return (
+            "Release knowledge inputs:\n"
+            "  Reviewed-input counters: invalid"
+        )
+
+    return (
+        "Release knowledge inputs:\n"
+        f"  Reviewed zone aliases: {aliases} aliases from {alias_supplements} supplement(s)\n"
+        f"  Reviewed travel: {travel_edges} edges from {travel_supplements} supplement(s)"
     )
 
 
@@ -108,9 +163,8 @@ def install_runtime_mode_ui() -> None:
         current_app._build_ui = _build_ui
 
     # Append the profile capability boundary to the normal Database diagnostics rather
-    # than making the persistent top banner excessively long. This is a read-only
-    # explanation of existing behavior; it does not change routing, lifecycle or
-    # mechanics policy.
+    # than making the persistent top banner excessively long. Packaged snapshots also
+    # expose the compact reviewed release-input counters retained by finalization.
     current_database_text = getattr(current_app, "_database_diagnostic_text", None)
     if current_database_text is not None and not getattr(
         current_database_text,
@@ -118,9 +172,11 @@ def install_runtime_mode_ui() -> None:
         False,
     ):
         def _database_diagnostic_text(self) -> str:
-            text = current_database_text(self).rstrip()
-            capability = profile_capability_text(self.db)
-            return text + "\n\n" + capability
+            parts = [current_database_text(self).rstrip(), profile_capability_text(self.db)]
+            release_inputs = release_knowledge_inputs_text(self.db)
+            if release_inputs:
+                parts.append(release_inputs)
+            return "\n\n".join(parts)
 
         setattr(_database_diagnostic_text, _RUNTIME_DATABASE_DIAGNOSTIC_MARKER, True)
         current_app._database_diagnostic_text = _database_diagnostic_text

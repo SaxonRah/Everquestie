@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -36,39 +37,71 @@ class PlaneOfKnowledgeCityPortalManifestTests(unittest.TestCase):
             merge_by_name=False,
         )
 
-    def test_official_west_freeport_portal_is_explicitly_bidirectional(self):
+    def test_official_city_portals_pin_current_duplicate_client_identities(self):
         pok = self._zone("The Plane of Knowledge", 202)
-        west_freeport = self._zone("West Freeport", 9)
+        legacy_west_freeport = self._zone("West Freeport", 9)
+        current_west_freeport = self._zone("West Freeport", 383)
+        legacy_toxxulia = self._zone("Toxxulia Forest", 38)
+        current_toxxulia = self._zone("Toxxulia Forest", 414)
 
         stats = TravelSupplementImporter(self.db).import_manifest(MANIFEST)
         self.assertEqual(
             stats.source_name,
             "EverQuest official Plane of Knowledge city portal evidence",
         )
-        self.assertEqual(stats.edges, 1)
-        self.assertEqual(stats.bidirectional_edges, 1)
+        self.assertEqual(stats.edges, 2)
+        self.assertEqual(stats.bidirectional_edges, 2)
         self.assertEqual(stats.requirements, 0)
 
         catalog = ZoneTravelCatalog(self.db)
-        self.assertEqual(catalog.shortest_path(pok, west_freeport), [pok, west_freeport])
-        self.assertEqual(catalog.shortest_path(west_freeport, pok), [west_freeport, pok])
+        self.assertEqual(
+            catalog.shortest_path(pok, current_west_freeport),
+            [pok, current_west_freeport],
+        )
+        self.assertEqual(
+            catalog.shortest_path(current_west_freeport, pok),
+            [current_west_freeport, pok],
+        )
+        self.assertEqual(
+            catalog.shortest_path(pok, current_toxxulia),
+            [pok, current_toxxulia],
+        )
+        self.assertEqual(
+            catalog.shortest_path(current_toxxulia, pok),
+            [current_toxxulia, pok],
+        )
+        self.assertEqual(catalog.shortest_path(pok, legacy_west_freeport), [])
+        self.assertEqual(catalog.shortest_path(pok, legacy_toxxulia), [])
 
         rows = self.db.conn.execute(
             """
             SELECT source_zone_entity_id,target_zone_entity_id,bidirectional,
-                   source_key,source_name,source_version,evidence
+                   source_key,source_name,source_version,evidence,data_json
             FROM zone_travel_edges
             WHERE source_name='EverQuest official Plane of Knowledge city portal evidence'
-            ORDER BY source_zone_entity_id,target_zone_entity_id
+            ORDER BY source_key
             """
         ).fetchall()
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(int(row["source_zone_entity_id"]), pok)
-        self.assertEqual(int(row["target_zone_entity_id"]), west_freeport)
-        self.assertEqual(int(row["bidirectional"]), 1)
-        self.assertEqual(row["source_key"], "pok-west-freeport-city-book")
-        self.assertIn("West Freeport", row["evidence"])
+        self.assertEqual(len(rows), 2)
+        by_key = {str(row["source_key"]): row for row in rows}
+
+        freeport = by_key["pok-west-freeport-city-book"]
+        self.assertEqual(int(freeport["source_zone_entity_id"]), pok)
+        self.assertEqual(int(freeport["target_zone_entity_id"]), current_west_freeport)
+        self.assertEqual(int(freeport["bidirectional"]), 1)
+        self.assertIn("West Freeport", freeport["evidence"])
+        freeport_data = json.loads(freeport["data_json"])
+        self.assertEqual(freeport_data["source_eq_zone_id"], "202")
+        self.assertEqual(freeport_data["target_eq_zone_id"], "383")
+
+        toxxulia = by_key["pok-toxxulia-city-book"]
+        self.assertEqual(int(toxxulia["source_zone_entity_id"]), pok)
+        self.assertEqual(int(toxxulia["target_zone_entity_id"]), current_toxxulia)
+        self.assertEqual(int(toxxulia["bidirectional"]), 1)
+        self.assertIn("Toxxula Forest", toxxulia["evidence"])
+        toxxulia_data = json.loads(toxxulia["data_json"])
+        self.assertEqual(toxxulia_data["source_eq_zone_id"], "202")
+        self.assertEqual(toxxulia_data["target_eq_zone_id"], "414")
 
 
 if __name__ == "__main__":

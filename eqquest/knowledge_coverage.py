@@ -394,7 +394,8 @@ def normalization_coverage_text(
             f"  canonical entity links: {provider.entity_links:,} ({provider.primary_entity_links:,} primary)",
             f"  external IDs / aliases: {provider.external_ids:,} / {provider.aliases:,}",
             f"  relationships / locations / quest steps: {provider.relationships:,} / {provider.locations:,} / {provider.quest_steps:,}",
-            f"  rich details / support rows / lifecycle records: {provider.details:,} / {provider.support_rows:,} / {provider.lifecycle_records:,}",
+            f"  rich details / support rows: {provider.details:,} / {provider.support_rows:,}",
+            f"  source-granular lifecycle records: {provider.lifecycle_records:,}",
         ]
         if provider.page_types:
             lines.append(

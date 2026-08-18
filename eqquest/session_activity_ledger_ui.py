@@ -29,6 +29,18 @@ def install_session_activity_ledger_ui() -> None:
         self._session_activity_ledger_last_event_id = int(
             getattr(self, "_activity_session_start_event_id", 0) or 0
         )
+        # Keep the existing chronological text surface and scrollbar. Only its label
+        # changes so the player knows indented source-backed intelligence can appear
+        # beneath the untouched parsed event rows.
+        event_text = getattr(self, "event_text", None)
+        parent = getattr(event_text, "master", None)
+        if parent is not None:
+            try:
+                parent.configure(text="Live session ledger")
+            except Exception:
+                # Headless/fake widget tests and older Tk wrappers may not expose the
+                # LabelFrame text option. The annotation behavior remains independent.
+                pass
 
     def _start(self) -> None:
         current_start(self)

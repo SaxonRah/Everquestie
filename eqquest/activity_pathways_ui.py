@@ -11,6 +11,7 @@ from .activity_pathways import (
     pathway_detail_text,
 )
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_composition import chain_live_build
 from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .objective_reviewed_item_sources import (
     quest_objective_navigation_with_reviewed_sources,
@@ -139,13 +140,10 @@ def install_activity_pathways_ui() -> None:
     if getattr(current_app, _ACTIVITY_PATHWAYS_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
     current_start = current_app._start
     current_stop = current_app._stop
 
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_activity_pathways(self) -> None:
         self.activity_pathway_engine = ActivityPathwayEngine(self.db)
         boundary = self.activity_pathway_engine.latest_observed_event_id()
         self.activity_pathway_engine.reset_session(boundary)
@@ -514,7 +512,7 @@ def install_activity_pathways_ui() -> None:
         if hasattr(self, "activity_pathway_status"):
             self._refresh_activity_pathways(force=True)
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_activity_pathways)
     current_app._selected_activity_pathway = _selected_pathway
     current_app._activity_pathway_view_selected = _activity_pathway_view_selected
     current_app._activity_pathway_track_selected = _activity_pathway_track_selected

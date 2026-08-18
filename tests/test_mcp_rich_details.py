@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 from eqquest.db import Database
 from eqquest.mcp_client import MCPError
+from eqquest.sources import MCPDetailRecordCompiler, MCPLocalSnapshotCompiler
 from eqquest.sources.mcp_snapshot import (
-    MCPLocalSnapshotCompiler,
+    MCPLocalSnapshotCompiler as CoreMCPLocalSnapshotCompiler,
     MCPSnapshotCapture,
     _detail_search_text,
     _detail_storage_payload,
@@ -102,6 +103,18 @@ class MCPRichDetailTests(unittest.TestCase):
                 "total": 1,
             },
         ]
+
+    def test_public_compiler_owns_rich_details_without_patching_core_compiler(self) -> None:
+        self.assertIs(MCPDetailRecordCompiler, MCPLocalSnapshotCompiler)
+        self.assertTrue(issubclass(MCPDetailRecordCompiler, CoreMCPLocalSnapshotCompiler))
+        self.assertEqual(
+            "eqquest.sources.mcp_snapshot",
+            CoreMCPLocalSnapshotCompiler.import_details.__module__,
+        )
+        self.assertEqual(
+            "eqquest.sources.mcp_detail_compiler",
+            MCPDetailRecordCompiler.import_details.__module__,
+        )
 
     def test_structured_record_is_persisted_with_mcp_provenance(self) -> None:
         capture = self.capture()

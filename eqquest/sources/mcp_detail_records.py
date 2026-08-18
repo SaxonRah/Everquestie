@@ -409,11 +409,3 @@ def import_details(
             f"MCP rich details compiled: {result.total_details:,} source records "
             f"across {canonical_total:,} canonical entities."
         )
-
-
-def install_mcp_detail_record_storage() -> None:
-    current = core.MCPLocalSnapshotCompiler.import_details
-    if getattr(current, "_everquestie_source_record_storage", False):
-        return
-    import_details._everquestie_source_record_storage = True  # type: ignore[attr-defined]
-    core.MCPLocalSnapshotCompiler.import_details = import_details  # type: ignore[method-assign]

@@ -68,14 +68,13 @@ class ActivityPathwaysUITests(unittest.TestCase):
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_navigate_match", None)))
         self.assertTrue(callable(getattr(app_cls, "_activity_pathway_explain_selected", None)))
 
-    def test_view_uses_exact_quest_id_handoff(self):
+    def test_view_hands_exact_quest_id_to_shared_knowledge_owner(self):
         fake = self._fake()
-        opened: list[int] = []
-        fake._open_knowledge_entity_exact = lambda entity_id: opened.append(int(entity_id)) or True
-        fake._map_entity_selected = lambda _entity_id: self.fail("legacy name/tree handoff should not run")
 
-        self.app_module.EverQuestieApp._activity_pathway_view_selected(fake)
-        self.assertEqual(opened, [4242])
+        with patch("eqquest.activity_pathways_ui.open_exact_knowledge_entity") as opener:
+            self.app_module.EverQuestieApp._activity_pathway_view_selected(fake)
+
+        opener.assert_called_once_with(fake, 4242)
 
     def test_tracking_happens_only_after_explicit_track_action(self):
         fake = self._fake()

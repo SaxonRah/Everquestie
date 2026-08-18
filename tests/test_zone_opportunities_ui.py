@@ -104,7 +104,7 @@ class ZoneOpportunitiesUITests(unittest.TestCase):
         self.assertIn("ZONE OPPORTUNITY", tracked[0][1])
         self.assertEqual(refreshes, [True])
 
-    def test_map_action_uses_exact_selected_step_without_tracking_first(self):
+    def test_map_action_uses_shared_chooser_for_single_exact_selected_step(self):
         mapped: list[tuple] = []
         fake = SimpleNamespace(
             db=object(),
@@ -134,7 +134,10 @@ class ZoneOpportunitiesUITests(unittest.TestCase):
         with patch(
             "eqquest.zone_opportunities_ui.tracked_quest_objective_navigation",
             return_value=result,
-        ) as navigation:
+        ) as navigation, patch(
+            "eqquest.zone_opportunities_ui.ask_knowledge_map_choice",
+            return_value=choice,
+        ) as chooser:
             self.app_module.EverQuestieApp._zone_opportunity_map_selected(fake)
 
         navigation.assert_called_once_with(
@@ -143,8 +146,56 @@ class ZoneOpportunitiesUITests(unittest.TestCase):
             "Here Zone",
             step_order=3,
         )
+        chooser.assert_called_once_with(
+            fake,
+            "Here Quest — current-zone objective",
+            "Here Zone",
+            (choice,),
+        )
         self.assertEqual(mapped, [("Here Zone", 12.0, 34.0, 5.0, "Here Mob")])
         self.assertIn("Mapped Zone Opportunity objective", fake.status.value)
+
+    def test_remote_result_uses_shared_route_chooser_before_travel_handoff(self):
+        routed: list[str] = []
+        selected_tabs: list[object] = []
+        travel = SimpleNamespace(route_to_zone=lambda zone: routed.append(str(zone)) or True)
+        fake = SimpleNamespace(
+            db=object(),
+            state_model=SimpleNamespace(current_zone="Here Zone"),
+            zone_opportunity_tree=SimpleNamespace(selection=lambda: ("zone-opportunity:44",)),
+            _zone_opportunity_by_item={"zone-opportunity:44": self.opportunity},
+            travel_tab=travel,
+            notebook=SimpleNamespace(select=lambda tab: selected_tabs.append(tab)),
+            status=_Status(),
+        )
+        choice = SimpleNamespace(zone_name="Remote Zone")
+        result = SimpleNamespace(
+            map_ready=False,
+            route_ready=True,
+            map_choices=(),
+            route_choices=(choice,),
+            current_zone_name="Here Zone",
+            reason="",
+        )
+
+        with patch(
+            "eqquest.zone_opportunities_ui.tracked_quest_objective_navigation",
+            return_value=result,
+        ), patch(
+            "eqquest.zone_opportunities_ui.ask_knowledge_route_choice",
+            return_value=choice,
+        ) as chooser:
+            self.app_module.EverQuestieApp._zone_opportunity_map_selected(fake)
+
+        chooser.assert_called_once_with(
+            fake,
+            "Here Quest — objective",
+            "Here Zone",
+            (choice,),
+        )
+        self.assertEqual(routed, ["Remote Zone"])
+        self.assertEqual(selected_tabs, [travel])
+        self.assertIn("Travel route opened to Remote Zone", fake.status.value)
 
     def test_multiple_objectives_require_exact_step_choice_before_navigation(self):
         second = ZoneOpportunityStep(

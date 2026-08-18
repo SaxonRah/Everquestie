@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .quest_objective_navigation import tracked_quest_objective_navigation
 from .zone_opportunities import (
     ZoneOpportunity,
@@ -232,20 +233,15 @@ def install_zone_opportunities_ui() -> None:
             step_order=int(step.step_order),
         )
         if result.map_ready:
-            if len(result.map_choices) == 1:
-                choice = result.map_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    f"{opportunity.quest_name} — current-zone objective",
-                    result.current_zone_name,
-                    result.map_choices,
-                )
-                if choice is None:
-                    self.status.set("Zone Opportunity map selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                f"{opportunity.quest_name} — current-zone objective",
+                result.current_zone_name,
+                result.map_choices,
+            )
+            if choice is None:
+                self.status.set("Zone Opportunity map selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -262,20 +258,15 @@ def install_zone_opportunities_ui() -> None:
             # This should be uncommon because the qualifying step already resolved to
             # the current zone, but preserve the canonical navigation result rather than
             # guessing if source locations disagree.
-            if len(result.route_choices) == 1:
-                choice = result.route_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                choice = ask_knowledge_route_choice(
-                    self,
-                    f"{opportunity.quest_name} — objective",
-                    result.current_zone_name,
-                    result.route_choices,
-                )
-                if choice is None:
-                    self.status.set("Zone Opportunity route selection cancelled.")
-                    return
+            choice = ask_knowledge_route_choice(
+                self,
+                f"{opportunity.quest_name} — objective",
+                result.current_zone_name,
+                result.route_choices,
+            )
+            if choice is None:
+                self.status.set("Zone Opportunity route selection cancelled.")
+                return
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):
                 self.status.set("Travel routing is not connected in this application surface.")

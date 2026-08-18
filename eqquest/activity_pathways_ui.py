@@ -10,6 +10,7 @@ from .activity_pathways import (
     PathwaySuggestion,
     pathway_detail_text,
 )
+from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .objective_reviewed_item_sources import (
     quest_objective_navigation_with_reviewed_sources,
 )
@@ -272,20 +273,15 @@ def install_activity_pathways_ui() -> None:
             getattr(self.state_model, "current_zone", None),
         )
         if result.map_ready:
-            if len(result.map_choices) == 1:
-                choice = result.map_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    f"{result.quest_name} — {result.contact_kind}",
-                    result.current_zone_name,
-                    result.map_choices,
-                )
-                if choice is None:
-                    self.status.set("Pathway contact map selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                f"{result.quest_name} — {result.contact_kind}",
+                result.current_zone_name,
+                result.map_choices,
+            )
+            if choice is None:
+                self.status.set("Pathway contact map selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -299,20 +295,15 @@ def install_activity_pathways_ui() -> None:
             return
 
         if result.route_ready:
-            if len(result.route_choices) == 1:
-                choice = result.route_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                choice = ask_knowledge_route_choice(
-                    self,
-                    f"{result.quest_name} — {result.contact_kind}",
-                    result.current_zone_name,
-                    result.route_choices,
-                )
-                if choice is None:
-                    self.status.set("Pathway contact route selection cancelled.")
-                    return
+            choice = ask_knowledge_route_choice(
+                self,
+                f"{result.quest_name} — {result.contact_kind}",
+                result.current_zone_name,
+                result.route_choices,
+            )
+            if choice is None:
+                self.status.set("Pathway contact route selection cancelled.")
+                return
 
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):
@@ -361,20 +352,15 @@ def install_activity_pathways_ui() -> None:
             step_order=int(evidence.step_order),
         )
         if result.map_ready:
-            if len(result.map_choices) == 1:
-                choice = result.map_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    f"{suggestion.quest_name} — matched objective",
-                    result.current_zone_name,
-                    result.map_choices,
-                )
-                if choice is None:
-                    self.status.set("Matched objective map selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                f"{suggestion.quest_name} — matched objective",
+                result.current_zone_name,
+                result.map_choices,
+            )
+            if choice is None:
+                self.status.set("Matched objective map selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -388,20 +374,15 @@ def install_activity_pathways_ui() -> None:
             return
 
         if result.route_ready:
-            if len(result.route_choices) == 1:
-                choice = result.route_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                choice = ask_knowledge_route_choice(
-                    self,
-                    f"{suggestion.quest_name} — matched objective",
-                    result.current_zone_name,
-                    result.route_choices,
-                )
-                if choice is None:
-                    self.status.set("Matched objective route selection cancelled.")
-                    return
+            choice = ask_knowledge_route_choice(
+                self,
+                f"{suggestion.quest_name} — matched objective",
+                result.current_zone_name,
+                result.route_choices,
+            )
+            if choice is None:
+                self.status.set("Matched objective route selection cancelled.")
+                return
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):
                 self.status.set("Travel routing is not connected in this application surface.")

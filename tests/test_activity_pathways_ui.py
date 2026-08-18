@@ -97,7 +97,7 @@ class ActivityPathwaysUITests(unittest.TestCase):
         self.assertIn("PATHWAY", tracked[0][1])
         self.assertEqual(refreshes, ["guidance", "pathways"])
 
-    def test_navigate_contact_hands_one_current_zone_choice_to_map_owner(self):
+    def test_navigate_contact_hands_one_current_zone_choice_through_shared_map_chooser(self):
         fake = self._fake()
         mapped = []
         fake._focus_navigation_map_target = lambda *args: mapped.append(args)
@@ -119,16 +119,28 @@ class ActivityPathwaysUITests(unittest.TestCase):
             current_zone_name="Current Zone",
             reason="ready",
         )
-        with patch("eqquest.activity_pathways_ui.pathway_contact_navigation", return_value=result):
+        with patch(
+            "eqquest.activity_pathways_ui.pathway_contact_navigation",
+            return_value=result,
+        ), patch(
+            "eqquest.activity_pathways_ui.ask_knowledge_map_choice",
+            return_value=choice,
+        ) as chooser:
             self.app_module.EverQuestieApp._activity_pathway_navigate_contact(fake)
 
+        chooser.assert_called_once_with(
+            fake,
+            "Suggested Quest — quest starter",
+            "Current Zone",
+            (choice,),
+        )
         self.assertEqual(
             mapped,
             [("Current Zone", 20.0, 10.0, 5.0, "Starter Test (quest starter)")],
         )
         self.assertIn("Starter Test", fake.status.value)
 
-    def test_navigate_contact_hands_one_remote_zone_to_travel_owner(self):
+    def test_navigate_contact_hands_one_remote_zone_through_shared_route_chooser(self):
         fake = self._fake()
         routes: list[str] = []
         selections: list[object] = []
@@ -146,9 +158,21 @@ class ActivityPathwaysUITests(unittest.TestCase):
             current_zone_name="Current Zone",
             reason="remote",
         )
-        with patch("eqquest.activity_pathways_ui.pathway_contact_navigation", return_value=result):
+        with patch(
+            "eqquest.activity_pathways_ui.pathway_contact_navigation",
+            return_value=result,
+        ), patch(
+            "eqquest.activity_pathways_ui.ask_knowledge_route_choice",
+            return_value=choice,
+        ) as chooser:
             self.app_module.EverQuestieApp._activity_pathway_navigate_contact(fake)
 
+        chooser.assert_called_once_with(
+            fake,
+            "Suggested Quest — quest starter",
+            "Current Zone",
+            (choice,),
+        )
         self.assertEqual(routes, ["Remote Zone"])
         self.assertEqual(selections, [travel])
         self.assertIn("Remote Zone", fake.status.value)
@@ -169,7 +193,7 @@ class ActivityPathwaysUITests(unittest.TestCase):
             self.app_module.EverQuestieApp._activity_pathway_navigate_contact(fake)
         self.assertIn("No safely mapped", fake.status.value)
 
-    def test_navigate_match_uses_exact_direct_step_and_map_owner(self):
+    def test_navigate_match_uses_shared_map_chooser_for_exact_direct_step(self):
         fake = self._fake()
         mapped: list[tuple] = []
         fake._focus_navigation_map_target = lambda *args: mapped.append(tuple(args))
@@ -194,7 +218,10 @@ class ActivityPathwaysUITests(unittest.TestCase):
         with patch(
             "eqquest.activity_pathways_ui.quest_objective_navigation_with_reviewed_sources",
             return_value=result,
-        ) as navigation:
+        ) as navigation, patch(
+            "eqquest.activity_pathways_ui.ask_knowledge_map_choice",
+            return_value=choice,
+        ) as chooser:
             self.app_module.EverQuestieApp._activity_pathway_navigate_match(fake)
 
         navigation.assert_called_once_with(
@@ -203,11 +230,61 @@ class ActivityPathwaysUITests(unittest.TestCase):
             "Current Zone",
             step_order=1,
         )
+        chooser.assert_called_once_with(
+            fake,
+            "Suggested Quest — matched objective",
+            "Current Zone",
+            (choice,),
+        )
         self.assertEqual(
             mapped,
             [("Current Zone", 70.0, 80.0, 9.0, "Token Source (reviewed loot source)")],
         )
         self.assertIn("exact matched objective", fake.status.value.casefold())
+
+    def test_navigate_match_uses_shared_route_chooser_before_travel_handoff(self):
+        fake = self._fake()
+        routes: list[str] = []
+        selections: list[object] = []
+        travel = SimpleNamespace(route_to_zone=lambda zone: routes.append(str(zone)) or True)
+        fake.travel_tab = travel
+        fake.notebook = SimpleNamespace(select=lambda tab: selections.append(tab))
+        choice = SimpleNamespace(zone_name="Remote Objective Zone")
+        result = SimpleNamespace(
+            map_ready=False,
+            route_ready=True,
+            map_choices=(),
+            route_choices=(choice,),
+            quest_name="Suggested Quest",
+            current_zone_name="Current Zone",
+            reason="remote",
+        )
+
+        with patch(
+            "eqquest.activity_pathways_ui.quest_objective_navigation_with_reviewed_sources",
+            return_value=result,
+        ) as navigation, patch(
+            "eqquest.activity_pathways_ui.ask_knowledge_route_choice",
+            return_value=choice,
+        ) as chooser:
+            self.app_module.EverQuestieApp._activity_pathway_navigate_match(fake)
+
+        navigation.assert_called_once_with(
+            fake.db,
+            4242,
+            "Current Zone",
+            step_order=1,
+        )
+        chooser.assert_called_once_with(
+            fake,
+            "Suggested Quest — matched objective",
+            "Current Zone",
+            (choice,),
+        )
+        self.assertEqual(routes, ["Remote Objective Zone"])
+        self.assertEqual(selections, [travel])
+        self.assertIn("Remote Objective Zone", fake.status.value)
+        self.assertIn("step 1", fake.status.value)
 
     def test_multiple_direct_matches_require_explicit_evidence_choice(self):
         fake = self._fake()

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .events import Event
+from .events import Event, event_from_observed_row
 
 
 SCHEMA = r"""
@@ -1426,25 +1426,7 @@ class Database:
         rows = self.conn.execute(
             "SELECT * FROM observed_events ORDER BY id"
         ).fetchall()
-        out: list[Event] = []
-        for r in rows:
-            occurred = None
-            if r["occurred_at"]:
-                try:
-                    occurred = datetime.fromisoformat(r["occurred_at"])
-                except ValueError:
-                    occurred = None
-            try:
-                fields = json.loads(r["fields_json"] or "{}")
-            except json.JSONDecodeError:
-                fields = {}
-            out.append(Event(
-                kind=r["kind"], raw=r["raw"], timestamp=occurred,
-                actor=r["actor"], target=r["target"], text=r["text"],
-                zone=r["zone"], item=r["item"], amount=r["amount"],
-                fields=fields,
-            ))
-        return out
+        return [event_from_observed_row(row) for row in rows]
 
     def add_demo_seed(self) -> None:
         # Retained only as a small smoke-test record. Imported Allakhazam data takes priority.

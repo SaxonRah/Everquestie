@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 import json
 from typing import Iterable
 
 from .activity_pathways import PathwaySuggestion
 from .db import normalize_name
-from .events import Event
+from .events import Event, event_from_observed_row
 from .loot_relevance import recent_loot_relevance
 from .zone_authority import authoritative_zones_match
 
@@ -19,33 +18,6 @@ class SessionLedgerEntry:
     annotations: tuple[str, ...]
 
 
-def _event_from_row(row) -> Event:
-    occurred = None
-    if row["occurred_at"]:
-        try:
-            occurred = datetime.fromisoformat(str(row["occurred_at"]))
-        except ValueError:
-            occurred = None
-    try:
-        fields = json.loads(row["fields_json"] or "{}")
-    except (TypeError, json.JSONDecodeError):
-        fields = {}
-    if not isinstance(fields, dict):
-        fields = {}
-    return Event(
-        kind=str(row["kind"] or ""),
-        raw=str(row["raw"] or ""),
-        timestamp=occurred,
-        actor=row["actor"],
-        target=row["target"],
-        text=row["text"],
-        zone=row["zone"],
-        item=row["item"],
-        amount=row["amount"],
-        fields=fields,
-    )
-
-
 def latest_observed_event(db) -> tuple[int, Event] | None:
     """Return the newest persisted player observation without changing either DB."""
     row = db.conn.execute(
@@ -53,7 +25,7 @@ def latest_observed_event(db) -> tuple[int, Event] | None:
     ).fetchone()
     if row is None:
         return None
-    return int(row["id"]), _event_from_row(row)
+    return int(row["id"]), event_from_observed_row(row)
 
 
 def _session_subject_counts(
@@ -247,7 +219,7 @@ def session_ledger_entry(
     ).fetchone()
     if row is None:
         return None
-    event = _event_from_row(row)
+    event = event_from_observed_row(row)
     annotations: list[str] = []
 
     if event.kind == "kill" and str(event.actor or "").strip():

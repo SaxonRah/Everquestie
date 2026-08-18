@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 from typing import Any
 
 
@@ -45,3 +46,39 @@ class Event:
             p.append(self.text)
 
         return " | ".join(p)
+
+
+def event_from_observed_row(row) -> Event:
+    """Reconstruct one persisted ``observed_events`` row as an ``Event``.
+
+    Stored observations are a user-state serialization boundary. Keep timestamp and
+    structured-field recovery in one place so history, Live projections, and future
+    provenance readers cannot drift in how they interpret the same persisted row.
+    Malformed legacy timestamp/field payloads fail closed to ``None`` / ``{}``.
+    """
+    occurred = None
+    if row["occurred_at"]:
+        try:
+            occurred = datetime.fromisoformat(str(row["occurred_at"]))
+        except (TypeError, ValueError):
+            occurred = None
+
+    try:
+        fields = json.loads(row["fields_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        fields = {}
+    if not isinstance(fields, dict):
+        fields = {}
+
+    return Event(
+        kind=str(row["kind"] or ""),
+        raw=str(row["raw"] or ""),
+        timestamp=occurred,
+        actor=row["actor"],
+        target=row["target"],
+        text=row["text"],
+        zone=row["zone"],
+        item=row["item"],
+        amount=row["amount"],
+        fields=fields,
+    )

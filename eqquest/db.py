@@ -1067,14 +1067,17 @@ class Database:
         return result
 
     def rebuild_search_index(self) -> int:
-        """Rebuild the derived FTS5 index from EverQuestie's normalized DB.
+        """Rebuild the compact derived FTS5 index from normalized knowledge.
 
-        The knowledge corpus can exceed 80K entities and rich spell records can be
-        large, so this deliberately streams rows in bounded batches instead of
-        materializing the entire corpus and a second FTS payload copy in RAM.
+        Rich structured detail JSON stays in ``entity_details.detail_json``. Search
+        indexes the bounded ``detail_text`` projection when present and falls back
+        to legacy JSON only when a detail row has no text projection. Rows stream in
+        bounded batches so large knowledge corpora do not require a second in-memory
+        copy of the full search payload.
         """
         if not self.fts_available:
             return 0
+
         inserted = 0
         with self.batch():
             self.conn.execute("DELETE FROM entity_fts")
@@ -1085,8 +1088,10 @@ class Database:
                            SELECT group_concat(a.alias, ' ')
                            FROM entity_aliases a WHERE a.entity_id=e.id
                        ), '') AS aliases,
-                       COALESCE(d.detail_text, '') AS detail_text,
-                       COALESCE(d.detail_json, '') AS detail_json,
+                       CASE
+                           WHEN trim(COALESCE(d.detail_text, ''))<>'' THEN d.detail_text
+                           ELSE COALESCE(d.detail_json, '')
+                       END AS detail_search,
                        COALESCE((
                            SELECT group_concat(qs.description, ' ')
                            FROM quest_steps qs WHERE qs.quest_entity_id=e.id
@@ -1103,13 +1108,14 @@ class Database:
                 payload = []
                 for row in rows:
                     body = "\n".join(
-                        part for part in (
+                        part
+                        for part in (
                             str(row["notes"] or ""),
-                            str(row["detail_text"] or ""),
-                            str(row["detail_json"] or ""),
+                            str(row["detail_search"] or ""),
                             str(row["quest_text"] or ""),
                             str(row["data_json"] or ""),
-                        ) if part
+                        )
+                        if part
                     )
                     payload.append(
                         (int(row["id"]), row["kind"], row["name"], row["aliases"], body)
@@ -1328,7 +1334,7 @@ class Database:
             FROM tracked_quests tq
             JOIN entities e ON e.id=tq.quest_entity_id
             ORDER BY tq.tracked_at
-            """
+            """,
         ).fetchall()
 
     def quest_steps(self, quest_id: int):

@@ -3,8 +3,13 @@ from __future__ import annotations
 import inspect
 import unittest
 
-from eqquest import loot_relevance_ui, target_intelligence_ui
-from eqquest.live_composition import chain_activity_pathways_refresh
+from eqquest import (
+    activity_pathway_zone_context_ui,
+    loot_relevance_ui,
+    quest_progress_zone_context_ui,
+    target_intelligence_ui,
+)
+from eqquest.live_composition import chain_activity_pathways_refresh, chain_live_start
 
 
 class LiveCompositionTests(unittest.TestCase):
@@ -46,6 +51,36 @@ class LiveCompositionTests(unittest.TestCase):
         App()._refresh_activity_pathways(force=True)
 
         self.assertEqual(calls, ["base:True", "extension"])
+
+    def test_chained_live_start_preserves_previous_first_install_order(self):
+        calls: list[str] = []
+
+        class App:
+            def _start(self) -> None:
+                calls.append("base")
+
+        def first(self) -> None:
+            calls.append("first")
+
+        def second(self) -> None:
+            calls.append("second")
+
+        chain_live_start(App, first)
+        chain_live_start(App, second)
+
+        App()._start()
+
+        self.assertEqual(calls, ["base", "first", "second"])
+
+    def test_zone_context_installers_delegate_to_shared_start_chain(self):
+        for installer in (
+            activity_pathway_zone_context_ui.install_activity_pathway_zone_context_ui,
+            quest_progress_zone_context_ui.install_quest_progress_zone_context_ui,
+        ):
+            source = inspect.getsource(installer)
+            self.assertIn("chain_live_start(", source)
+            self.assertNotIn("current_start =", source)
+            self.assertNotIn("def _start(", source)
 
     def test_remaining_live_projection_installers_delegate_to_shared_refresh_chain(self):
         for installer in (

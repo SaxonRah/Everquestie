@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .live_composition import chain_live_start
 from .log_geography import recover_log_geography
 
 
@@ -27,10 +28,7 @@ def install_quest_progress_zone_context_ui() -> None:
     if getattr(current_app, _QUEST_PROGRESS_ZONE_CONTEXT_MARKER, False):
         return
 
-    current_start = current_app._start
-
-    def _start(self) -> None:
-        current_start(self)
+    def _seed_quest_progress_zone_context_after_start(self) -> None:
         if getattr(self, "tailer", None) is None:
             return
 
@@ -44,5 +42,5 @@ def install_quest_progress_zone_context_ui() -> None:
         starting_zone = _zone_context_from_log(log_path, parser) if log_path else None
         engine.seed_zone_context(starting_zone)
 
-    current_app._start = _start
+    chain_live_start(current_app, _seed_quest_progress_zone_context_after_start)
     setattr(current_app, _QUEST_PROGRESS_ZONE_CONTEXT_MARKER, True)

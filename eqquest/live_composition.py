@@ -23,3 +23,18 @@ def chain_activity_pathways_refresh(
             extension(self)
 
     app_cls._refresh_activity_pathways = _refresh_activity_pathways
+
+
+def chain_live_start(app_cls, extension) -> None:
+    """Append one post-start extension after the currently composed Live start.
+
+    The previously installed start always runs first, so bootstrap install order remains
+    execution order. Session-specific start behavior stays inside each extension.
+    """
+    previous = app_cls._start
+
+    def _start(self) -> None:
+        previous(self)
+        extension(self)
+
+    app_cls._start = _start

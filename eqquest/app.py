@@ -109,7 +109,6 @@ class EverQuestieApp(tk.Tk):
         self.importer = AllakhazamImporter(self.db)
         self.mirror_importer = AllakhazamMirrorImporter(self.db)
         self.eq_client_importer = EQClientImporter(self.db)
-        self.mcp_local_compiler = MCPLocalSnapshotCompiler(self.db)
         self.wiki_importer = AllakhazamWikiImporter(self.db)
         # Source compilers/importers are explicit builder/developer actions. Startup
         # must never rewrite packaged knowledge based on one provider's archived data.

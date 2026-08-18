@@ -23,6 +23,15 @@ class RuntimeSourcePolicyTests(unittest.TestCase):
         self.assertNotIn("self.importer.import_mirror(", mirror_source)
         self.assertIn("self.importer.import_saved_html(", saved_source)
 
+    def test_mcp_compiler_is_scoped_to_explicit_worker_action(self):
+        init_source = inspect.getsource(EverQuestieApp.__init__)
+        compile_source = inspect.getsource(EverQuestieApp._compile_eq_client_via_mcp)
+
+        self.assertNotIn("self.mcp_local_compiler", init_source)
+        self.assertIn("worker_db = Database(db_path)", compile_source)
+        self.assertIn("MCPLocalSnapshotCompiler(worker_db).compile_installation(", compile_source)
+        self.assertNotIn("self.mcp_local_compiler", compile_source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
@@ -218,14 +219,21 @@ class SessionActivityLedgerTests(unittest.TestCase):
         event = Event(
             kind="loot",
             raw="loot fixture",
+            timestamp=datetime(2026, 8, 18, 0, 30, 45),
             actor="a sewer rat",
             item="Sewer Rat Tail",
+            amount=2,
+            fields={"source": "corpse", "reviewed": True},
         )
         self.db.add_event(event)
         latest = latest_observed_event(self.db)
         self.assertIsNotNone(latest)
         _event_id, restored = latest
+        history_restored = self.db.observed_event_history()[-1]
+        self.assertEqual(restored, event)
+        self.assertEqual(history_restored, event)
         self.assertEqual(restored.summary(), event.summary())
+        self.assertEqual(history_restored.summary(), event.summary())
 
 
 if __name__ == "__main__":

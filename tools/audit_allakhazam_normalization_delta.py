@@ -31,7 +31,23 @@ def _open_read_only(path: str | Path) -> sqlite3.Connection:
     db_path = Path(path).expanduser().resolve()
     if not db_path.is_file():
         raise FileNotFoundError(db_path)
-    conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+
+    # Immutable mode prevents even zero-byte WAL/SHM sidecars from being created by a
+    # read-only artifact audit. It must never ignore uncheckpointed builder writes, so
+    # fail closed when a non-empty WAL is present and require the caller to close or
+    # checkpoint that builder DB first. Finalized release snapshots already guarantee
+    # that they have no WAL dependency.
+    wal = Path(str(db_path) + "-wal")
+    if wal.exists() and wal.stat().st_size:
+        raise ValueError(
+            "knowledge DB has a non-empty WAL; close/checkpoint the builder database "
+            "or audit the finalized snapshot"
+        )
+
+    conn = sqlite3.connect(
+        db_path.as_uri() + "?mode=ro&immutable=1",
+        uri=True,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -52,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Compare an existing Allakhazam mirror inventory JSON artifact with the "
-            "Allakhazam source pages and normalized derivatives stored in an EverQuestie "
-            "knowledge DB. The mirror itself is never scanned."
+            "Allakhazam source pages and normalized derivatives stored in a quiescent "
+            "EverQuestie knowledge DB. The mirror itself is never scanned."
         )
     )
     parser.add_argument(
@@ -62,7 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "database",
-        help="Builder or finalized EverQuestie SQLite knowledge DB",
+        help=(
+            "Finalized or closed/checkpointed builder EverQuestie SQLite knowledge DB; "
+            "a non-empty WAL is rejected"
+        ),
     )
     parser.add_argument(
         "--json",
@@ -78,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         mirror_payload = _load_json(args.mirror_audit)
         conn = _open_read_only(args.database)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Allakhazam normalization delta setup failed: {exc}", file=sys.stderr)
         return 2
 

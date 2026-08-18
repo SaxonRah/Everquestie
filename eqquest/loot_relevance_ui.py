@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_composition import chain_activity_pathways_refresh
 from .live_navigation import handoff_to_travel
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
 from .loot_source_navigation import loot_source_navigation
@@ -22,7 +23,6 @@ def install_loot_relevance_ui() -> None:
         return
 
     current_build_live = current_app._build_live
-    current_refresh_pathways = current_app._refresh_activity_pathways
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -367,10 +367,6 @@ def install_loot_relevance_ui() -> None:
                 "No displayed use never means an item is automatically vendor trash."
             )
 
-    def _refresh_activity_pathways(self, *, force: bool = False) -> None:
-        current_refresh_pathways(self, force=force)
-        _refresh_loot_relevance(self, force=force)
-
     current_app._build_live = _build_live
     current_app._selected_loot_relevance = _selected_loot_relevance
     current_app._loot_relevance_view_item = _loot_relevance_view_item
@@ -380,5 +376,5 @@ def install_loot_relevance_ui() -> None:
     current_app._loot_relevance_navigate_turn_in = _loot_relevance_navigate_turn_in
     current_app._loot_relevance_explain = _loot_relevance_explain
     current_app._refresh_loot_relevance = _refresh_loot_relevance
-    current_app._refresh_activity_pathways = _refresh_activity_pathways
+    chain_activity_pathways_refresh(current_app, _refresh_loot_relevance)
     setattr(current_app, _LOOT_RELEVANCE_MARKER, True)

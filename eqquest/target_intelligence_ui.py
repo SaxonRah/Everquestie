@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .knowledge_map_choices import knowledge_map_choices, knowledge_route_choices
+from .live_composition import chain_activity_pathways_refresh
 from .live_navigation import handoff_to_travel
 from .target_intelligence import (
     TargetIntelligence,
@@ -32,7 +33,6 @@ def install_target_intelligence_ui() -> None:
         return
 
     current_build_live = current_app._build_live
-    current_refresh_pathways = current_app._refresh_activity_pathways
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -373,13 +373,6 @@ def install_target_intelligence_ui() -> None:
             self._render_target_quest_relevance(value, rows)
             self._target_quest_relevance_key = relevance_key
 
-    def _refresh_activity_pathways(self, *, force: bool = False) -> None:
-        # Activity Intelligence owns the monitoring-session boundary and refresh cadence.
-        # Target quest relevance rides the same pass so it cannot drift into a second
-        # polling loop or disagree about where this monitoring session began.
-        current_refresh_pathways(self, force=force)
-        _refresh_target_intelligence(self, force=force)
-
     current_app._build_live = _build_live
     current_app._target_intelligence_view = _target_intelligence_view
     current_app._target_intelligence_navigate = _target_intelligence_navigate
@@ -389,5 +382,8 @@ def install_target_intelligence_ui() -> None:
     current_app._target_quest_explain_selected = _target_quest_explain_selected
     current_app._render_target_quest_relevance = _render_target_quest_relevance
     current_app._refresh_target_intelligence = _refresh_target_intelligence
-    current_app._refresh_activity_pathways = _refresh_activity_pathways
+    # Activity Intelligence owns the monitoring-session boundary and refresh cadence.
+    # Target quest relevance rides the same pass so it cannot drift into a second
+    # polling loop or disagree about where this monitoring session began.
+    chain_activity_pathways_refresh(current_app, _refresh_target_intelligence)
     setattr(current_app, _TARGET_INTELLIGENCE_MARKER, True)

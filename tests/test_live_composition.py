@@ -5,6 +5,7 @@ import unittest
 
 from eqquest import (
     activity_clusters_ui,
+    activity_pathways_ui,
     activity_pathway_zone_context_ui,
     loot_relevance_ui,
     quest_progress_zone_context_ui,
@@ -141,6 +142,16 @@ class LiveCompositionTests(unittest.TestCase):
             self.assertIn("chain_live_build(", source)
             self.assertNotIn("current_build_live =", source)
             self.assertNotIn("def _build_live(", source)
+
+    def test_activity_pathways_delegates_build_but_keeps_lifecycle_ownership(self):
+        source = inspect.getsource(activity_pathways_ui.install_activity_pathways_ui)
+        self.assertIn("chain_live_build(", source)
+        self.assertNotIn("current_build_live =", source)
+        self.assertNotIn("def _build_live(", source)
+        self.assertIn("current_start =", source)
+        self.assertIn("current_stop =", source)
+        self.assertIn("def _start(", source)
+        self.assertIn("def _stop(", source)
 
     def test_remaining_live_projection_installers_delegate_to_shared_refresh_chain(self):
         for installer in (

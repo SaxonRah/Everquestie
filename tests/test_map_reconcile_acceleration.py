@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,12 @@ from eqquest.map_catalog import MapCatalog
 
 
 class MapReconcileAccelerationTests(unittest.TestCase):
+    def test_reconcile_is_native_map_catalog_implementation(self) -> None:
+        self.assertEqual("eqquest.map_catalog", MapCatalog.reconcile_all.__module__)
+        self.assertEqual("reconcile_all", MapCatalog.reconcile_all.__name__)
+        signature = inspect.signature(MapCatalog.reconcile_all)
+        self.assertEqual(1000, signature.parameters["chunk_size"].default)
+
     def test_reconcile_does_not_use_per_label_candidate_queries(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "maps"

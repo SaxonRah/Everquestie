@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_navigation import handoff_to_travel
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
 from .loot_source_navigation import loot_source_navigation
 from .loot_turn_in_navigation import loot_turn_in_navigation
@@ -196,12 +197,10 @@ def install_loot_relevance_ui() -> None:
             if choice is None:
                 self.status.set("Loot source route selection cancelled.")
                 return
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, choice.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
             if routed:
                 self.status.set(
                     f"Travel route opened to {choice.zone_name} for {choice.route_label}."
@@ -263,12 +262,10 @@ def install_loot_relevance_ui() -> None:
             if choice is None:
                 self.status.set("Turn-in route selection cancelled.")
                 return
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, choice.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
             if routed:
                 self.status.set(
                     f"Travel route opened to {choice.zone_name} for {choice.route_label}."

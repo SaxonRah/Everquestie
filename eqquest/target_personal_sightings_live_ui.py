@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .live_navigation import handoff_to_travel
 from .target_personal_sightings import (
     target_personal_sighting_text,
     target_personal_sightings,
@@ -113,12 +114,10 @@ def install_target_personal_sightings_ui() -> None:
                 )
                 return
 
-        travel = getattr(self, "travel_tab", None)
-        if travel is None or not hasattr(travel, "route_to_zone"):
+        routed = handoff_to_travel(self, selected.canonical_zone_name)
+        if routed is None:
             self.status.set("Travel routing is not connected in this application surface.")
             return
-        self.notebook.select(self.travel_tab)
-        routed = bool(travel.route_to_zone(selected.canonical_zone_name))
         if routed:
             self.status.set(
                 f"Travel route opened to personal sighting zone {selected.canonical_zone_name} "

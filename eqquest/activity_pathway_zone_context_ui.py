@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .live_composition import chain_live_start
+
 
 _ACTIVITY_PATHWAY_ZONE_CONTEXT_MARKER = "_everquestie_activity_pathway_zone_context_ui"
 
@@ -18,10 +20,7 @@ def install_activity_pathway_zone_context_ui() -> None:
     if getattr(current_app, _ACTIVITY_PATHWAY_ZONE_CONTEXT_MARKER, False):
         return
 
-    current_start = current_app._start
-
-    def _start(self) -> None:
-        current_start(self)
+    def _seed_activity_pathway_zone_context_after_start(self) -> None:
         engine = getattr(self, "activity_pathway_engine", None)
         if engine is None or getattr(self, "tailer", None) is None:
             return
@@ -39,5 +38,5 @@ def install_activity_pathway_zone_context_ui() -> None:
         self._activity_session_start_zone = starting_zone
         self._activity_pathway_signature = None
 
-    current_app._start = _start
+    chain_live_start(current_app, _seed_activity_pathway_zone_context_after_start)
     setattr(current_app, _ACTIVITY_PATHWAY_ZONE_CONTEXT_MARKER, True)

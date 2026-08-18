@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .live_navigation import open_exact_knowledge_entity
 from .target_known_drops import target_known_drop_text, target_known_drops
 from .target_known_drops_ui import ask_target_known_drop
 from .target_personal_loot import target_personal_loot, target_personal_loot_text
@@ -91,11 +92,7 @@ def install_target_known_drops_ui() -> None:
             self.status.set("Known-drop selection cancelled.")
             return
 
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(selected.item_id))
-        else:
-            self._map_entity_selected(int(selected.item_id))
+        open_exact_knowledge_entity(self, int(selected.item_id))
         self.status.set(
             f"Opened exact known drop {selected.item_name} from {target.canonical_name}."
         )
@@ -141,11 +138,7 @@ def install_target_known_drops_ui() -> None:
             )
             return
 
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(selected.item_id))
-        else:
-            self._map_entity_selected(int(selected.item_id))
+        open_exact_knowledge_entity(self, int(selected.item_id))
         corroboration = (
             "reviewed drop evidence also exists"
             if selected.reviewed_drop_known

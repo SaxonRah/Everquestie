@@ -5,7 +5,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .live_composition import chain_activity_pathways_refresh
-from .live_navigation import handoff_to_travel
+from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .quest_objective_navigation import tracked_quest_objective_navigation
 from .zone_opportunities import (
     ZoneOpportunity,
@@ -196,11 +196,7 @@ def install_zone_opportunities_ui() -> None:
         opportunity = _selected_zone_opportunity(self)
         if opportunity is None:
             return
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(opportunity.quest_id))
-        else:
-            self._map_entity_selected(int(opportunity.quest_id))
+        open_exact_knowledge_entity(self, int(opportunity.quest_id))
 
     def _zone_opportunity_track_selected(self) -> None:
         opportunity = _selected_zone_opportunity(self)

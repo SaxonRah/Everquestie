@@ -6,7 +6,7 @@ from tkinter import messagebox, ttk
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .knowledge_map_choices import knowledge_map_choices, knowledge_route_choices
 from .live_composition import chain_activity_pathways_refresh
-from .live_navigation import handoff_to_travel
+from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .target_intelligence import (
     TargetIntelligence,
     current_target_intelligence,
@@ -134,11 +134,7 @@ def install_target_intelligence_ui() -> None:
             self.status.set("No exact current NPC target is available to open in Knowledge.")
             return
 
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(value.entity_id))
-        else:
-            self._map_entity_selected(int(value.entity_id))
+        open_exact_knowledge_entity(self, int(value.entity_id))
 
     def _target_intelligence_navigate(self) -> None:
         value = getattr(self, "_target_intelligence_value", None)
@@ -230,11 +226,7 @@ def install_target_intelligence_ui() -> None:
         if relevance is None:
             self.status.set("Select a target-related quest first.")
             return
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(relevance.quest_id))
-        else:
-            self._map_entity_selected(int(relevance.quest_id))
+        open_exact_knowledge_entity(self, int(relevance.quest_id))
 
     def _target_quest_track_selected(self) -> None:
         relevance = _selected_target_quest(self)

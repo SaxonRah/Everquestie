@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from eqquest.live_navigation import handoff_to_travel
+from eqquest.live_navigation import handoff_to_travel, open_exact_knowledge_entity
 
 
 class LiveNavigationHandoffTests(unittest.TestCase):
@@ -41,6 +41,29 @@ class LiveNavigationHandoffTests(unittest.TestCase):
 
         self.assertFalse(handoff_to_travel(app, "Paineel"))
         self.assertEqual(selected, [travel])
+
+    def test_exact_knowledge_owner_receives_entity_without_fallback(self):
+        opened: list[int] = []
+        fallback: list[int] = []
+        app = SimpleNamespace(
+            _open_knowledge_entity_exact=lambda entity_id: opened.append(int(entity_id)),
+            _map_entity_selected=lambda entity_id: fallback.append(int(entity_id)),
+        )
+
+        open_exact_knowledge_entity(app, 4242)
+
+        self.assertEqual(opened, [4242])
+        self.assertEqual(fallback, [])
+
+    def test_missing_exact_knowledge_owner_preserves_map_selection_fallback(self):
+        fallback: list[int] = []
+        app = SimpleNamespace(
+            _map_entity_selected=lambda entity_id: fallback.append(int(entity_id)),
+        )
+
+        open_exact_knowledge_entity(app, 77)
+
+        self.assertEqual(fallback, [77])
 
 
 if __name__ == "__main__":

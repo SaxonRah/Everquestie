@@ -9,7 +9,7 @@ from .allakhazam_mirror_importer import AllakhazamMirrorImporter
 from .db import Database
 from .knowledge_snapshot import KnowledgeSnapshotReport, create_knowledge_snapshot
 from .map_catalog import MapCatalog
-from .sources import EQClientImporter, MCPLocalSnapshotCompiler
+from .sources import EQClientImporter, MCPDetailRecordCompiler
 from .zone_catalog import ZoneMapCatalog
 from .zone_travel import ZoneTravelCatalog
 
@@ -185,7 +185,7 @@ def _run_mcp(context: KnowledgeBuildContext, config: ProviderConfig) -> Provider
     eq_path = _required_path(config, "eq_path")
     mcp_path = _required_path(config, "mcp_path")
     include_details = bool(config.get("include_details", True))
-    compiler = MCPLocalSnapshotCompiler(context.db)
+    compiler = MCPDetailRecordCompiler(context.db)
     result = compiler.compile_installation(
         eq_path,
         mcp_path,

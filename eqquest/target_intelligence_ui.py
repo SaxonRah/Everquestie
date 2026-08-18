@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .knowledge_map_choices import knowledge_map_choices, knowledge_route_choices
+from .live_navigation import handoff_to_travel
 from .target_intelligence import (
     TargetIntelligence,
     current_target_intelligence,
@@ -184,12 +185,10 @@ def install_target_intelligence_ui() -> None:
                 self.status.set("Target route selection cancelled.")
                 return
 
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, route.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            routed = bool(self.travel_tab.route_to_zone(route.zone_name))
             if routed:
                 self.status.set(
                     f"Travel route opened to {route.zone_name} for target {value.canonical_name}."

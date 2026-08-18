@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_navigation import handoff_to_travel
 from .quest_objective_navigation import tracked_quest_objective_navigation
 from .zone_opportunities import (
     ZoneOpportunity,
@@ -267,12 +268,11 @@ def install_zone_opportunities_ui() -> None:
             if choice is None:
                 self.status.set("Zone Opportunity route selection cancelled.")
                 return
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, choice.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            if bool(self.travel_tab.route_to_zone(choice.zone_name)):
+            if routed:
                 self.status.set(f"Travel route opened to {choice.zone_name} for this objective.")
             else:
                 self.status.set(

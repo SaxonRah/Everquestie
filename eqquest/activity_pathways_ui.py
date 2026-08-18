@@ -11,6 +11,7 @@ from .activity_pathways import (
     pathway_detail_text,
 )
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_navigation import handoff_to_travel
 from .objective_reviewed_item_sources import (
     quest_objective_navigation_with_reviewed_sources,
 )
@@ -305,12 +306,10 @@ def install_activity_pathways_ui() -> None:
                 self.status.set("Pathway contact route selection cancelled.")
                 return
 
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, choice.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
             if routed:
                 self.status.set(
                     f"Travel route opened to {choice.zone_name} for pathway "
@@ -383,12 +382,10 @@ def install_activity_pathways_ui() -> None:
             if choice is None:
                 self.status.set("Matched objective route selection cancelled.")
                 return
-            travel = getattr(self, "travel_tab", None)
-            if travel is None or not hasattr(travel, "route_to_zone"):
+            routed = handoff_to_travel(self, choice.zone_name)
+            if routed is None:
                 self.status.set("Travel routing is not connected in this application surface.")
                 return
-            self.notebook.select(self.travel_tab)
-            routed = bool(self.travel_tab.route_to_zone(choice.zone_name))
             if routed:
                 self.status.set(
                     f"Travel route opened to {choice.zone_name} for exact matched objective "

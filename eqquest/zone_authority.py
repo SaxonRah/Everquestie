@@ -87,3 +87,45 @@ def resolve_authoritative_zone(
         include_derived_map_short_names=include_derived_map_short_names,
     )
     return prefer_eqclient_zone_resolution(index.resolve(value), value)
+
+
+def authoritative_zones_match(
+    db,
+    left: str | None,
+    right: str | None,
+    *,
+    include_map_bindings: bool = True,
+    include_derived_map_short_names: bool = True,
+) -> bool:
+    """Return whether two explicit zone tokens resolve to one authoritative identity.
+
+    Literal display text is compared after case/whitespace normalization first. When
+    the literals differ, both values must independently resolve through the normal
+    EQ-client authority policy to the same canonical zone entity. Missing, unresolved,
+    or ambiguous geography never matches.
+    """
+    left_text = " ".join(str(left or "").split()).strip()
+    right_text = " ".join(str(right or "").split()).strip()
+    if not left_text or not right_text:
+        return False
+    if left_text.casefold() == right_text.casefold():
+        return True
+
+    left_resolution = resolve_authoritative_zone(
+        db,
+        left_text,
+        include_map_bindings=include_map_bindings,
+        include_derived_map_short_names=include_derived_map_short_names,
+    )
+    right_resolution = resolve_authoritative_zone(
+        db,
+        right_text,
+        include_map_bindings=include_map_bindings,
+        include_derived_map_short_names=include_derived_map_short_names,
+    )
+    return bool(
+        left_resolution.identity is not None
+        and right_resolution.identity is not None
+        and int(left_resolution.identity.entity_id)
+        == int(right_resolution.identity.entity_id)
+    )

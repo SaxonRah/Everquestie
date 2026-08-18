@@ -9,7 +9,7 @@ from .activity_pathways import PathwaySuggestion
 from .db import normalize_name
 from .events import Event
 from .loot_relevance import recent_loot_relevance
-from .zone_authority import resolve_authoritative_zone
+from .zone_authority import authoritative_zones_match
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,22 +54,6 @@ def latest_observed_event(db) -> tuple[int, Event] | None:
     if row is None:
         return None
     return int(row["id"]), _event_from_row(row)
-
-
-def _zones_match(db, observed_zone: str | None, expected_zone: str | None) -> bool:
-    observed = " ".join(str(observed_zone or "").split()).strip()
-    expected = " ".join(str(expected_zone or "").split()).strip()
-    if not observed or not expected:
-        return False
-    if normalize_name(observed) == normalize_name(expected):
-        return True
-    left = resolve_authoritative_zone(db, observed)
-    right = resolve_authoritative_zone(db, expected)
-    return bool(
-        left.identity is not None
-        and right.identity is not None
-        and int(left.identity.entity_id) == int(right.identity.entity_id)
-    )
 
 
 def _session_subject_counts(
@@ -117,7 +101,7 @@ def _matching_pathways(
                 kind == "kill"
                 and evidence.path_kind == "direct_objective"
                 and evidence.step_zone
-                and not _zones_match(db, current_zone, evidence.step_zone)
+                and not authoritative_zones_match(db, current_zone, evidence.step_zone)
             ):
                 continue
             identity = (
@@ -199,7 +183,11 @@ def _tracked_objective_context(
         if not isinstance(rule, dict) or not _rule_subject_matches(db, rule, event):
             continue
         step_zone = str(row["zone"] or "").strip()
-        if event.kind == "kill" and step_zone and not _zones_match(db, current_zone, step_zone):
+        if (
+            event.kind == "kill"
+            and step_zone
+            and not authoritative_zones_match(db, current_zone, step_zone)
+        ):
             continue
         quest = str(row["quest_name"])
         step = int(row["step_order"])

@@ -18,6 +18,7 @@ from .quest_progress_identity import install_quest_progress_identity_policy
 from .quest_progress_zone_context_ui import install_quest_progress_zone_context_ui
 from .runtime_mode_ui import install_runtime_mode_ui
 from .runtime_policy import install_runtime_policy
+from .session_activity_ledger_ui import install_session_activity_ledger_ui
 from .session_geography_ui import install_session_geography_ui
 from .target_intelligence_ui import install_target_intelligence_ui
 from .target_known_drops_live_ui import install_target_known_drops_ui
@@ -56,6 +57,7 @@ def install_application_layers() -> None:
     install_activity_clusters_ui()
     install_zone_opportunities_ui()
     install_loot_relevance_ui()
+    install_session_activity_ledger_ui()
     install_target_intelligence_ui()
     install_target_known_drops_ui()
     install_target_personal_sightings_ui()

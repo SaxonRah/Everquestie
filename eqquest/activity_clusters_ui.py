@@ -8,7 +8,7 @@ from .activity_clusters import (
     activity_cluster_text,
     related_pathway_names,
 )
-from .live_composition import chain_activity_pathways_refresh
+from .live_composition import chain_activity_pathways_refresh, chain_live_build
 
 
 _ACTIVITY_CLUSTERS_MARKER = "_everquestie_activity_clusters_ui"
@@ -22,11 +22,7 @@ def install_activity_clusters_ui() -> None:
     if getattr(current_app, _ACTIVITY_CLUSTERS_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
-
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_activity_clusters(self) -> None:
         panel = ttk.LabelFrame(self.live_tab, text="Current Activity", padding=6)
         panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         panel.columnconfigure(0, weight=1)
@@ -81,7 +77,7 @@ def install_activity_clusters_ui() -> None:
                 "Nothing here changes canonical knowledge or quest progress."
             )
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_activity_clusters)
     current_app._refresh_activity_cluster = _refresh_activity_cluster
     chain_activity_pathways_refresh(
         current_app,

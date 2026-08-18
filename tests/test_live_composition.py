@@ -4,6 +4,7 @@ import inspect
 import unittest
 
 from eqquest import (
+    activity_clusters_ui,
     activity_pathway_zone_context_ui,
     loot_relevance_ui,
     quest_progress_zone_context_ui,
@@ -11,6 +12,7 @@ from eqquest import (
     target_intelligence_ui,
     target_known_drops_live_ui,
     target_personal_sightings_live_ui,
+    zone_opportunities_ui,
 )
 from eqquest.live_composition import (
     chain_activity_pathways_refresh,
@@ -114,6 +116,16 @@ class LiveCompositionTests(unittest.TestCase):
         for installer in (
             target_known_drops_live_ui.install_target_known_drops_ui,
             target_personal_sightings_live_ui.install_target_personal_sightings_ui,
+        ):
+            source = inspect.getsource(installer)
+            self.assertIn("chain_live_build(", source)
+            self.assertNotIn("current_build_live =", source)
+            self.assertNotIn("def _build_live(", source)
+
+    def test_activity_discovery_installers_delegate_to_shared_live_build_chain(self):
+        for installer in (
+            activity_clusters_ui.install_activity_clusters_ui,
+            zone_opportunities_ui.install_zone_opportunities_ui,
         ):
             source = inspect.getsource(installer)
             self.assertIn("chain_live_build(", source)

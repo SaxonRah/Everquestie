@@ -66,3 +66,12 @@ def rebuild_compact_search_index(db: Database) -> int:
         db.set_meta("fts_last_rebuild", datetime.now().isoformat(timespec="seconds"))
         db.set_meta("fts_dirty", "0")
     return inserted
+
+
+def install_compact_search_index() -> None:
+    """Route every Database FTS rebuild through the release-finalization policy."""
+    current = Database.rebuild_search_index
+    if getattr(current, "_everquestie_compact_search_index", False):
+        return
+    rebuild_compact_search_index._everquestie_compact_search_index = True  # type: ignore[attr-defined]
+    Database.rebuild_search_index = rebuild_compact_search_index  # type: ignore[method-assign]

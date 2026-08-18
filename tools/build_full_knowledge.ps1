@@ -14,12 +14,13 @@
 #   - Requires the Allakhazam HTTrack mirror to be complete before DB construction
 #   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
+#   - Compares captured Allakhazam structured pages with persisted/normalized SQLite pages
 #   - Audits the compiled Good's/Brewall map catalog in working and snapshot DBs
 #   - Audits MCP inventory + rich details in working and snapshot DBs
 #   - Audits direct gameplay-profile lifecycle coverage
 #   - Runs route acceptance
 #   - Runs the complete regression suite
-#   - Emits mirror/map/route/frontier/lifecycle reports and snapshot SHA-256
+#   - Emits mirror/normalization/map/route/frontier/lifecycle reports and snapshot SHA-256
 #
 # Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
 # map packs, or a source checkout. Those are builder inputs only.
@@ -51,6 +52,7 @@ $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\
 $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
 $MirrorAuditReport = Join-Path $ProjectRoot "build\allakhazam-mirror-audit.json"
+$AllakhazamNormalizationReport = Join-Path $ProjectRoot "build\allakhazam-normalization-delta.json"
 $MapCatalogAuditReport = Join-Path $ProjectRoot "build\map-catalog-audit.json"
 $RouteReport = Join-Path $ProjectRoot "build\route-acceptance.json"
 $FrontierReport = Join-Path $ProjectRoot "build\provider-travel-frontier.json"
@@ -235,6 +237,28 @@ python .\tools\build_knowledge_db.py `
 Assert-LastExitCode "EverQuestie full knowledge build"
 
 # ------------------------------------------------------------
+# Allakhazam capture -> normalization coverage
+# ------------------------------------------------------------
+#
+# Reuse the exact pre-build mirror inventory JSON instead of rescanning the source tree.
+# Compare it with the finalized snapshot so every canonical full build records where
+# captured structured pages did or did not reach persisted/normalized SQLite knowledge.
+# This is diagnostic coverage, not an arbitrary minimum-count release threshold.
+# ------------------------------------------------------------
+
+Write-Host
+Write-Host "============================================"
+Write-Host " Allakhazam Capture -> Normalization Delta"
+Write-Host "============================================"
+Write-Host
+
+python .\tools\audit_allakhazam_normalization_delta.py `
+    $MirrorAuditReport `
+    $SnapshotDb `
+    --output $AllakhazamNormalizationReport
+Assert-LastExitCode "Allakhazam capture-to-normalization audit"
+
+# ------------------------------------------------------------
 # Map catalog completeness + portability gate
 # ------------------------------------------------------------
 #
@@ -383,23 +407,25 @@ Write-Host "Snapshot SHA-256:"
 Write-Host "  $SnapshotHash"
 Write-Host
 Write-Host "Reports:"
-Write-Host "  Mirror inventory   : $MirrorAuditReport"
-Write-Host "  Map catalog        : $MapCatalogAuditReport"
-Write-Host "  Route acceptance   : $RouteReport"
-Write-Host "  Travel frontier    : $FrontierReport"
-Write-Host "  Profile lifecycle  : $LifecycleReport"
+Write-Host "  Mirror inventory       : $MirrorAuditReport"
+Write-Host "  Allakhazam normalization: $AllakhazamNormalizationReport"
+Write-Host "  Map catalog            : $MapCatalogAuditReport"
+Write-Host "  Route acceptance       : $RouteReport"
+Write-Host "  Travel frontier        : $FrontierReport"
+Write-Host "  Profile lifecycle      : $LifecycleReport"
 Write-Host
 Write-Host "Build passed:"
-Write-Host "  EQ client          : included"
-Write-Host "  Allakhazam mirror  : completed + audited + included"
-Write-Host "  MCP inventory      : verified"
-Write-Host "  MCP rich details   : verified"
-Write-Host "  Profile lifecycle  : audited"
-Write-Host "  Good's maps        : included"
-Write-Host "  Brewall maps       : included"
-Write-Host "  Map catalog       : verified portable + versioned"
-Write-Host "  Travel manifests   : automatically compiled"
-Write-Host "  Route acceptance   : passed"
-Write-Host "  Regression tests   : passed"
+Write-Host "  EQ client               : included"
+Write-Host "  Allakhazam mirror       : completed + audited + included"
+Write-Host "  Allakhazam normalization: audited"
+Write-Host "  MCP inventory           : verified"
+Write-Host "  MCP rich details        : verified"
+Write-Host "  Profile lifecycle       : audited"
+Write-Host "  Good's maps             : included"
+Write-Host "  Brewall maps            : included"
+Write-Host "  Map catalog             : verified portable + versioned"
+Write-Host "  Travel manifests        : automatically compiled"
+Write-Host "  Route acceptance        : passed"
+Write-Host "  Regression tests        : passed"
 Write-Host
 Write-Host "============================================"

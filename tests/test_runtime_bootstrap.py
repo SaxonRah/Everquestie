@@ -32,6 +32,7 @@ class RuntimeBootstrapTests(unittest.TestCase):
             "install_activity_clusters_ui",
             "install_zone_opportunities_ui",
             "install_loot_relevance_ui",
+            "install_session_activity_ledger_ui",
             "install_target_intelligence_ui",
             "install_target_known_drops_ui",
             "install_target_personal_sightings_ui",

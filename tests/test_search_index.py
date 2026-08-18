@@ -21,8 +21,10 @@ class CompactSearchIndexTests(unittest.TestCase):
     def _entity(self, name: str) -> int:
         return self.db.upsert_entity(kind="spell", name=name, external_id=name)
 
-    def test_database_method_is_the_shared_compact_rebuild_policy(self) -> None:
-        self.assertIs(Database.rebuild_search_index, rebuild_compact_search_index)
+    def test_database_owns_the_compact_rebuild_policy_natively(self) -> None:
+        self.assertEqual("eqquest.db", Database.rebuild_search_index.__module__)
+        self.assertEqual("rebuild_search_index", Database.rebuild_search_index.__name__)
+        self.assertIsNot(Database.rebuild_search_index, rebuild_compact_search_index)
 
     def test_rich_json_is_retained_but_not_duplicated_into_fts(self) -> None:
         entity_id = self._entity("Projected Spell")

@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
+from .live_composition import chain_activity_pathways_refresh
 from .live_navigation import handoff_to_travel
 from .quest_objective_navigation import tracked_quest_objective_navigation
 from .zone_opportunities import (
@@ -111,7 +112,6 @@ def install_zone_opportunities_ui() -> None:
         return
 
     current_build_live = current_app._build_live
-    current_refresh_pathways = current_app._refresh_activity_pathways
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -371,10 +371,6 @@ def install_zone_opportunities_ui() -> None:
                 "Current zone is unknown. Zone Opportunities appear only after an authoritative canonical zone is known."
             )
 
-    def _refresh_activity_pathways(self, *, force: bool = False) -> None:
-        current_refresh_pathways(self, force=force)
-        _refresh_zone_opportunities(self, force=force)
-
     current_app._build_live = _build_live
     current_app._selected_zone_opportunity = _selected_zone_opportunity
     current_app._zone_opportunity_view_selected = _zone_opportunity_view_selected
@@ -382,5 +378,5 @@ def install_zone_opportunities_ui() -> None:
     current_app._zone_opportunity_map_selected = _zone_opportunity_map_selected
     current_app._zone_opportunity_explain_selected = _zone_opportunity_explain_selected
     current_app._refresh_zone_opportunities = _refresh_zone_opportunities
-    current_app._refresh_activity_pathways = _refresh_activity_pathways
+    chain_activity_pathways_refresh(current_app, _refresh_zone_opportunities)
     setattr(current_app, _ZONE_OPPORTUNITIES_MARKER, True)

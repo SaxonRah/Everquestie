@@ -8,6 +8,7 @@ from .activity_clusters import (
     activity_cluster_text,
     related_pathway_names,
 )
+from .live_composition import chain_activity_pathways_refresh
 
 
 _ACTIVITY_CLUSTERS_MARKER = "_everquestie_activity_clusters_ui"
@@ -22,7 +23,6 @@ def install_activity_clusters_ui() -> None:
         return
 
     current_build_live = current_app._build_live
-    current_refresh_pathways = current_app._refresh_activity_pathways
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -81,11 +81,11 @@ def install_activity_clusters_ui() -> None:
                 "Nothing here changes canonical knowledge or quest progress."
             )
 
-    def _refresh_activity_pathways(self, *, force: bool = False) -> None:
-        current_refresh_pathways(self, force=force)
-        _refresh_activity_cluster(self)
-
     current_app._build_live = _build_live
     current_app._refresh_activity_cluster = _refresh_activity_cluster
-    current_app._refresh_activity_pathways = _refresh_activity_pathways
+    chain_activity_pathways_refresh(
+        current_app,
+        _refresh_activity_cluster,
+        pass_force=False,
+    )
     setattr(current_app, _ACTIVITY_CLUSTERS_MARKER, True)

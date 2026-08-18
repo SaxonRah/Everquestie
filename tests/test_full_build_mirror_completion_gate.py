@@ -9,21 +9,29 @@ FULL_BUILD = REPO_ROOT / "tools" / "build_full_knowledge.ps1"
 
 
 class FullBuildMirrorCompletionGateTests(unittest.TestCase):
-    def test_full_build_requires_completed_mirror_before_database_construction(self) -> None:
+    def test_full_build_audits_temporary_pages_before_requiring_completed_mirror(self) -> None:
         text = FULL_BUILD.read_text(encoding="utf-8")
-        audit = text.index("audit_allakhazam_mirror.py")
-        require_complete = text.index("--require-complete", audit)
+        temporary_audit = text.index("audit_allakhazam_temporary_pages.py")
+        mirror_audit = text.index("audit_allakhazam_mirror.py")
+        require_complete = text.index("--require-complete", mirror_audit)
         build = text.index("build_knowledge_db.py")
 
-        self.assertLess(audit, require_complete)
+        self.assertLess(temporary_audit, mirror_audit)
+        self.assertLess(mirror_audit, require_complete)
         self.assertLess(require_complete, build)
+        self.assertIn("allakhazam-temporary-page-audit.json", text)
+        self.assertIn('$TemporaryAuditJson | Set-Content -Path $TemporaryPageAuditReport -Encoding utf8', text)
+        self.assertIn('Assert-LastExitCode "Allakhazam temporary-page audit"', text)
         self.assertIn('Assert-LastExitCode "Allakhazam completed-mirror inventory audit"', text)
 
-    def test_completion_gate_is_not_an_arbitrary_spell_count_gate(self) -> None:
+    def test_completion_gate_is_not_an_arbitrary_spell_count_or_recovery_gate(self) -> None:
         text = FULL_BUILD.read_text(encoding="utf-8")
         self.assertNotIn("spell_pages -eq 0", text)
         self.assertNotIn("spell_pages_with_expansion -eq 0", text)
+        self.assertNotIn("recover_allakhazam_temporary_pages.py", text)
         self.assertIn(".tmp files are crawler-owned in-progress state", text)
+        self.assertIn("recovery is a", text)
+        self.assertIn("separate explicit builder action", text)
 
 
 if __name__ == "__main__":

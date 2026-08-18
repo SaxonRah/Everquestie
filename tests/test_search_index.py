@@ -21,6 +21,9 @@ class CompactSearchIndexTests(unittest.TestCase):
     def _entity(self, name: str) -> int:
         return self.db.upsert_entity(kind="spell", name=name, external_id=name)
 
+    def test_database_method_is_the_shared_compact_rebuild_policy(self) -> None:
+        self.assertIs(Database.rebuild_search_index, rebuild_compact_search_index)
+
     def test_rich_json_is_retained_but_not_duplicated_into_fts(self) -> None:
         entity_id = self._entity("Projected Spell")
         payload = {
@@ -35,7 +38,7 @@ class CompactSearchIndexTests(unittest.TestCase):
             detail_json=payload,
         )
 
-        self.assertEqual(1, rebuild_compact_search_index(self.db))
+        self.assertEqual(1, self.db.rebuild_search_index())
 
         detail = self.db.entity_detail(entity_id)
         self.assertEqual(payload, json.loads(detail["detail_json"]))

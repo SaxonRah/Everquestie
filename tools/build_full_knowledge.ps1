@@ -11,7 +11,6 @@
 #   - Repository-approved travel supplements
 #
 # Then:
-#   - Audits HTTrack temporary pages read-only before enforcing mirror completion
 #   - Requires the Allakhazam HTTrack mirror to be complete before DB construction
 #   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
@@ -21,7 +20,7 @@
 #   - Audits direct gameplay-profile lifecycle coverage
 #   - Runs route acceptance
 #   - Runs the complete regression suite
-#   - Emits temporary-page/mirror/normalization/map/route/frontier/lifecycle reports and snapshot SHA-256
+#   - Emits mirror/normalization/map/route/frontier/lifecycle reports and snapshot SHA-256
 #
 # Normal EverQuestie users do NOT need Node.js, MCP, source mirrors,
 # map packs, or a source checkout. Those are builder inputs only.
@@ -52,7 +51,6 @@ $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\
 
 $WorkingDb = Join-Path $ProjectRoot "build\working.sqlite3"
 $SnapshotDb = Join-Path $ProjectRoot "dist\everquestie-knowledge.sqlite3"
-$TemporaryPageAuditReport = Join-Path $ProjectRoot "build\allakhazam-temporary-page-audit.json"
 $MirrorAuditReport = Join-Path $ProjectRoot "build\allakhazam-mirror-audit.json"
 $AllakhazamNormalizationReport = Join-Path $ProjectRoot "build\allakhazam-normalization-delta.json"
 $MapCatalogAuditReport = Join-Path $ProjectRoot "build\map-catalog-audit.json"
@@ -147,34 +145,17 @@ Write-Host "OK  MCP rich-detail compiler"
 Write-Host ("    {0}" -f $DetailBridge)
 
 # ------------------------------------------------------------
-# Allakhazam temporary-page diagnostic + completion gate
+# Allakhazam mirror inventory + completion gate
 # ------------------------------------------------------------
 #
 # Capture what the local mirror actually contains before the expensive DB build starts.
-# First emit a read-only temporary-page diagnostic so an incomplete post-crawl mirror has
-# an actionable recovery report. This does not rename or import .tmp files; recovery is a
-# separate explicit builder action. Then enforce the canonical completed-mirror gate.
 # A canonical full build must never compile from an HTTrack tree that is still active:
 # .tmp files are crawler-owned in-progress state and should become completed HTML when
-# the mirror finishes. The ordinary mirror audit CLI remains diagnostic by default; this
-# full build opts into --require-complete and stops before DB construction while any .tmp
+# the mirror finishes. The ordinary audit CLI remains diagnostic by default; this full
+# build opts into --require-complete and stops before DB construction while any .tmp
 # pages remain. Coverage counts themselves remain diagnostic rather than arbitrary
 # minimum spell/item/NPC/quest thresholds.
 # ------------------------------------------------------------
-
-Write-Host
-Write-Host "============================================"
-Write-Host " Allakhazam Temporary Page Diagnostic"
-Write-Host "============================================"
-Write-Host
-
-New-Item -ItemType Directory -Force -Path (Split-Path $TemporaryPageAuditReport -Parent) | Out-Null
-$TemporaryAuditJson = python .\tools\audit_allakhazam_temporary_pages.py `
-    $AllakhazamMirror `
-    --json `
-    --quiet
-Assert-LastExitCode "Allakhazam temporary-page audit"
-$TemporaryAuditJson | Set-Content -Path $TemporaryPageAuditReport -Encoding utf8
 
 Write-Host
 Write-Host "============================================"
@@ -426,7 +407,6 @@ Write-Host "Snapshot SHA-256:"
 Write-Host "  $SnapshotHash"
 Write-Host
 Write-Host "Reports:"
-Write-Host "  Temporary pages    : $TemporaryPageAuditReport"
 Write-Host "  Mirror inventory   : $MirrorAuditReport"
 Write-Host "  Allakhazam delta   : $AllakhazamNormalizationReport"
 Write-Host "  Map catalog        : $MapCatalogAuditReport"
@@ -436,7 +416,6 @@ Write-Host "  Profile lifecycle  : $LifecycleReport"
 Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
-Write-Host "  Allakhazam temp    : audited read-only"
 Write-Host "  Allakhazam mirror  : completed + audited + included"
 Write-Host "  Allakhazam delta   : audited"
 Write-Host "  MCP inventory      : verified"

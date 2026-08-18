@@ -435,6 +435,13 @@ class MapCatalog:
         return int(row["id"]) in location_zone_ids
 
     def _candidate_entities(self, normalized_text: str):
+        """Legacy exact-candidate query retained for compatibility with direct callers.
+
+        Reconciliation itself loads the complete candidate relation set-wise through
+        ``_candidate_index`` so full map catalogs never regress to one SQL query per
+        label. This narrow helper remains available for older source-checkout callers
+        until their external usage is explicitly retired.
+        """
         return self.db.conn.execute(
             """
             SELECT DISTINCT e.*
@@ -446,17 +453,67 @@ class MapCatalog:
             (normalized_text, normalized_text),
         ).fetchall()
 
+    def _candidate_index(self) -> dict[str, dict[int, object]]:
+        """Load exact entity/alias candidates for all map-label terms in two set queries."""
+        result: dict[str, dict[int, object]] = {}
+
+        for row in self.db.conn.execute(
+            """
+            WITH label_terms AS (
+                SELECT DISTINCT normalized_text
+                FROM map_labels
+                WHERE normalized_text<>''
+            )
+            SELECT lt.normalized_text AS lookup_text,
+                   e.id,e.kind,e.name,e.zone
+            FROM label_terms lt
+            JOIN entities e ON e.normalized_name=lt.normalized_text
+            ORDER BY lt.normalized_text,e.kind,e.name,e.id
+            """
+        ).fetchall():
+            key = str(row["lookup_text"] or "")
+            result.setdefault(key, {})[int(row["id"])] = row
+
+        for row in self.db.conn.execute(
+            """
+            WITH label_terms AS (
+                SELECT DISTINCT normalized_text
+                FROM map_labels
+                WHERE normalized_text<>''
+            )
+            SELECT lt.normalized_text AS lookup_text,
+                   e.id,e.kind,e.name,e.zone
+            FROM label_terms lt
+            JOIN entity_aliases a ON a.normalized_alias=lt.normalized_text
+            JOIN entities e ON e.id=a.entity_id
+            ORDER BY lt.normalized_text,e.kind,e.name,e.id
+            """
+        ).fetchall():
+            key = str(row["lookup_text"] or "")
+            result.setdefault(key, {})[int(row["id"])] = row
+
+        return result
+
     def reconcile_all(
         self,
         *,
         force: bool = False,
         progress: Callable[[str, int, int, str], None] | None = None,
-        chunk_size: int = 250,
+        chunk_size: int = 1000,
     ) -> dict[str, int]:
+        """Reconcile map labels through the set-based canonical implementation.
+
+        Only exact cleaned entity names/aliases are candidates. Current-zone evidence
+        may disambiguate multiple exact candidates but never creates a candidate. The
+        implementation groups repeated label/zone pairs so large shipped map catalogs
+        avoid per-label candidate queries and per-label SQLite updates.
+        """
         if not force and self.db.get_meta("map_links_dirty", "1") != "1":
             row = self.db.conn.execute(
                 """
-                SELECT SUM(link_status='linked'), SUM(link_status='ambiguous'), SUM(link_status='unresolved')
+                SELECT SUM(link_status='linked'),
+                       SUM(link_status='ambiguous'),
+                       SUM(link_status='unresolved')
                 FROM map_labels
                 """
             ).fetchone()
@@ -466,31 +523,50 @@ class MapCatalog:
                 "unresolved": int(row[2] or 0),
             }
 
-        labels = self.db.conn.execute(
-            "SELECT id,normalized_text,zone_name FROM map_labels ORDER BY id"
+        groups = self.db.conn.execute(
+            """
+            SELECT normalized_text,zone_name,COUNT(*) AS label_count
+            FROM map_labels
+            GROUP BY normalized_text,zone_name
+            ORDER BY normalized_text,zone_name
+            """
         ).fetchall()
-        total = len(labels)
+        total = sum(int(row["label_count"] or 0) for row in groups)
         if progress:
-            progress("reconcile", 0, max(1, total), f"Reconciling {total:,} map labels")
+            progress(
+                "reconcile",
+                0,
+                max(1, total),
+                f"Reconciling {total:,} map labels in {len(groups):,} unique label/zone groups",
+            )
+
+        candidates_by_text = self._candidate_index()
         location_by_zone: dict[str, set[int]] = {}
         linked = ambiguous = unresolved = 0
-        pending: list[tuple[int | None, str, str, int]] = []
-        chunk_size = max(25, int(chunk_size))
+        pending: list[tuple[int | None, str, str, str, str]] = []
+        processed = 0
+        chunk_size = max(50, int(chunk_size))
 
         def flush() -> None:
             if not pending:
                 return
             with self.db.batch():
                 self.db.conn.executemany(
-                    "UPDATE map_labels SET linked_entity_id=?,link_status=?,link_reason=? WHERE id=?",
+                    """
+                    UPDATE map_labels
+                    SET linked_entity_id=?,link_status=?,link_reason=?
+                    WHERE normalized_text=? AND zone_name=?
+                    """,
                     pending,
                 )
             pending.clear()
 
-        for index, label in enumerate(labels, start=1):
-            normalized = str(label["normalized_text"] or "")
-            zone_name = str(label["zone_name"] or "")
-            candidates = list(self._candidate_entities(normalized)) if normalized else []
+        for group_index, group in enumerate(groups, start=1):
+            normalized = str(group["normalized_text"] or "")
+            zone_name = str(group["zone_name"] or "")
+            label_count = int(group["label_count"] or 0)
+            candidate_map = candidates_by_text.get(normalized, {}) if normalized else {}
+            candidates = list(candidate_map.values())
             chosen = None
             reason = ""
             status = "unresolved"
@@ -504,11 +580,13 @@ class MapCatalog:
                     key = normalize_name(zone_name)
                     if key not in location_by_zone:
                         location_by_zone[key] = {
-                            int(r["entity_id"]) for r in self.db.locations_in_zone(zone_name)
+                            int(row["entity_id"])
+                            for row in self.db.locations_in_zone(zone_name)
                         }
                     zone_ids = location_by_zone[key]
                     narrowed = [
-                        row for row in candidates
+                        row
+                        for row in candidates
                         if self._entity_zone_matches(row, zone_name, zone_ids)
                     ]
                     if len(narrowed) == 1:
@@ -523,25 +601,41 @@ class MapCatalog:
                     reason = f"{len(candidates)} exact entity candidates"
 
             entity_id = int(chosen["id"]) if chosen is not None else None
-            pending.append((entity_id, status, reason, int(label["id"])))
+            pending.append((entity_id, status, reason, normalized, zone_name))
+            processed += label_count
+
             if status == "linked":
-                linked += 1
+                linked += label_count
             elif status == "ambiguous":
-                ambiguous += 1
+                ambiguous += label_count
             else:
-                unresolved += 1
+                unresolved += label_count
 
             if len(pending) >= chunk_size:
                 flush()
                 if progress:
-                    progress("reconcile", index, max(1, total), f"Reconciled {index:,}/{total:,} labels")
+                    progress(
+                        "reconcile",
+                        processed,
+                        max(1, total),
+                        f"Reconciled {processed:,}/{total:,} labels "
+                        f"({group_index:,}/{len(groups):,} unique groups)",
+                    )
 
         flush()
         with self.db.batch():
             self.db.set_meta("map_links_dirty", "0")
-            self.db.set_meta("map_links_last_reconcile", datetime.now().isoformat(timespec="seconds"))
+            self.db.set_meta(
+                "map_links_last_reconcile",
+                datetime.now().isoformat(timespec="seconds"),
+            )
         if progress:
-            progress("reconcile", max(1, total), max(1, total), f"Reconciled {total:,} labels")
+            progress(
+                "reconcile",
+                max(1, total),
+                max(1, total),
+                f"Reconciled {total:,} labels in {len(groups):,} unique groups",
+            )
         return {"linked": linked, "ambiguous": ambiguous, "unresolved": unresolved}
 
     def ensure_reconciled(self) -> None:

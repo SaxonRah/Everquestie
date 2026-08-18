@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .live_composition import chain_live_start
 from .session_activity_ledger import latest_observed_event, session_ledger_entry
 
 
@@ -22,7 +23,6 @@ def install_session_activity_ledger_ui() -> None:
 
     current_build_live = current_app._build_live
     current_append_event = current_app._append_event
-    current_start = current_app._start
 
     def _build_live(self) -> None:
         current_build_live(self)
@@ -42,8 +42,7 @@ def install_session_activity_ledger_ui() -> None:
                 # LabelFrame text option. The annotation behavior remains independent.
                 pass
 
-    def _start(self) -> None:
-        current_start(self)
+    def _reset_session_activity_ledger_after_start(self) -> None:
         self._session_activity_ledger_last_event_id = int(
             getattr(self, "_activity_session_start_event_id", 0) or 0
         )
@@ -96,6 +95,6 @@ def install_session_activity_ledger_ui() -> None:
             current_append_event(self, f"  ↳ {annotation}")
 
     current_app._build_live = _build_live
-    current_app._start = _start
+    chain_live_start(current_app, _reset_session_activity_ledger_after_start)
     current_app._append_event = _append_event
     setattr(current_app, _SESSION_ACTIVITY_LEDGER_MARKER, True)

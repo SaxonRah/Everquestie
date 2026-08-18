@@ -7,6 +7,7 @@ from eqquest import (
     activity_pathway_zone_context_ui,
     loot_relevance_ui,
     quest_progress_zone_context_ui,
+    session_activity_ledger_ui,
     target_intelligence_ui,
 )
 from eqquest.live_composition import chain_activity_pathways_refresh, chain_live_start
@@ -72,10 +73,11 @@ class LiveCompositionTests(unittest.TestCase):
 
         self.assertEqual(calls, ["base", "first", "second"])
 
-    def test_zone_context_installers_delegate_to_shared_start_chain(self):
+    def test_post_start_installers_delegate_to_shared_start_chain(self):
         for installer in (
             activity_pathway_zone_context_ui.install_activity_pathway_zone_context_ui,
             quest_progress_zone_context_ui.install_quest_progress_zone_context_ui,
+            session_activity_ledger_ui.install_session_activity_ledger_ui,
         ):
             source = inspect.getsource(installer)
             self.assertIn("chain_live_start(", source)

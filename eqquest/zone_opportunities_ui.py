@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
-from .live_composition import chain_activity_pathways_refresh
+from .live_composition import chain_activity_pathways_refresh, chain_live_build
 from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .quest_objective_navigation import tracked_quest_objective_navigation
 from .zone_opportunities import (
@@ -111,11 +111,7 @@ def install_zone_opportunities_ui() -> None:
     if getattr(current_app, _ZONE_OPPORTUNITIES_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
-
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_zone_opportunities(self) -> None:
         panel = ttk.LabelFrame(self.live_tab, text="What can I accomplish from here?", padding=6)
         panel.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         panel.columnconfigure(0, weight=1)
@@ -367,7 +363,7 @@ def install_zone_opportunities_ui() -> None:
                 "Current zone is unknown. Zone Opportunities appear only after an authoritative canonical zone is known."
             )
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_zone_opportunities)
     current_app._selected_zone_opportunity = _selected_zone_opportunity
     current_app._zone_opportunity_view_selected = _zone_opportunity_view_selected
     current_app._zone_opportunity_track_selected = _zone_opportunity_track_selected

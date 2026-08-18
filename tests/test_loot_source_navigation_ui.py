@@ -48,6 +48,7 @@ class LootSourceNavigationUITests(unittest.TestCase):
             reason="ready",
         )
         calls: list[tuple[int, str | None]] = []
+        chooser_calls: list[tuple[str, str, tuple[object, ...]]] = []
         focused: list[tuple] = []
         statuses: list[str] = []
         fake = SimpleNamespace(
@@ -64,15 +65,21 @@ class LootSourceNavigationUITests(unittest.TestCase):
         )
 
         old_projection = loot_ui.loot_source_navigation
+        old_chooser = loot_ui.ask_knowledge_map_choice
         try:
             loot_ui.loot_source_navigation = lambda _db, item_id, zone: (
                 calls.append((int(item_id), zone)) or projected
             )
+            loot_ui.ask_knowledge_map_choice = lambda _parent, name, zone, choices: (
+                chooser_calls.append((str(name), str(zone), tuple(choices))) or choices[0]
+            )
             app_cls._loot_relevance_find_source(fake)
         finally:
             loot_ui.loot_source_navigation = old_projection
+            loot_ui.ask_knowledge_map_choice = old_chooser
 
         self.assertEqual(calls, [(7001, "The Stone Hive")])
+        self.assertEqual(chooser_calls, [("Exact Resin", "The Stone Hive", (choice,))])
         self.assertEqual(
             focused,
             [("The Stone Hive", 41.0, 31.0, 5.0, "a stone hive worker (drops from)")],

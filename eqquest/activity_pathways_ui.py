@@ -11,7 +11,7 @@ from .activity_pathways import (
     pathway_detail_text,
 )
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
-from .live_navigation import handoff_to_travel
+from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .objective_reviewed_item_sources import (
     quest_objective_navigation_with_reviewed_sources,
 )
@@ -245,11 +245,7 @@ def install_activity_pathways_ui() -> None:
         suggestion = _selected_pathway(self)
         if suggestion is None:
             return
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(suggestion.quest_id))
-        else:
-            self._map_entity_selected(int(suggestion.quest_id))
+        open_exact_knowledge_entity(self, int(suggestion.quest_id))
 
     def _activity_pathway_track_selected(self) -> None:
         suggestion = _selected_pathway(self)

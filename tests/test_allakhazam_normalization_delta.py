@@ -203,6 +203,10 @@ class AllakhazamNormalizationDeltaTests(unittest.TestCase):
             encoding="utf-8",
         )
         before = sha256(self.db_path.read_bytes()).hexdigest()
+        wal = Path(str(self.db_path) + "-wal")
+        shm = Path(str(self.db_path) + "-shm")
+        wal_before = wal.read_bytes() if wal.exists() else None
+        shm_before = shm.read_bytes() if shm.exists() else None
 
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -225,8 +229,8 @@ class AllakhazamNormalizationDeltaTests(unittest.TestCase):
         self.assertEqual(payload["persisted_not_normalized"], 1)
         self.assertEqual(payload["lifecycle_records"], 1)
         self.assertEqual(sha256(self.db_path.read_bytes()).hexdigest(), before)
-        self.assertFalse(Path(str(self.db_path) + "-wal").exists())
-        self.assertFalse(Path(str(self.db_path) + "-shm").exists())
+        self.assertEqual(wal.read_bytes() if wal.exists() else None, wal_before)
+        self.assertEqual(shm.read_bytes() if shm.exists() else None, shm_before)
 
     def test_inconsistent_mirror_report_fails_closed(self) -> None:
         self._populate_delta_fixture()

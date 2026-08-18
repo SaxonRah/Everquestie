@@ -10,7 +10,7 @@ from eqquest.map_catalog import MapCatalog
 from eqquest.route_guidance import build_route_guidance, next_hop_for_zone
 from eqquest.runtime import RuntimeDatabase
 from eqquest.travel import build_route_result
-from eqquest.zone_authority import resolve_authoritative_zone
+from eqquest.zone_authority import authoritative_zones_match, resolve_authoritative_zone
 from eqquest.zone_catalog import ZoneMapCatalog
 from eqquest.zone_context import build_zone_context
 from eqquest.zone_identity import ZoneIdentityIndex
@@ -69,6 +69,23 @@ class AuthoritativeZoneJoinTests(unittest.TestCase):
 
         collisions = ZoneIdentityIndex(self.db).exact_collisions()
         self.assertIn("stonehive", collisions)
+
+    def test_authoritative_zone_match_accepts_literal_and_exact_alias_equivalence(self):
+        hole = self._zone("The Hole", "39", "eqclient:zone")
+        self.db.add_alias(hole, "Hole")
+
+        self.assertTrue(authoritative_zones_match(self.db, "  The Hole ", "the   hole"))
+        self.assertTrue(authoritative_zones_match(self.db, "The Hole", "Hole"))
+        self.assertFalse(authoritative_zones_match(self.db, None, "The Hole"))
+
+    def test_authoritative_zone_match_refuses_ambiguous_and_missing_geography(self):
+        north = self._zone("North Freeport", "8", "eqclient:zone")
+        south = self._zone("South Freeport", "9", "eqclient:zone")
+        self.db.add_alias(north, "Freeport")
+        self.db.add_alias(south, "Freeport")
+
+        self.assertFalse(authoritative_zones_match(self.db, "Freeport", "North Freeport"))
+        self.assertFalse(authoritative_zones_match(self.db, "Unknown Place", "North Freeport"))
 
     def test_zone_context_uses_client_backed_join_target(self):
         _provider, client = self._duplicate_zone(

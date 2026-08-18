@@ -6,7 +6,7 @@ from typing import Any
 
 from .db import normalize_name
 from .profile_availability import entity_profile_decision
-from .zone_authority import resolve_authoritative_zone
+from .zone_authority import authoritative_zones_match
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,24 +358,6 @@ class ActivityPathwayEngine:
             self._graph_index = self._build_graph_index()
         return self._graph_index
 
-    def _zones_match(self, observed_zone: str, objective_zone: str) -> bool:
-        """Compare zone evidence without fuzzy geography inference."""
-        observed = self._clean_zone(observed_zone)
-        objective = self._clean_zone(objective_zone)
-        if not observed or not objective:
-            return False
-        if normalize_name(observed) == normalize_name(objective):
-            return True
-
-        observed_resolution = resolve_authoritative_zone(self.db, observed)
-        objective_resolution = resolve_authoritative_zone(self.db, objective)
-        return bool(
-            observed_resolution.identity is not None
-            and objective_resolution.identity is not None
-            and int(observed_resolution.identity.entity_id)
-            == int(objective_resolution.identity.entity_id)
-        )
-
     def _direct_observed_count(
         self,
         key: tuple[str, str],
@@ -391,7 +373,7 @@ class ActivityPathwayEngine:
             if event_kind != key[0] or subject_key != key[1]:
                 continue
             observed_zone = self._zone_labels.get(zone_key, zone_key)
-            if self._zones_match(observed_zone, objective_zone):
+            if authoritative_zones_match(self.db, observed_zone, objective_zone):
                 matched += int(count)
         return matched
 

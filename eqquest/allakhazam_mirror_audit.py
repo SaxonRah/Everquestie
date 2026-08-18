@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .allakhazam import MiniDOMParser, extract_canonical_url, infer_kind_and_external_id
+from .allakhazam import (
+    AllakhazamImporter,
+    MiniDOMParser,
+    VisibleTextParser,
+    extract_canonical_url,
+    infer_kind_and_external_id,
+)
 from .allakhazam_mirror_importer import _quick_facts_expansion, _spell_numeric_id
 
 
@@ -49,14 +55,32 @@ class AllakhazamMirrorAudit:
         }
 
 
-def _mirror_page_kind(canonical: str) -> str | None:
-    """Classify exactly the structured page families the mirror importer accepts."""
+def _mirror_page_kind(raw_html: str, canonical: str) -> str | None:
+    """Classify with the production mirror importer's complete identity policy.
+
+    Most structured pages are identified by canonical URL. Legacy Bestiary and a few
+    other saved page shapes can advertise a generic canonical URL, however, and the
+    importer deliberately falls back to document structure for those pages. The
+    inventory audit must apply that same fallback or its capture upper bound will
+    under-count content that the actual builder can normalize.
+    """
     kind, _external_id = infer_kind_and_external_id(canonical)
     if kind:
         return kind
     if _spell_numeric_id(canonical):
         return "spell"
-    return None
+
+    visible = VisibleTextParser()
+    visible.feed(raw_html)
+    dom = MiniDOMParser()
+    dom.feed(raw_html)
+    importer = object.__new__(AllakhazamImporter)
+    fallback_kind, _fallback_external_id = importer._infer_kind_and_external_id_from_document(  # noqa: SLF001
+        dom.root,
+        visible.title,
+        canonical,
+    )
+    return fallback_kind
 
 
 def _spell_has_reviewed_expansion(raw_html: str) -> bool:
@@ -69,11 +93,12 @@ def _spell_has_reviewed_expansion(raw_html: str) -> bool:
 def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
     """Classify a local mirror without importing or modifying any EverQuestie DB.
 
-    This intentionally mirrors the builder importer's first-stage acceptance rules:
-    only saved HTML-like files are considered, `.tmp` files are excluded, canonical
-    Allakhazam URLs are extracted from the document itself, and recognized structured
-    page identity is inferred from that canonical URL. Spell lifecycle readiness also
-    uses the mirror importer's exact labeled Quick Facts ``Expansion`` parser.
+    This intentionally mirrors the builder importer's acceptance rules: only saved
+    HTML-like files are considered, `.tmp` files are excluded, canonical Allakhazam
+    URLs are extracted from the document itself, and recognized structured identity is
+    resolved by the same URL-first/document-fallback policy as production import.
+    Spell lifecycle readiness also uses the mirror importer's exact labeled Quick Facts
+    ``Expansion`` parser.
 
     No database writes and no network access are performed.
     """
@@ -118,8 +143,10 @@ def audit_allakhazam_mirror(folder: str | Path) -> AllakhazamMirrorAudit:
             missing_canonical += 1
             continue
         canonical_counts[canonical] = canonical_counts.get(canonical, 0) + 1
-        kind = _mirror_page_kind(canonical)
-        canonical_kind.setdefault(canonical, kind)
+        kind = _mirror_page_kind(raw_html, canonical)
+        previous_kind = canonical_kind.get(canonical)
+        if previous_kind is None or kind is not None:
+            canonical_kind[canonical] = kind
         if kind == "spell":
             # Duplicate local files for one source URL still represent one source page.
             # If any completed copy contains the reviewed structured field, the unique
@@ -225,7 +252,7 @@ def format_allakhazam_mirror_audit(
         "",
         "Interpretation:",
         "  • HTTrack/raw mirror file count includes assets and helper pages; it is not expected to equal EverQuestie source_pages.",
-        "  • importable_pages is the upper bound of unique structured pages the current Allakhazam mirror importer can classify from canonical URLs.",
+        "  • importable_pages is the upper bound of unique structured pages the current Allakhazam mirror importer can classify, including its conservative legacy document fallback.",
         "  • spell_pages_with_expansion counts only labeled Quick Facts Expansion values accepted by the production spell lifecycle parser; comments/prose do not count.",
         "  • Run the DB normalization coverage audit after import to compare mirror inventory with what was actually normalized into SQLite.",
     ]

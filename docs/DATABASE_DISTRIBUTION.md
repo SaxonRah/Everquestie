@@ -17,6 +17,18 @@ Packaged runtime opens the knowledge snapshot read-only/immutable and exposes it
 
 Source-checkout/developer mode can still use a writable combined builder database such as `~/.eqquest/eqquest.sqlite3`. That builder file is an input to the release process and must never be distributed as the packaged runtime database.
 
+## Upgrade safety contract
+
+Application/knowledge upgrades and player-state lifetime are intentionally independent. A normal update may replace the executable and `everquestie-knowledge.sqlite3`; it must leave the existing `everquestie-user.sqlite3` in place and reopen it on the next launch.
+
+Player state is resolved back onto each new knowledge snapshot through durable entity identity rather than persisted snapshot row IDs. Knowledge entities may therefore move to different SQLite row IDs or receive updated display names without resetting tracked quest state when a stable namespaced external identity is available.
+
+The user-state schema is versioned independently from the knowledge schema. A runtime that encounters an unsupported user-state schema must fail closed with the player database still intact; it must never respond by deleting, recreating, or silently resetting that database. Future user-state schema changes must use explicit preservation-oriented migrations rather than treating the player DB as a disposable cache.
+
+Release artifacts reinforce the same boundary. `release-manifest.json` must state `user_state_included = false`, and the final ZIP verifier rejects additional SQLite databases such as `everquestie-user.sqlite3`. Installation/update tooling should therefore operate only on application and immutable knowledge artifacts, not on the player's writable database.
+
+Regression coverage exercises successive v1 → v2 → v3 knowledge replacement against one persistent user-state DB, including settings, observed events, quest progress, changing knowledge row IDs/names, and an unknown sentinel table. It also verifies that a newer unsupported user-state schema is rejected without removing existing player data.
+
 ## Knowledge inputs and future providers
 
 Development proceeds without waiting for any one optional provider. Current builders can populate knowledge from the installed EverQuest client, map packs, local mirrors, MCP-derived local snapshots, and any other approved deterministic source available to the project.

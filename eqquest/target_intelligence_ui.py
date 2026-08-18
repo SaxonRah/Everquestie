@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .knowledge_map_choices import knowledge_map_choices, knowledge_route_choices
-from .live_composition import chain_activity_pathways_refresh
+from .live_composition import chain_activity_pathways_refresh, chain_live_build
 from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .target_intelligence import (
     TargetIntelligence,
@@ -32,11 +32,7 @@ def install_target_intelligence_ui() -> None:
     if getattr(current_app, _TARGET_INTELLIGENCE_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
-
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_target_intelligence(self) -> None:
         panel = ttk.LabelFrame(self.live_tab, text="Target Intelligence", padding=6)
         panel.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         panel.columnconfigure(0, weight=1)
@@ -365,7 +361,7 @@ def install_target_intelligence_ui() -> None:
             self._render_target_quest_relevance(value, rows)
             self._target_quest_relevance_key = relevance_key
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_target_intelligence)
     current_app._target_intelligence_view = _target_intelligence_view
     current_app._target_intelligence_navigate = _target_intelligence_navigate
     current_app._target_intelligence_details = _target_intelligence_details

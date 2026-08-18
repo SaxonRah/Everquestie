@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
-from .live_composition import chain_activity_pathways_refresh
+from .live_composition import chain_activity_pathways_refresh, chain_live_build
 from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
 from .loot_source_navigation import loot_source_navigation
@@ -22,11 +22,7 @@ def install_loot_relevance_ui() -> None:
     if getattr(current_app, _LOOT_RELEVANCE_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
-
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_loot_relevance(self) -> None:
         panel = ttk.LabelFrame(self.live_tab, text="Recent Loot Relevance", padding=6)
         panel.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         panel.columnconfigure(0, weight=1)
@@ -360,7 +356,7 @@ def install_loot_relevance_ui() -> None:
                 "No displayed use never means an item is automatically vendor trash."
             )
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_loot_relevance)
     current_app._selected_loot_relevance = _selected_loot_relevance
     current_app._loot_relevance_view_item = _loot_relevance_view_item
     current_app._loot_relevance_view_quest = _loot_relevance_view_quest

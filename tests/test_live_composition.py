@@ -132,6 +132,16 @@ class LiveCompositionTests(unittest.TestCase):
             self.assertNotIn("current_build_live =", source)
             self.assertNotIn("def _build_live(", source)
 
+    def test_live_projection_build_installers_delegate_to_shared_live_build_chain(self):
+        for installer in (
+            loot_relevance_ui.install_loot_relevance_ui,
+            target_intelligence_ui.install_target_intelligence_ui,
+        ):
+            source = inspect.getsource(installer)
+            self.assertIn("chain_live_build(", source)
+            self.assertNotIn("current_build_live =", source)
+            self.assertNotIn("def _build_live(", source)
+
     def test_remaining_live_projection_installers_delegate_to_shared_refresh_chain(self):
         for installer in (
             loot_relevance_ui.install_loot_relevance_ui,

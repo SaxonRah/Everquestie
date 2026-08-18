@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .allakhazam import AllakhazamImporter, open_allakhazam_search, open_url
+from .allakhazam_mirror_importer import AllakhazamMirrorImporter
 from .commands import parse_control_command
 from .db import Database
 from .parser import EQLogParser
@@ -106,6 +107,7 @@ class EverQuestieApp(tk.Tk):
         self.state_model = SessionState()
         self.quest_engine = QuestEngine(self.db)
         self.importer = AllakhazamImporter(self.db)
+        self.mirror_importer = AllakhazamMirrorImporter(self.db)
         self.eq_client_importer = EQClientImporter(self.db)
         self.mcp_local_compiler = MCPLocalSnapshotCompiler(self.db)
         self.wiki_importer = AllakhazamWikiImporter(self.db)
@@ -1179,7 +1181,7 @@ class EverQuestieApp(tk.Tk):
         if not folder:
             return
         try:
-            summary = self.importer.import_mirror(folder)
+            summary = self.mirror_importer.import_mirror(folder)
         except Exception as exc:
             messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
             return

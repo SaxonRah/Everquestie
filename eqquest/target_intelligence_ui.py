@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .knowledge_map_choices import knowledge_map_choices, knowledge_route_choices
 from .target_intelligence import (
     TargetIntelligence,
@@ -150,20 +151,15 @@ def install_target_intelligence_ui() -> None:
             getattr(self.state_model, "current_zone", None),
         )
         if choices.ready:
-            if len(choices.choices) == 1:
-                choice = choices.choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    value.canonical_name,
-                    choices.current_zone_name,
-                    choices.choices,
-                )
-                if choice is None:
-                    self.status.set("Target location selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                value.canonical_name,
+                choices.current_zone_name,
+                choices.choices,
+            )
+            if choice is None:
+                self.status.set("Target location selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -178,20 +174,15 @@ def install_target_intelligence_ui() -> None:
 
         routes = knowledge_route_choices(choices)
         if routes:
-            if len(routes) == 1:
-                route = routes[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                route = ask_knowledge_route_choice(
-                    self,
-                    value.canonical_name,
-                    choices.current_zone_name,
-                    routes,
-                )
-                if route is None:
-                    self.status.set("Target route selection cancelled.")
-                    return
+            route = ask_knowledge_route_choice(
+                self,
+                value.canonical_name,
+                choices.current_zone_name,
+                routes,
+            )
+            if route is None:
+                self.status.set("Target route selection cancelled.")
+                return
 
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):

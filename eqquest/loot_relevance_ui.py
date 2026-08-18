@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
 from .loot_source_navigation import loot_source_navigation
 from .loot_turn_in_navigation import loot_turn_in_navigation
@@ -164,20 +165,15 @@ def install_loot_relevance_ui() -> None:
         )
 
         if result.map_ready:
-            if len(result.map_choices) == 1:
-                choice = result.map_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    result.item_name,
-                    self.state_model.current_zone or "current zone",
-                    result.map_choices,
-                )
-                if choice is None:
-                    self.status.set("Loot source selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                result.item_name,
+                self.state_model.current_zone or "current zone",
+                result.map_choices,
+            )
+            if choice is None:
+                self.status.set("Loot source selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -191,20 +187,15 @@ def install_loot_relevance_ui() -> None:
             return
 
         if result.route_ready:
-            if len(result.route_choices) == 1:
-                choice = result.route_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                choice = ask_knowledge_route_choice(
-                    self,
-                    result.item_name,
-                    self.state_model.current_zone or "current zone",
-                    result.route_choices,
-                )
-                if choice is None:
-                    self.status.set("Loot source route selection cancelled.")
-                    return
+            choice = ask_knowledge_route_choice(
+                self,
+                result.item_name,
+                self.state_model.current_zone or "current zone",
+                result.route_choices,
+            )
+            if choice is None:
+                self.status.set("Loot source route selection cancelled.")
+                return
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):
                 self.status.set("Travel routing is not connected in this application surface.")
@@ -241,20 +232,15 @@ def install_loot_relevance_ui() -> None:
             self.state_model.current_zone,
         )
         if result.map_ready:
-            if len(result.map_choices) == 1:
-                choice = result.map_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_map_choice
-
-                choice = ask_knowledge_map_choice(
-                    self,
-                    result.quest_name,
-                    self.state_model.current_zone or "current zone",
-                    result.map_choices,
-                )
-                if choice is None:
-                    self.status.set("Turn-in location selection cancelled.")
-                    return
+            choice = ask_knowledge_map_choice(
+                self,
+                result.quest_name,
+                self.state_model.current_zone or "current zone",
+                result.map_choices,
+            )
+            if choice is None:
+                self.status.set("Turn-in location selection cancelled.")
+                return
             self._focus_navigation_map_target(
                 choice.zone_name,
                 choice.x,
@@ -268,20 +254,15 @@ def install_loot_relevance_ui() -> None:
             return
 
         if result.route_ready:
-            if len(result.route_choices) == 1:
-                choice = result.route_choices[0]
-            else:
-                from .knowledge_location_ui import ask_knowledge_route_choice
-
-                choice = ask_knowledge_route_choice(
-                    self,
-                    result.quest_name,
-                    self.state_model.current_zone or "current zone",
-                    result.route_choices,
-                )
-                if choice is None:
-                    self.status.set("Turn-in route selection cancelled.")
-                    return
+            choice = ask_knowledge_route_choice(
+                self,
+                result.quest_name,
+                self.state_model.current_zone or "current zone",
+                result.route_choices,
+            )
+            if choice is None:
+                self.status.set("Turn-in route selection cancelled.")
+                return
             travel = getattr(self, "travel_tab", None)
             if travel is None or not hasattr(travel, "route_to_zone"):
                 self.status.set("Travel routing is not connected in this application surface.")

@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
 from .live_composition import chain_activity_pathways_refresh
-from .live_navigation import handoff_to_travel
+from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
 from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
 from .loot_source_navigation import loot_source_navigation
 from .loot_turn_in_navigation import loot_turn_in_navigation
@@ -117,26 +117,19 @@ def install_loot_relevance_ui() -> None:
             return None
         return getattr(self, "_loot_relevance_by_item", {}).get(selected[0])
 
-    def _open_exact(self, entity_id: int) -> None:
-        opener = getattr(self, "_open_knowledge_entity_exact", None)
-        if callable(opener):
-            opener(int(entity_id))
-        else:
-            self._map_entity_selected(int(entity_id))
-
     def _loot_relevance_view_item(self) -> None:
         selected = _selected_loot_relevance(self)
         if selected is None:
             return
         item, _use = selected
-        _open_exact(self, int(item.item_id))
+        open_exact_knowledge_entity(self, int(item.item_id))
 
     def _loot_relevance_view_quest(self) -> None:
         selected = _selected_loot_relevance(self)
         if selected is None:
             return
         _item, use = selected
-        _open_exact(self, int(use.quest_id))
+        open_exact_knowledge_entity(self, int(use.quest_id))
 
     def _loot_relevance_track_quest(self) -> None:
         selected = _selected_loot_relevance(self)

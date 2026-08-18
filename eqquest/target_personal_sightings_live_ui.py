@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .live_composition import chain_live_build
 from .live_navigation import handoff_to_travel
 from .target_personal_sightings import (
     target_personal_sighting_text,
@@ -23,11 +24,7 @@ def install_target_personal_sightings_ui() -> None:
     if getattr(current_app, _TARGET_PERSONAL_SIGHTINGS_MARKER, False):
         return
 
-    current_build_live = current_app._build_live
-
-    def _build_live(self) -> None:
-        current_build_live(self)
-
+    def _build_target_personal_sightings(self) -> None:
         panel = ttk.LabelFrame(self.live_tab, text="Target History", padding=6)
         panel.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         panel.columnconfigure(0, weight=1)
@@ -142,7 +139,7 @@ def install_target_personal_sightings_ui() -> None:
             target_personal_sighting_text(target_name, row),
         )
 
-    current_app._build_live = _build_live
+    chain_live_build(current_app, _build_target_personal_sightings)
     current_app._target_personal_sightings_browse = _target_personal_sightings_browse
     current_app._target_personal_sighting_details = _target_personal_sighting_details
     setattr(current_app, _TARGET_PERSONAL_SIGHTINGS_MARKER, True)

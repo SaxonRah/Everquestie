@@ -38,3 +38,18 @@ def chain_live_start(app_cls, extension) -> None:
         extension(self)
 
     app_cls._start = _start
+
+
+def chain_live_build(app_cls, extension) -> None:
+    """Append one UI extension after the currently composed Live surface build.
+
+    The previously installed builder always runs first, preserving bootstrap install
+    order while each layer keeps ownership of the widgets and state it adds.
+    """
+    previous = app_cls._build_live
+
+    def _build_live(self) -> None:
+        previous(self)
+        extension(self)
+
+    app_cls._build_live = _build_live

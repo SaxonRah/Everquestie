@@ -9,8 +9,14 @@ from eqquest import (
     quest_progress_zone_context_ui,
     session_activity_ledger_ui,
     target_intelligence_ui,
+    target_known_drops_live_ui,
+    target_personal_sightings_live_ui,
 )
-from eqquest.live_composition import chain_activity_pathways_refresh, chain_live_start
+from eqquest.live_composition import (
+    chain_activity_pathways_refresh,
+    chain_live_build,
+    chain_live_start,
+)
 
 
 class LiveCompositionTests(unittest.TestCase):
@@ -73,6 +79,26 @@ class LiveCompositionTests(unittest.TestCase):
 
         self.assertEqual(calls, ["base", "first", "second"])
 
+    def test_chained_live_build_preserves_previous_first_install_order(self):
+        calls: list[str] = []
+
+        class App:
+            def _build_live(self) -> None:
+                calls.append("base")
+
+        def first(self) -> None:
+            calls.append("first")
+
+        def second(self) -> None:
+            calls.append("second")
+
+        chain_live_build(App, first)
+        chain_live_build(App, second)
+
+        App()._build_live()
+
+        self.assertEqual(calls, ["base", "first", "second"])
+
     def test_post_start_installers_delegate_to_shared_start_chain(self):
         for installer in (
             activity_pathway_zone_context_ui.install_activity_pathway_zone_context_ui,
@@ -83,6 +109,16 @@ class LiveCompositionTests(unittest.TestCase):
             self.assertIn("chain_live_start(", source)
             self.assertNotIn("current_start =", source)
             self.assertNotIn("def _start(", source)
+
+    def test_target_auxiliary_installers_delegate_to_shared_live_build_chain(self):
+        for installer in (
+            target_known_drops_live_ui.install_target_known_drops_ui,
+            target_personal_sightings_live_ui.install_target_personal_sightings_ui,
+        ):
+            source = inspect.getsource(installer)
+            self.assertIn("chain_live_build(", source)
+            self.assertNotIn("current_build_live =", source)
+            self.assertNotIn("def _build_live(", source)
 
     def test_remaining_live_projection_installers_delegate_to_shared_refresh_chain(self):
         for installer in (

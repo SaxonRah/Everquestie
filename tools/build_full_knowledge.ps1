@@ -12,7 +12,7 @@
 #
 # Then:
 #   - Audits HTTrack temporary pages read-only before enforcing mirror completion
-#   - Requires the Allakhazam HTTrack mirror to be complete before DB construction
+#   - Requires confirmed HTTrack run completion before DB construction
 #   - Audits the completed Allakhazam mirror before DB construction
 #   - Finalizes the immutable knowledge snapshot
 #   - Compares captured Allakhazam structured pages with persisted/normalized SQLite pages
@@ -41,7 +41,8 @@ Set-Location $ProjectRoot
 # ------------------------------------------------------------
 
 $EqInstall = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest"
-$AllakhazamMirror = "C:\AllakhazamEverquest\EQ_Allakhazam_DB\everquest.allakhazam.com"
+$AllakhazamProject = "C:\AllakhazamEverquest\EQ_Allakhazam_DB"
+$AllakhazamMirror = Join-Path $AllakhazamProject "everquest.allakhazam.com"
 $McpRepo = "C:\Everquestie\third_party\everquest1-mcp"
 $GoodsMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Good's Maps"
 $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Brewall"
@@ -110,11 +111,12 @@ Write-Host "============================================"
 Write-Host
 
 $RequiredDirectories = [ordered]@{
-    "EverQuest installation" = $EqInstall
-    "Allakhazam mirror"      = $AllakhazamMirror
-    "everquest1-mcp"         = $McpRepo
-    "Good's maps"            = $GoodsMaps
-    "Brewall maps"           = $BrewallMaps
+    "EverQuest installation"       = $EqInstall
+    "Allakhazam HTTrack project"   = $AllakhazamProject
+    "Allakhazam mirror"            = $AllakhazamMirror
+    "everquest1-mcp"               = $McpRepo
+    "Good's maps"                  = $GoodsMaps
+    "Brewall maps"                 = $BrewallMaps
 }
 
 foreach ($Entry in $RequiredDirectories.GetEnumerator()) {
@@ -154,12 +156,12 @@ Write-Host ("    {0}" -f $DetailBridge)
 # First emit a read-only temporary-page diagnostic so an incomplete post-crawl mirror has
 # an actionable recovery report. This does not rename or import .tmp files; recovery is a
 # separate explicit builder action. Then enforce the canonical completed-mirror gate.
-# A canonical full build must never compile from an HTTrack tree that is still active:
-# .tmp files are crawler-owned in-progress state and should become completed HTML when
-# the mirror finishes. The ordinary mirror audit CLI remains diagnostic by default; this
-# full build opts into --require-complete and stops before DB construction while any .tmp
-# pages remain. Coverage counts themselves remain diagnostic rather than arbitrary
-# minimum spell/item/NPC/quest thresholds.
+#
+# A clean WinHTTrack cancellation can finish pending files and remove .tmp suffixes, so
+# the absence of temporary files alone does not prove that the crawl frontier was
+# exhausted. The hard gate therefore receives the explicit HTTrack project root and
+# verifies hts-in_progress.lock plus the current hts-log.txt run evidence. Active,
+# interrupted, and unknown runs all fail closed before database construction.
 # ------------------------------------------------------------
 
 Write-Host
@@ -184,6 +186,7 @@ Write-Host
 
 python .\tools\audit_allakhazam_mirror.py `
     $AllakhazamMirror `
+    --httrack-project $AllakhazamProject `
     --output $MirrorAuditReport `
     --require-complete
 Assert-LastExitCode "Allakhazam completed-mirror inventory audit"
@@ -437,7 +440,7 @@ Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
 Write-Host "  Allakhazam temp    : audited read-only"
-Write-Host "  Allakhazam mirror  : completed + audited + included"
+Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"
 Write-Host "  Allakhazam delta   : audited"
 Write-Host "  MCP inventory      : verified"
 Write-Host "  MCP rich details   : verified"

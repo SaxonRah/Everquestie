@@ -9,16 +9,21 @@ FULL_BUILD = REPO_ROOT / "tools" / "build_full_knowledge.ps1"
 
 
 class FullBuildMirrorCompletionGateTests(unittest.TestCase):
-    def test_full_build_audits_temporary_pages_before_requiring_completed_mirror(self) -> None:
+    def test_full_build_audits_temporary_pages_before_confirmed_httrack_completion(self) -> None:
         text = FULL_BUILD.read_text(encoding="utf-8")
         temporary_audit = text.index("audit_allakhazam_temporary_pages.py")
         mirror_audit = text.index("audit_allakhazam_mirror.py")
-        require_complete = text.index("--require-complete", mirror_audit)
+        httrack_project = text.index("--httrack-project $AllakhazamProject", mirror_audit)
+        require_complete = text.index("--require-complete", httrack_project)
         build = text.index("build_knowledge_db.py")
 
         self.assertLess(temporary_audit, mirror_audit)
-        self.assertLess(mirror_audit, require_complete)
+        self.assertLess(mirror_audit, httrack_project)
+        self.assertLess(httrack_project, require_complete)
         self.assertLess(require_complete, build)
+        self.assertIn('$AllakhazamProject = "C:\\AllakhazamEverquest\\EQ_Allakhazam_DB"', text)
+        self.assertIn('$AllakhazamMirror = Join-Path $AllakhazamProject "everquest.allakhazam.com"', text)
+        self.assertIn('"Allakhazam HTTrack project"   = $AllakhazamProject', text)
         self.assertIn("allakhazam-temporary-page-audit.json", text)
         self.assertIn('$TemporaryAuditJson | Set-Content -Path $TemporaryPageAuditReport -Encoding utf8', text)
         self.assertIn('Assert-LastExitCode "Allakhazam temporary-page audit"', text)
@@ -29,7 +34,9 @@ class FullBuildMirrorCompletionGateTests(unittest.TestCase):
         self.assertNotIn("spell_pages -eq 0", text)
         self.assertNotIn("spell_pages_with_expansion -eq 0", text)
         self.assertNotIn("recover_allakhazam_temporary_pages.py", text)
-        self.assertIn(".tmp files are crawler-owned in-progress state", text)
+        self.assertIn("clean WinHTTrack cancellation", text)
+        self.assertIn("hts-in_progress.lock", text)
+        self.assertIn("hts-log.txt", text)
         self.assertIn("recovery is a", text)
         self.assertIn("separate explicit builder action", text)
 

@@ -99,8 +99,10 @@ class AllakhazamTemporaryRecoveryCliTests(unittest.TestCase):
     def test_canonical_full_builder_still_requires_completed_mirror(self) -> None:
         text = FULL_BUILD.read_text(encoding="utf-8")
         self.assertIn("--require-complete", text)
+        self.assertIn("--httrack-project $AllakhazamProject", text)
         self.assertNotIn("recover_allakhazam_temporary_pages.py", text)
-        self.assertIn(".tmp files are crawler-owned in-progress state", text)
+        self.assertIn("absence of temporary files alone does not prove", text)
+        self.assertIn("interrupted, and unknown runs all fail closed", text)
 
 
 if __name__ == "__main__":

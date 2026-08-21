@@ -51,7 +51,23 @@ MAP_THEME_BY_LABEL = {label: key for key, label in MAP_THEME_LABELS.items()}
 # The wall image is cached at high resolution and zoomed in Tk. These levels
 # keep zoom predictable and allow exact rational image scaling without
 # rerasterizing native EQ geometry on wheel events.
-MAP_ZOOM_LEVELS = (0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50, 3.00, 4.00)
+# Player-facing zoom levels. Deep zoom intentionally extends well beyond the
+# full-map raster cache so dense EQ maps remain practically navigable.
+MAP_ZOOM_LEVELS = (
+    0.50, 0.75, 1.00, 1.25, 1.50,
+    2.00, 2.50, 3.00, 4.00,
+    5.00, 6.00, 8.00, 10.00, 12.00,
+    16.00, 20.00, 24.00, 32.00,
+)
+
+# Full-map raster dimensions grow quadratically with zoom. Keep the fast
+# pre-rendered wall cache bounded, then use visible-vector drawing above it.
+MAP_RASTER_ZOOM_MAX = 4.00
+MAP_RASTER_ZOOM_LEVELS = tuple(
+    level
+    for level in MAP_ZOOM_LEVELS
+    if level <= MAP_RASTER_ZOOM_MAX
+)
 
 
 def _hex_color(r: int, g: int, b: int) -> str:
@@ -720,6 +736,13 @@ class MapViewerFrame(ttk.Frame):
             self._pan_job = None
         self._flush_pan()
         self._pan_start = None
+
+        if self._using_detail_zoom():
+            self._draw_high_zoom_lines()
+            self._draw_map_labels()
+            self._redraw_overlays()
+            self._redraw_position()
+
         self._schedule_save_view(180)
 
     def _wheel(self, event) -> None:
@@ -763,7 +786,17 @@ class MapViewerFrame(ttk.Frame):
         self.offset_x = new_offset_x
         self.offset_y = new_offset_y
         if dx or dy:
-            self.canvas.move("map_content", dx, dy)
+            self.canvas.move(
+                "map_content",
+                dx,
+                dy,
+            )
+
+            if self._using_detail_zoom():
+                self._draw_high_zoom_lines()
+                self._draw_map_labels()
+                self._redraw_overlays()
+                self._redraw_position()
 
     def _motion(self, event) -> None:
         if self.zone_map is None:
@@ -1354,7 +1387,10 @@ class MapViewerFrame(ttk.Frame):
             enabled_layers=tuple(self._enabled_layers()),
             theme_id=self._map_theme_id(),
             line_width=factor,
-            exact_levels=tuple((level, level / factor) for level in MAP_ZOOM_LEVELS),
+            exact_levels=tuple(
+                (level, level / factor)
+                for level in MAP_RASTER_ZOOM_LEVELS
+            ),
             elevation_enabled=enabled_z,
             elevation_z=z,
             elevation_span=span,
@@ -1428,6 +1464,80 @@ class MapViewerFrame(ttk.Frame):
                 f"{result.source_lines:,} source lines | {len(self._wall_exact_photos)} exact zoom images"
             )
 
+    def _current_zoom_level(self) -> float:
+        """Return zoom relative to the map's Fit scale."""
+        return self.scale / max(self._wall_fit_scale, 1e-9)
+
+    def _using_detail_zoom(self) -> bool:
+        """Use viewport vectors beyond the bounded full-map raster cache."""
+        return self._current_zoom_level() > MAP_RASTER_ZOOM_MAX + 1e-9
+
+    def _draw_high_zoom_lines(self, *, buffer_px: int = 120) -> None:
+        """Draw only visible native map geometry for deep zoom."""
+        self.canvas.delete("map_detail_lines")
+
+        if self.zone_map is None:
+            return
+
+        z_context = self._z_context()
+
+        left = -float(buffer_px)
+        top = -float(buffer_px)
+        right = float(self.canvas.winfo_width() + buffer_px)
+        bottom = float(self.canvas.winfo_height() + buffer_px)
+
+        for layer_no in self._enabled_layers():
+            layer = self.zone_map.layers.get(layer_no)
+            if layer is None:
+                continue
+
+            for line in layer.lines:
+                if not self._z_visible_for_context(
+                    line.z0,
+                    line.z1,
+                    z_context,
+                ):
+                    continue
+
+                x0, y0 = self._world_to_screen(
+                    line.x0,
+                    line.y0,
+                )
+                x1, y1 = self._world_to_screen(
+                    line.x1,
+                    line.y1,
+                )
+
+                if (
+                    max(x0, x1) < left
+                    or min(x0, x1) > right
+                    or max(y0, y1) < top
+                    or min(y0, y1) > bottom
+                ):
+                    continue
+
+                self.canvas.create_line(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    fill=self._themed_map_color(
+                        line.r,
+                        line.g,
+                        line.b,
+                    ),
+                    width=1,
+                    tags=(
+                        "map_content",
+                        "map_detail_lines",
+                    ),
+                )
+
+        try:
+            self.canvas.tag_lower("map_detail_lines")
+        except tk.TclError:
+            pass
+
     def _scaled_wall_photo(self) -> tk.PhotoImage | None:
         """Return the exact vector-derived image for the current discrete zoom."""
         if not self._wall_exact_photos:
@@ -1437,25 +1547,70 @@ class MapViewerFrame(ttk.Frame):
         return self._wall_exact_photos[level]
 
     def _refresh_wall_display(self) -> None:
+        if self._using_detail_zoom():
+            if self._display_image_item is not None:
+                try:
+                    self.canvas.itemconfigure(
+                        self._display_image_item,
+                        state="hidden",
+                    )
+                except tk.TclError:
+                    pass
+
+            self._draw_high_zoom_lines()
+            return
+
         photo = self._scaled_wall_photo()
         if photo is None:
             return
+
+        self.canvas.delete("map_detail_lines")
+
         self._display_photo = photo
         world_x, world_y = self._wall_world_origin
-        x, y = self._world_to_screen(world_x, world_y)
+        x, y = self._world_to_screen(
+            world_x,
+            world_y,
+        )
+
         if self._display_image_item is None:
             self._display_image_item = self.canvas.create_image(
-                x, y, image=photo, anchor="nw", tags=("map_content", "map_raster")
+                x,
+                y,
+                image=photo,
+                anchor="nw",
+                tags=(
+                    "map_content",
+                    "map_raster",
+                ),
             )
         else:
             try:
-                self.canvas.itemconfigure(self._display_image_item, image=photo)
-                self.canvas.coords(self._display_image_item, x, y)
+                self.canvas.itemconfigure(
+                    self._display_image_item,
+                    image=photo,
+                    state="normal",
+                )
+                self.canvas.coords(
+                    self._display_image_item,
+                    x,
+                    y,
+                )
             except tk.TclError:
                 self._display_image_item = self.canvas.create_image(
-                    x, y, image=photo, anchor="nw", tags=("map_content", "map_raster")
+                    x,
+                    y,
+                    image=photo,
+                    anchor="nw",
+                    tags=(
+                        "map_content",
+                        "map_raster",
+                    ),
                 )
-        self.canvas.tag_lower(self._display_image_item)
+
+        self.canvas.tag_lower(
+            self._display_image_item
+        )
 
     def _draw_map_labels(self, *, buffer_px: int = 80) -> None:
         self.canvas.delete("map_labels")
@@ -1637,6 +1792,8 @@ class MapViewerFrame(ttk.Frame):
             return
         if self._wall_dirty or self._raster_photo is None:
             self._request_raster_render(0)
+            if self._using_detail_zoom():
+                self._draw_high_zoom_lines()
         else:
             self._refresh_wall_display()
         self._draw_map_labels()

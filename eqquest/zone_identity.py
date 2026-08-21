@@ -137,12 +137,20 @@ class ZoneIdentityIndex:
 
         aliases: dict[int, list[str]] = {entity_id: [] for entity_id in zone_ids}
         if zone_ids:
+            # Filter to zone aliases inside SQLite.  Large release snapshots contain
+            # aliases for hundreds of thousands of items/NPCs/etc.; materializing all
+            # of them in Python whenever a ZoneIdentityIndex is constructed makes a
+            # live zone change stall the Tk UI.
             for row in self.db.conn.execute(
-                "SELECT entity_id,alias,alias_type FROM entity_aliases ORDER BY entity_id,id"
+                """
+                SELECT a.entity_id, a.alias, a.alias_type
+                FROM entity_aliases a
+                JOIN entities e ON e.id=a.entity_id
+                WHERE e.kind='zone'
+                ORDER BY a.entity_id, a.id
+                """
             ).fetchall():
                 entity_id = int(row["entity_id"])
-                if entity_id not in zone_ids:
-                    continue
                 alias = str(row["alias"] or "").strip()
                 alias_type = str(row["alias_type"] or "").casefold()
                 # Numeric aliases from old imports are identity IDs, not human/map

@@ -493,8 +493,60 @@ def install_activity_pathways_ui() -> None:
             )
 
     def _activity_pathway_tick(self) -> None:
-        self._refresh_activity_pathways()
-        self.after(1000, self._activity_pathway_tick)
+        """Refresh Live intelligence only when relevant new observations exist.
+
+        The composed pathway refresh also drives Zone Opportunities, Recent Loot,
+        activity clustering and Target Intelligence.  Running that whole stack once
+        per second regardless of input can monopolize Tk's UI thread against a large
+        packaged knowledge snapshot.
+        """
+        engine = getattr(self, "activity_pathway_engine", None)
+        monitoring = getattr(self, "tailer", None) is not None
+
+        if engine is not None and monitoring:
+            cursor = int(getattr(engine, "_last_event_id", 0) or 0)
+
+            row = self.db.conn.execute(
+                """
+                SELECT
+                    COALESCE(MAX(id), 0) AS max_id,
+                    COALESCE(
+                        MAX(
+                            CASE
+                                WHEN kind IN (
+                                    'welcome',
+                                    'zone',
+                                    'kill',
+                                    'loot',
+                                    'target_npc',
+                                    'consider',
+                                    'task_assigned',
+                                    'task_update'
+                                )
+                                THEN 1
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS relevant
+                FROM observed_events
+                WHERE id > ?
+                """,
+                (cursor,),
+            ).fetchone()
+
+            max_id = int(row["max_id"] if row is not None else cursor)
+            relevant = bool(int(row["relevant"] if row is not None else 0))
+
+            if relevant:
+                self._refresh_activity_pathways()
+            elif max_id > cursor:
+                # ActivityPathwayEngine ignores these event kinds anyway. Advance
+                # its cursor so ordinary combat/chat spam cannot accumulate into a
+                # large future catch-up scan.
+                engine._last_event_id = max_id
+
+        self.after(500, self._activity_pathway_tick)
 
     def _start(self) -> None:
         current_start(self)
@@ -502,15 +554,54 @@ def install_activity_pathways_ui() -> None:
         if engine is not None and getattr(self, "tailer", None) is not None:
             boundary = engine.latest_observed_event_id()
             self._activity_session_start_event_id = boundary
-            self._activity_session_start_zone = getattr(self.state_model, "current_zone", None)
-            engine.reset_session(boundary)
+            self._activity_session_start_zone = getattr(
+                self.state_model,
+                "current_zone",
+                None,
+            )
+            engine.reset_session(
+                boundary,
+                starting_zone=self._activity_session_start_zone,
+            )
             self._activity_pathway_signature = None
-            self._refresh_activity_pathways(force=True)
+
+            # Starting the tail establishes a session boundary; it does not create
+            # any new pathway evidence.  Do not synchronously force the entire
+            # composed Live intelligence stack here.  The event-driven tick will
+            # refresh after the first relevant live observation.
+            status = getattr(self, "activity_pathway_status", None)
+            if status is not None:
+                status.set(
+                    "Monitoring live activity. Potential pathways appear when "
+                    "relevant source-backed kill/loot observations arrive."
+                )
 
     def _stop(self) -> None:
+        """Stop monitoring without running expensive knowledge projections.
+
+        Stopping creates no new evidence.  Preserve the already-rendered session
+        results and update only the lightweight status text.
+        """
         current_stop(self)
-        if hasattr(self, "activity_pathway_status"):
-            self._refresh_activity_pathways(force=True)
+
+        status = getattr(self, "activity_pathway_status", None)
+        if status is None:
+            return
+
+        visible = len(
+            getattr(self, "_activity_pathway_by_item", {})
+        )
+
+        if visible:
+            status.set(
+                f"Last monitoring session: {visible} potential pathway(s). "
+                "Nothing is auto-tracked."
+            )
+        else:
+            status.set(
+                "Monitoring stopped. No potential pathways were recorded "
+                "for the last session."
+            )
 
     chain_live_build(current_app, _build_activity_pathways)
     current_app._selected_activity_pathway = _selected_pathway

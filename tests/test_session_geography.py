@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 
+from eqquest.app import EverQuestieApp
 from eqquest.events import Event
 from eqquest.log_geography import LogGeography, recover_log_geography
 from eqquest.parser import EQLogParser
@@ -90,6 +91,27 @@ class SessionGeographyTests(unittest.TestCase):
         self.assertEqual(result.zone, "New Zone")
         # Parser converts EQ's Y,X,Z display into game-space X,Y,Z.
         self.assertEqual(result.location, (40.0, 50.0, 6.0))
+
+    def test_bounded_reverse_bootstrap_stops_at_welcome_across_blocks(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "eqlog-large.txt"
+
+            # Put the stale zone more than one scanner block behind Welcome.
+            # Before the fix, Welcome broke only the inner line loop and the
+            # reverse scanner continued far enough back to resurrect Old Zone.
+            filler = "ordinary log noise\n" * 90000
+            path.write_text(
+                "You have entered Old Zone.\n"
+                + filler
+                + "Welcome to EverQuest!\n"
+                + "Your Location is 200, 100, 30\n",
+                encoding="utf-8",
+            )
+
+            zone, location = EverQuestieApp._scan_recent_log_state(path)
+
+        self.assertIsNone(zone)
+        self.assertIsNone(location)
 
     def test_ui_explicitly_renders_unknown_and_marks_old_map_reference_only(self):
         zone_var = _Var()

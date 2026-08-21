@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
 
 CREATE INDEX IF NOT EXISTS ix_entity_aliases_normalized
 ON entity_aliases(normalized_alias);
+CREATE INDEX IF NOT EXISTS ix_entity_aliases_source_page
+ON entity_aliases(source_page_id);
 
 CREATE TABLE IF NOT EXISTS entity_relationships (
     id INTEGER PRIMARY KEY,
@@ -107,6 +109,8 @@ CREATE INDEX IF NOT EXISTS ix_relationships_source
 ON entity_relationships(source_entity_id, relation);
 CREATE INDEX IF NOT EXISTS ix_relationships_target
 ON entity_relationships(target_entity_id, relation);
+CREATE INDEX IF NOT EXISTS ix_relationships_source_page
+ON entity_relationships(source_page_id);
 
 CREATE TABLE IF NOT EXISTS entity_locations (
     id INTEGER PRIMARY KEY,
@@ -123,6 +127,8 @@ CREATE TABLE IF NOT EXISTS entity_locations (
 
 CREATE INDEX IF NOT EXISTS ix_locations_entity
 ON entity_locations(entity_id);
+CREATE INDEX IF NOT EXISTS ix_locations_source_page
+ON entity_locations(source_page_id);
 
 CREATE TABLE IF NOT EXISTS quest_steps (
     id INTEGER PRIMARY KEY,
@@ -134,6 +140,9 @@ CREATE TABLE IF NOT EXISTS quest_steps (
     source_page_id INTEGER REFERENCES source_pages(id) ON DELETE CASCADE,
     UNIQUE(quest_entity_id, step_order)
 );
+
+CREATE INDEX IF NOT EXISTS ix_quest_steps_source_page
+ON quest_steps(source_page_id);
 
 CREATE TABLE IF NOT EXISTS tracked_quests (
     quest_entity_id INTEGER PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,

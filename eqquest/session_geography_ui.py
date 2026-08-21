@@ -41,13 +41,11 @@ def _mark_loaded_map_as_reference(app) -> None:
 
 
 def install_session_geography_ui() -> None:
-    """Make the app's current-zone owner obey explicit log geography boundaries.
+    """Keep explicit geography-boundary UI policy without replacing async bootstrap.
 
-    The base application historically recovered only zone and /loc lines and updated its
-    labels only when values were truthy. That left the pre-login zone/location visible
-    after ``Welcome to EverQuest!`` and left stale /loc text visible after ordinary zone
-    changes. This layer makes unknown geography a first-class UI state without changing
-    knowledge or player-owned quest data.
+    The base app owns bounded/background log-history recovery.  This layer renders
+    unknown geography explicitly and makes a previously loaded map reference-only
+    when geography is lost.
     """
     from . import app as app_module
 
@@ -56,42 +54,53 @@ def install_session_geography_ui() -> None:
         return
 
     current_drain = current_app._drain_lines
+    current_apply_bootstrap = getattr(
+        current_app,
+        "_apply_bootstrap_state",
+        None,
+    )
 
-    def _bootstrap_state_from_log(self, log_path) -> None:
-        geography = recover_log_geography(log_path, self.parser)
-        if geography is None:
-            return
+    if current_apply_bootstrap is not None:
+        def _apply_bootstrap_state(self, *args, **kwargs):
+            result = current_apply_bootstrap(self, *args, **kwargs)
 
-        self.state_model.clear_geography()
-        if geography.zone:
-            self.state_model.set_zone(
-                geography.zone,
-                source="log-history",
-                force=True,
-            )
-        if geography.location is not None:
-            self.state_model.last_location = geography.location
+            _render_session_geography(self)
 
-        _render_session_geography(self)
+            if getattr(self.state_model, "current_zone", None) is None:
+                _mark_loaded_map_as_reference(self)
 
-        map_view = getattr(self, "map_view", None)
-        if map_view is None:
-            return
-        if geography.zone:
-            map_view.manual_zone.set(geography.zone)
-            map_view.load_current_zone()
-        else:
-            _mark_loaded_map_as_reference(self)
+            return result
+
+        current_app._apply_bootstrap_state = _apply_bootstrap_state
 
     def _drain_lines(self):
-        before_zone = getattr(self.state_model, "current_zone", None)
+        before_zone = getattr(
+            self.state_model,
+            "current_zone",
+            None,
+        )
+
         result = current_drain(self)
+
         _render_session_geography(self)
-        after_zone = getattr(self.state_model, "current_zone", None)
+
+        after_zone = getattr(
+            self.state_model,
+            "current_zone",
+            None,
+        )
+
         if before_zone and not after_zone:
             _mark_loaded_map_as_reference(self)
+
         return result
 
-    current_app._bootstrap_state_from_log = _bootstrap_state_from_log
+    # IMPORTANT:
+    # Do not replace _bootstrap_state_from_log here.  The base implementation
+    # starts live tailing first and performs bounded history recovery on a worker.
     current_app._drain_lines = _drain_lines
-    setattr(current_app, _SESSION_GEOGRAPHY_UI_MARKER, True)
+    setattr(
+        current_app,
+        _SESSION_GEOGRAPHY_UI_MARKER,
+        True,
+    )

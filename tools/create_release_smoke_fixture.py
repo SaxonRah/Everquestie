@@ -20,7 +20,8 @@ from eqquest.zone_identity import ZoneIdentityIndex
 # staging step. If that reviewed corpus expands, Windows packaging CI should fail until
 # this list is consciously updated to match the new release contract.
 CLIENT_ZONES: tuple[tuple[str, str], ...] = (
-    ("The Hole", "39"),
+    ("The Ruins of Old Paineel", "39"),
+    ("The Hole", "539"),
     ("The Greater Faydark", "54"),
     ("Paineel", "75"),
     ("The Plane of Knowledge", "202"),
@@ -36,6 +37,7 @@ PLAIN_ZONES: tuple[str, ...] = (
 )
 
 REQUIRED_QUERIES: tuple[str, ...] = (
+    "The Ruins of Old Paineel",
     "The Hole",
     "Greater Faydark",
     "Paineel",

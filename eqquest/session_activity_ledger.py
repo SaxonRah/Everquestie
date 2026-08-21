@@ -130,51 +130,76 @@ def _tracked_objective_context(
     *,
     current_zone: str | None,
 ) -> tuple[str, ...]:
+    """Return tracked-objective context through the database abstraction.
+
+    Builder databases store tracked quests by quest_entity_id. Packaged runtime
+    state deliberately stores stable quest_key identities instead. Do not query
+    either physical tracked-state schema here; Database and RuntimeDatabase both
+    expose tracked_quests() and quest_steps() with canonical entity IDs and
+    merged progress.
+    """
     if event.kind not in {"kill", "loot"}:
         return ()
-    rows = db.conn.execute(
-        """
-        SELECT q.id AS quest_id, q.name AS quest_name, qs.step_order,
-               qs.description, qs.zone, qs.match_json,
-               COALESCE(qp.complete,0) AS complete
-        FROM tracked_quests tq
-        JOIN entities q ON q.id=tq.quest_entity_id AND q.kind='quest'
-        JOIN quest_steps qs ON qs.quest_entity_id=q.id
-        LEFT JOIN quest_progress qp
-          ON qp.quest_entity_id=qs.quest_entity_id AND qp.step_order=qs.step_order
-        WHERE qs.source_page_id IS NOT NULL
-        ORDER BY q.name, qs.step_order
-        """
-    ).fetchall()
+
     out: list[str] = []
-    for row in rows:
-        try:
-            rule = json.loads(row["match_json"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(rule, dict) or not _rule_subject_matches(db, rule, event):
-            continue
-        step_zone = str(row["zone"] or "").strip()
-        if (
-            event.kind == "kill"
-            and step_zone
-            and not authoritative_zones_match(db, current_zone, step_zone)
-        ):
-            continue
-        quest = str(row["quest_name"])
-        step = int(row["step_order"])
-        description = str(row["description"] or "")
-        complete = bool(row["complete"])
-        if event.kind == "kill" and str(event.target or "").strip().casefold() != "you":
+
+    for tracked in db.tracked_quests():
+        quest_id = int(tracked["id"])
+        quest_name = str(tracked["name"])
+
+        for row in db.quest_steps(quest_id):
+            # Preserve the previous evidence rule: unsourced/synthetic steps do
+            # not become source-backed Live intelligence.
+            if row["source_page_id"] is None:
+                continue
+
+            try:
+                rule = json.loads(row["match_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+
+            if (
+                not isinstance(rule, dict)
+                or not _rule_subject_matches(db, rule, event)
+            ):
+                continue
+
+            step_zone = str(row["zone"] or "").strip()
+
+            if (
+                event.kind == "kill"
+                and step_zone
+                and not authoritative_zones_match(
+                    db,
+                    current_zone,
+                    step_zone,
+                )
+            ):
+                continue
+
+            step = int(row["step_order"])
+            description = str(row["description"] or "")
+            complete = bool(row["complete"])
+
+            if (
+                event.kind == "kill"
+                and str(event.target or "").strip().casefold()
+                != "you"
+            ):
+                out.append(
+                    f"TRACKED QUEST CONTEXT | {quest_name} - "
+                    f"step {step} target observed slain; "
+                    "this log line does not prove your kill credit"
+                )
+                continue
+
+            state = "; step currently complete" if complete else ""
+
             out.append(
-                f"TRACKED QUEST CONTEXT | {quest} — step {step} target observed slain; "
-                "this log line does not prove your kill credit"
+                f"TRACKED QUEST CONTEXT | {quest_name} - "
+                f"exact step {step} match: {description}{state}"
             )
-            continue
-        state = "; step currently complete" if complete else ""
-        out.append(
-            f"TRACKED QUEST CONTEXT | {quest} — exact step {step} match: {description}{state}"
-        )
+
     return tuple(out)
 
 

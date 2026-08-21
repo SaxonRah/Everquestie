@@ -7,6 +7,8 @@ import sqlite3
 import tkinter as tk
 import webbrowser
 import threading
+import traceback
+import time
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -215,7 +217,14 @@ class EverQuestieApp(tk.Tk):
         self._build_database()
         self._build_import()
         self._refresh_mcp_status()
-        self._refresh_source_summary()
+
+        # Source provenance summaries are useful diagnostics, but a finalized
+        # knowledge snapshot can contain hundreds of thousands of source_pages
+        # with very large archived-text payloads.  Building this summary during
+        # Tk construction can dominate packaged startup time.  Packaged runtime
+        # loads it only when the user explicitly requests it.
+        if not getattr(self.db, "runtime_split", False):
+            self._refresh_source_summary()
 
         status = ttk.Frame(self, padding=(8, 2, 8, 8))
         status.pack(fill="x")
@@ -533,7 +542,15 @@ class EverQuestieApp(tk.Tk):
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.database_text.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.database_text.configure(yscrollcommand=scroll.set)
-        self._refresh_database_diagnostics()
+        if getattr(self.db, "runtime_split", False):
+            self._set_database_text(
+                "Packaged knowledge snapshot loaded.\n\n"
+                "Full SQLite integrity diagnostics are intentionally deferred because "
+                "the immutable knowledge database may be many GiB. Click "
+                "'Refresh diagnostics' to run them explicitly."
+            )
+        else:
+            self._refresh_database_diagnostics()
 
     def _build_import(self):
         root = self.import_tab.content
@@ -673,6 +690,18 @@ class EverQuestieApp(tk.Tk):
         source_scroll = ttk.Scrollbar(summary, orient="vertical", command=self.source_summary_text.yview)
         source_scroll.grid(row=0, column=1, sticky="ns")
         self.source_summary_text.configure(yscrollcommand=source_scroll.set)
+
+        if getattr(self.db, "runtime_split", False):
+            self.source_summary_text.configure(state="normal")
+            self.source_summary_text.insert(
+                "end",
+                "Packaged knowledge snapshot is ready.\n\n"
+                "The detailed provenance/source summary is deferred so EverQuestie "
+                "does not scan the large immutable knowledge database during startup. "
+                "Press 'Refresh summary' when you specifically want those diagnostics."
+            )
+            self.source_summary_text.configure(state="disabled")
+
         ttk.Button(summary, text="Refresh summary", command=self._refresh_source_summary).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
     def _set_online_result(self, text: str) -> None:
@@ -1254,48 +1283,179 @@ class EverQuestieApp(tk.Tk):
 
         if hasattr(self, "map_view"):
             self.map_view.suggest_root_from_log(path)
-        self._stop()
-        self._bootstrap_state_from_log(path)
-        self.tailer = LogTailer(path, self.event_queue.put, start_at_end=True)
+
+        # Stop an existing tailer directly.  Do NOT call self._stop() here:
+        # Live UI layers decorate _stop() with projection refresh behavior, and
+        # dispatching through that composed method while starting monitoring can
+        # synchronously run the entire Live intelligence stack on Tk's UI thread.
+        old_tailer = self.tailer
+        if old_tailer is not None:
+            old_tailer.stop()
+            self.tailer = None
+
+        # A generation token prevents a late history worker from applying stale
+        # state after the user stops monitoring or selects another log.
+        self._monitor_generation = getattr(self, "_monitor_generation", 0) + 1
+        generation = self._monitor_generation
+
+        # Live monitoring comes FIRST. LogTailer immediately moves to EOF on its
+        # worker thread; no historical scan is allowed to block the Tk UI.
+        self.tailer = LogTailer(
+            path,
+            self.event_queue.put,
+            start_at_end=True,
+        )
         self.tailer.start()
         self.status.set(f"Monitoring {Path(path).name}")
 
+        # Recover recent zone/location context independently in the background.
+        self._bootstrap_state_from_log(path, generation=generation)
+
     def _stop(self):
+        self._monitor_generation = getattr(self, "_monitor_generation", 0) + 1
         if self.tailer:
             self.tailer.stop()
             self.tailer = None
         self.status.set("Not monitoring")
 
     def _drain_lines(self):
+        """Consume live EQ log lines without allowing one failure to kill monitoring.
+
+        Persist the parsed observation first.  UI projections and derived intelligence
+        are secondary: if one of those fails, the raw player observation remains safely
+        recorded and the monitor continues processing later lines.
+        """
+        started = time.perf_counter()
+        budget_seconds = 0.012
+        max_events = 30
         processed = 0
-        while processed < 250:
-            try:
-                line = self.event_queue.get_nowait()
-            except queue.Empty:
-                break
-            processed += 1
-            event = self.parser.parse_line(line)
-            if not event:
-                continue
+        guidance_dirty = False
 
-            self.db.add_event(event)
-            self.state_model.apply(event)
-            self._handle_task_assigned(event)
-            self.quest_engine.observe(event)
-            if event.kind in VISIBLE_EVENT_KINDS:
-                self._append_event(event.summary())
-            self._handle_control_command(event)
+        try:
+            while processed < max_events:
+                if processed and (time.perf_counter() - started) >= budget_seconds:
+                    break
 
-            if self.state_model.current_zone:
-                self._update_zone_display()
-            if self.state_model.last_location:
-                x, y, z = self.state_model.last_location
-                self.loc_var.set(f"Location: {x:.1f}, {y:.1f}, {z:.1f}")
+                try:
+                    line = self.event_queue.get_nowait()
+                except queue.Empty:
+                    break
 
-        if processed:
-            self._refresh_guidance()
+                processed += 1
 
-        self.after(100, self._drain_lines)
+                try:
+                    event = self.parser.parse_line(line)
+                except Exception:
+                    print("[monitor] parser failure:", flush=True)
+                    traceback.print_exc()
+                    continue
+
+                if event is None:
+                    continue
+
+                # ------------------------------------------------------------
+                # CORE MONITORING
+                #
+                # Commit this observation independently.  Do not wrap the whole
+                # drain slice in db.batch(): a later optional projection failure
+                # must never roll back already-observed EQ events.
+                # ------------------------------------------------------------
+                try:
+                    self.db.add_event(event)
+                except Exception:
+                    print(
+                        f"[monitor] database write failed for {getattr(event, 'kind', '?')}:",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+                    continue
+
+                # Session geography is core state and should remain cheap.
+                try:
+                    self.state_model.apply(event)
+                except Exception:
+                    print(
+                        f"[monitor] session-state failure for {getattr(event, 'kind', '?')}:",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+
+                # Quest ownership/progress is useful, but a bug here must not stop
+                # the log reader.
+                try:
+                    self._handle_task_assigned(event)
+                    self.quest_engine.observe(event)
+                except Exception:
+                    print(
+                        f"[monitor] quest processing failure for {getattr(event, 'kind', '?')}:",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+
+                # Visible ledger/UI behavior is optional relative to persistence.
+                if event.kind in VISIBLE_EVENT_KINDS:
+                    try:
+                        self._append_event(event.summary())
+                    except Exception:
+                        print(
+                            f"[monitor] live display failure for {getattr(event, 'kind', '?')}:",
+                            flush=True,
+                        )
+                        traceback.print_exc()
+
+                try:
+                    self._handle_control_command(event)
+                except Exception:
+                    print(
+                        f"[monitor] control-command failure for {getattr(event, 'kind', '?')}:",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+
+                try:
+                    self._update_zone_display()
+
+                    if self.state_model.last_location:
+                        x, y, z = self.state_model.last_location
+                        self.loc_var.set(
+                            f"Location: {x:.1f}, {y:.1f}, {z:.1f}"
+                        )
+                except Exception:
+                    print(
+                        f"[monitor] lightweight UI-state failure for {getattr(event, 'kind', '?')}:",
+                        flush=True,
+                    )
+                    traceback.print_exc()
+
+                guidance_dirty = True
+
+            # Guidance is not rebuilt once per line.
+            if guidance_dirty:
+                now = time.monotonic()
+                last = getattr(self, "_last_guidance_refresh", 0.0)
+                if now - last >= 0.5:
+                    self._last_guidance_refresh = now
+                    try:
+                        self._refresh_guidance()
+                    except Exception:
+                        print("[monitor] guidance refresh failure:", flush=True)
+                        traceback.print_exc()
+
+        except Exception:
+            # Absolute last line of defense.  No exception is allowed to permanently
+            # remove the recurring Tk consumer.
+            print("[monitor] unexpected drain failure:", flush=True)
+            traceback.print_exc()
+
+        finally:
+            # This is the critical guarantee missing from the previous implementation.
+            # Even after a failure, monitoring receives another drain callback.
+            if not getattr(self, "_closing", False):
+                delay = 10 if not self.event_queue.empty() else 100
+                try:
+                    self.after(delay, self._drain_lines)
+                except Exception:
+                    pass
 
     def _update_zone_display(self) -> None:
         zone = self.state_model.current_zone or "unknown"
@@ -1346,45 +1506,183 @@ class EverQuestieApp(tk.Tk):
             name = row["name"] if row else str(quest_id)
             self._append_event(f"ZONE | inferred {zone} from tracked quest: {name}")
 
-    def _bootstrap_state_from_log(self, log_path: str | Path) -> None:
-        """Recover the latest zone and /loc before live tailing begins.
+    @staticmethod
+    def _scan_recent_log_state(
+        log_path: str | Path,
+    ) -> tuple[str | None, tuple[float, float, float] | None]:
+        """Read a bounded recent tail of the EQ log newest-to-oldest.
 
-        We scan only candidate zone/location lines, so even a large log avoids the
-        cost of fully parsing and storing historical combat text at startup.
+        This function performs no Tk operations and no SQLite operations, so it
+        is safe to perform on the history worker.
         """
         latest_zone: str | None = None
         latest_loc: tuple[float, float, float] | None = None
+        boundary_found = False
+
+        parser = EQLogParser()
+        block_bytes = 1024 * 1024
+        max_history_bytes = 16 * 1024 * 1024
+
+        def consider(raw: bytes) -> bool:
+            nonlocal latest_zone, latest_loc, boundary_found
+
+            if (
+                b"You have entered " not in raw
+                and b"Welcome to EverQuest!" not in raw
+                and b"Your Location is " not in raw
+            ):
+                return False
+
+            line = raw.decode(
+                "utf-8",
+                errors="replace",
+            ).rstrip("\r")
+
+            event = parser.parse_line(line)
+            if event is None:
+                return False
+
+            kind = str(event.kind or "").casefold()
+
+            # Walking newest -> oldest, Welcome is a hard boundary.  Any /loc
+            # already seen while walking backward happened after that Welcome but
+            # before a proven zone, so it is intentionally discarded.
+            if kind == "welcome":
+                latest_zone = None
+                latest_loc = None
+                boundary_found = True
+                return True
+
+            # Walking newest -> oldest means the first /loc is the newest one.
+            if event.kind == "loc" and latest_loc is None:
+                latest_loc = (
+                    float(event.fields["x"]),
+                    float(event.fields["y"]),
+                    float(event.fields["z"]),
+                )
+                return False
+
+            # The newest zone boundary is enough. Older locations belong to the
+            # previous zone and must not be considered.
+            if event.kind == "zone" and event.zone:
+                latest_zone = event.zone
+                boundary_found = True
+                return True
+
+            return False
+
         try:
-            with Path(log_path).open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if "You have entered " not in line and "Your Location is " not in line:
-                        continue
-                    event = self.parser.parse_line(line)
-                    if event is None:
-                        continue
-                    if event.kind == "zone" and event.zone:
-                        latest_zone = event.zone
-                        latest_loc = None
-                    elif event.kind == "loc":
-                        latest_loc = (
-                            float(event.fields["x"]),
-                            float(event.fields["y"]),
-                            float(event.fields["z"]),
-                        )
+            path = Path(log_path)
+
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                position = f.tell()
+                remaining = min(position, max_history_bytes)
+                carry = b""
+
+                while remaining > 0 and not boundary_found:
+                    take = min(block_bytes, remaining)
+
+                    position -= take
+                    f.seek(position)
+
+                    chunk = f.read(take)
+                    remaining -= len(chunk)
+
+                    data = chunk + carry
+                    parts = data.split(b"\n")
+
+                    # The beginning can be a partial line until the preceding
+                    # block is read.
+                    carry = parts[0]
+
+                    for raw in reversed(parts[1:]):
+                        if consider(raw):
+                            break
+
+                if not boundary_found and position == 0 and carry:
+                    consider(carry)
+
         except (OSError, PermissionError):
+            return None, None
+
+        # A location without a proven current zone is not actionable geography.
+        # This can happen when the 16 MiB history window contains /loc lines but
+        # does not reach a zone boundary.
+        if latest_zone is None:
+            latest_loc = None
+
+        return latest_zone, latest_loc
+
+    def _apply_bootstrap_state(
+        self,
+        generation: int,
+        latest_zone: str | None,
+        latest_loc: tuple[float, float, float] | None,
+    ) -> None:
+        # Ignore stale worker results.
+        if generation != getattr(self, "_monitor_generation", -1):
+            return
+        if self.tailer is None:
             return
 
+        # If a genuine live zone line already arrived while the history worker
+        # was scanning, live state wins over historical state.
+        if getattr(self.state_model, "zone_source", "") == "log":
+            return
+
+        # Historical recovery owns the initial geography state for this monitor
+        # generation.  An explicit Welcome boundary therefore has to clear any
+        # zone/location retained from a previous log/session.
+        self.state_model.clear_geography()
+
         if latest_zone:
-            self.state_model.set_zone(latest_zone, source="log-history", force=True)
+            self.state_model.set_zone(
+                latest_zone,
+                source="log-history",
+                force=True,
+            )
+
         if latest_loc is not None:
             self.state_model.last_location = latest_loc
+
         self._update_zone_display()
+
         if latest_loc is not None:
             x, y, z = latest_loc
-            self.loc_var.set(f"Location: {x:.1f}, {y:.1f}, {z:.1f}")
+            self.loc_var.set(
+                f"Location: {x:.1f}, {y:.1f}, {z:.1f}"
+            )
+
+        # Updating the map selector is cheap. Do NOT synchronously parse/render
+        # the map as part of Start Monitoring.
         if latest_zone and hasattr(self, "map_view"):
             self.map_view.manual_zone.set(latest_zone)
-            self.map_view.load_current_zone()
+
+    def _bootstrap_state_from_log(
+        self,
+        log_path: str | Path,
+        *,
+        generation: int,
+    ) -> None:
+        """Recover recent context without delaying live monitoring."""
+
+        def worker() -> None:
+            zone, loc = self._scan_recent_log_state(log_path)
+            self.after(
+                0,
+                lambda: self._apply_bootstrap_state(
+                    generation,
+                    zone,
+                    loc,
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="eqquest-log-bootstrap",
+            daemon=True,
+        ).start()
 
     def _reconcile_tracked_quest(self, quest_id: int):
         """Rebuild a tracked quest from the selected log, falling back to stored events."""
@@ -1842,9 +2140,37 @@ class EverQuestieApp(tk.Tk):
         self._refresh_source_summary()
 
     def _on_close(self):
-        self._stop()
-        self._save_settings_now()
-        self.db.close()
+        """Fast shutdown path with no Live intelligence recomputation."""
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+
+        # Invalidate any outstanding asynchronous log-history result.
+        self._monitor_generation = (
+            getattr(self, "_monitor_generation", 0) + 1
+        )
+
+        # Stop the tailer directly.  Do not dispatch through self._stop():
+        # Live extensions decorate that method for interactive Stop behavior.
+        tailer = self.tailer
+        self.tailer = None
+        if tailer is not None:
+            try:
+                tailer.stop()
+            except Exception:
+                pass
+
+        # Save the tiny writable user settings/state, then close SQLite.
+        try:
+            self._save_settings_now()
+        except Exception:
+            pass
+
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
         self.destroy()
 
 

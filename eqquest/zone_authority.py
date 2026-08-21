@@ -73,6 +73,72 @@ def prefer_eqclient_zone_resolution(
     return resolution
 
 
+def _authoritative_zone_index(
+    db,
+    *,
+    include_map_bindings: bool = True,
+    include_derived_map_short_names: bool = True,
+) -> ZoneIdentityIndex:
+    """Return the canonical zone index appropriate for this database.
+
+    Builder databases remain uncached because imports can change zone identities while
+    the process is running.
+
+    Runtime knowledge is immutable. Rebuilding the complete zone identity index for
+    every profile/location/quest-zone lookup is both unnecessary and catastrophic for
+    the Tk live path on a large release snapshot.
+    """
+    if getattr(db, "knowledge_writable", True):
+        return ZoneIdentityIndex(
+            db,
+            include_map_bindings=include_map_bindings,
+            include_derived_map_short_names=include_derived_map_short_names,
+        )
+
+    key = (
+        bool(include_map_bindings),
+        bool(include_derived_map_short_names),
+    )
+
+    cache = getattr(
+        db,
+        "_authoritative_zone_identity_indexes",
+        None,
+    )
+    if cache is None:
+        cache = {}
+        setattr(
+            db,
+            "_authoritative_zone_identity_indexes",
+            cache,
+        )
+
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    # Zone Opportunities already owns a runtime cache from the earlier large-DB
+    # optimization. For the normal runtime policy, reuse that exact object rather
+    # than constructing a second identical index.
+    if key == (True, True):
+        shared = getattr(
+            db,
+            "_zone_opportunity_identity_index",
+            None,
+        )
+        if shared is not None:
+            cache[key] = shared
+            return shared
+
+    cached = ZoneIdentityIndex(
+        db,
+        include_map_bindings=include_map_bindings,
+        include_derived_map_short_names=include_derived_map_short_names,
+    )
+    cache[key] = cached
+    return cached
+
+
 def resolve_authoritative_zone(
     db,
     value: str,
@@ -81,12 +147,15 @@ def resolve_authoritative_zone(
     include_derived_map_short_names: bool = True,
 ) -> ZoneResolution:
     """Resolve one exact zone token using the EQ-client authority rule when safe."""
-    index = ZoneIdentityIndex(
+    index = _authoritative_zone_index(
         db,
         include_map_bindings=include_map_bindings,
         include_derived_map_short_names=include_derived_map_short_names,
     )
-    return prefer_eqclient_zone_resolution(index.resolve(value), value)
+    return prefer_eqclient_zone_resolution(
+        index.resolve(value),
+        value,
+    )
 
 
 def authoritative_zones_match(

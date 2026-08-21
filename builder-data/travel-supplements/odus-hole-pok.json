@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "source_name": "Reviewed Odus zone adjacency",
-  "source_version": "RedGuides zone-ID adjacency reviewed 2026-08-17",
+  "source_version": "RedGuides zone-ID adjacency reviewed 2026-08-17; live client identities reviewed 2026-08-21",
   "source_url": "https://www.redguides.com/community/threads/list-of-zoneid-with-name.25616/",
   "edges": [
     {
       "source_key": "hole-to-paineel",
       "source": "The Hole",
-      "source_eq_zone_id": "39",
+      "source_eq_zone_id": "539",
       "target": "Paineel",
       "target_eq_zone_id": "75",
       "connection_kind": "zone_line",
-      "evidence": "The structured zone-ID adjacency row for zone 39, The Hole, explicitly lists zone 75 Paineel as a connected destination. This edge preserves that source-owned Hole-to-Paineel direction only."
+      "evidence": "The reviewed Odus adjacency source identifies The Hole and Paineel as connected in this direction. Its numeric identity for The Hole reflects legacy/stale numbering; the current installed EverQuest client identifies The Hole as zone ID 539 and Paineel as zone ID 75. This edge preserves the source-backed Hole-to-Paineel direction while pinning the current live client identities."
     },
     {
       "source_key": "paineel-to-current-toxxulia",

@@ -94,7 +94,7 @@ class ShatteringOfRoTravelManifestTests(unittest.TestCase):
         self.assertEqual(json.loads(start_row["data_json"])["source_eq_zone_id"], "383")
 
     def test_reviewed_odus_and_pok_supplements_close_hole_to_labyrinth_chain(self):
-        hole = self._zone("The Hole", 39)
+        hole = self._zone("The Hole", 539)
         paineel = self._zone("Paineel", 75)
         legacy_toxxulia = self._zone("Toxxulia Forest", 38)
         current_toxxulia = self._zone("Toxxulia Forest", 414)

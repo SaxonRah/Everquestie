@@ -68,7 +68,9 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         )
 
     def _seed_current_live_zone_identities(self) -> None:
-        self._client_zone("The Hole", 39, map_short_name="hole")
+        # Current Live keeps these as distinct client identities.
+        self._client_zone("The Ruins of Old Paineel", 39)
+        self._client_zone("The Hole", 539, map_short_name="hole")
         self._client_zone("Paineel", 75, map_short_name="paineel")
         self._client_zone("The Stonebrunt Mountains", 100, map_short_name="stonebrunt")
         self._client_zone("The Warrens", 101, map_short_name="warrens")
@@ -120,14 +122,37 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
             )
         return maps
 
+    def _write_goods_source_shape(self) -> Path:
+        """Minimal current-Live Goods evidence used by the release fixture.
+
+        Real Goods data contains an explicit Paineel -> The Hole travel label.
+        Brewall independently points Paineel -> The Ruins of Old Paineel, which
+        must remain the distinct client zone 39 identity.
+        """
+        maps = self.root / "Good's Maps"
+        maps.mkdir()
+        (maps / "paineel.txt").write_text(
+            "P 0,0,0,255,0,0,3,to_The_Hole\n",
+            encoding="utf-8",
+        )
+        return maps
+
     def _index_source_maps(self) -> None:
-        maps = self._write_brewall_source_shape()
+        brewall = self._write_brewall_source_shape()
         indexed = MapCatalog(self.db).index_root(
-            maps,
+            brewall,
             source_name="Brewall's Maps",
             source_version="release-contract-source-shape",
         )
         self.assertEqual(indexed.base_maps, 6)
+
+        goods = self._write_goods_source_shape()
+        goods_indexed = MapCatalog(self.db).index_root(
+            goods,
+            source_name="Goods",
+            source_version="release-contract-source-shape",
+        )
+        self.assertEqual(goods_indexed.base_maps, 1)
 
     def test_repository_owned_evidence_satisfies_all_five_current_live_defaults(self):
         self._seed_current_live_zone_identities()
@@ -139,12 +164,10 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
             alias_importer.import_manifest(manifest)
 
         self._index_source_maps()
-        ZoneMapCatalog(self.db).reconcile(source_name="Brewall's Maps")
-        map_travel = ZoneTravelCatalog(self.db).reconcile_from_maps(
-            source_name="Brewall's Maps"
-        )
-        self.assertEqual(map_travel.candidates, 7)
-        self.assertEqual(map_travel.linked, 7)
+        ZoneMapCatalog(self.db).reconcile()
+        map_travel = ZoneTravelCatalog(self.db).reconcile_from_maps()
+        self.assertEqual(map_travel.candidates, 8)
+        self.assertEqual(map_travel.linked, 8)
         self.assertEqual(map_travel.ambiguous, 0)
         self.assertEqual(map_travel.unresolved, 0)
 
@@ -217,11 +240,15 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         self._seed_current_live_zone_identities()
         self._index_source_maps()
 
-        # The source builder intentionally has no reviewed alias yet. This proves the
-        # release staging/finalization path, rather than the direct builder test above,
-        # is what turns Brewall's Old Paineel label into a canonical Hole transition.
+        # Zone 39 is already the canonical client identity The Ruins of Old
+        # Paineel. The reviewed release alias adds only the historical shorthand
+        # "Old Paineel"; it must never collapse that zone into The Hole (539).
         self.assertEqual(
             ZoneIdentityIndex(self.db).resolve("The Ruins of Old Paineel").status,
+            "linked",
+        )
+        self.assertEqual(
+            ZoneIdentityIndex(self.db).resolve("Old Paineel").status,
             "unresolved",
         )
 
@@ -263,9 +290,15 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
 
         runtime = RuntimeDatabase(snapshot, user_db, migrate_legacy=False)
         try:
-            alias = ZoneIdentityIndex(runtime).resolve("The Ruins of Old Paineel")
+            identities = ZoneIdentityIndex(runtime)
+            alias = identities.resolve("Old Paineel")
             self.assertEqual(alias.status, "linked")
-            self.assertEqual(alias.zone_name, "The Hole")
+            self.assertEqual(alias.zone_name, "The Ruins of Old Paineel")
+
+            hole = identities.resolve("The Hole")
+            self.assertEqual(hole.status, "linked")
+            self.assertEqual(hole.zone_name, "The Hole")
+            self.assertNotEqual(alias.entity_id, hole.entity_id)
             runtime_summary = evaluate_route_acceptance(
                 runtime,
                 DEFAULT_ROUTE_ACCEPTANCE_CASES,

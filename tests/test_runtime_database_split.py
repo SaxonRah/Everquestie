@@ -11,6 +11,7 @@ from eqquest.events import Event
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 from eqquest.runtime import RuntimeDatabase
+from eqquest.session_activity_ledger import session_ledger_entry
 from eqquest.zone_catalog import ZoneMapCatalog
 
 
@@ -140,6 +141,53 @@ class RuntimeDatabaseSplitTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(len(db.observed_event_history()), 1)
+        finally:
+            db.close()
+
+    def test_session_ledger_uses_runtime_tracked_quest_abstraction(self):
+        knowledge = self.root / "ledger-knowledge.sqlite3"
+        state = self.root / "ledger-user.sqlite3"
+
+        quest_id = self._build_snapshot(
+            knowledge,
+            quest_name="A Portable Quest",
+            allakhazam_id="900001",
+        )
+
+        db = RuntimeDatabase(
+            knowledge,
+            state,
+            migrate_legacy=False,
+        )
+        try:
+            db.track_quest(quest_id)
+            db.add_event(
+                Event(
+                    kind="loot",
+                    raw="You have looted a Portable Token.",
+                    item="Portable Token",
+                )
+            )
+
+            event_id = int(
+                db.conn.execute(
+                    "SELECT MAX(id) AS n FROM observed_events"
+                ).fetchone()["n"]
+            )
+
+            entry = session_ledger_entry(
+                db,
+                event_id,
+                0,
+            )
+
+            self.assertIsNotNone(entry)
+            text = "\n".join(entry.annotations)
+            self.assertIn(
+                "TRACKED QUEST CONTEXT | A Portable Quest - "
+                "exact step 1 match",
+                text,
+            )
         finally:
             db.close()
 

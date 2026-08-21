@@ -84,6 +84,23 @@ def _resolved_step_zone_tokens(db, index: ZoneIdentityIndex, zone_entity_id: int
     return tuple(dict.fromkeys(accepted))
 
 
+def _runtime_zone_identity_index(db) -> ZoneIdentityIndex:
+    """Reuse canonical zone identity data for immutable packaged knowledge.
+
+    Builder databases remain uncached because imports may change identities while the
+    process is running. Runtime knowledge is explicitly immutable, so rebuilding the
+    same zone index for every live log event only wastes CPU and blocks Tk.
+    """
+    if getattr(db, "knowledge_writable", True):
+        return ZoneIdentityIndex(db)
+
+    cached = getattr(db, "_zone_opportunity_identity_index", None)
+    if cached is None:
+        cached = ZoneIdentityIndex(db)
+        setattr(db, "_zone_opportunity_identity_index", cached)
+    return cached
+
+
 def zone_opportunities(
     db,
     current_zone: str | None,
@@ -103,14 +120,27 @@ def zone_opportunities(
     if not text or int(limit) <= 0:
         return ()
 
-    index = ZoneIdentityIndex(db)
+    index = _runtime_zone_identity_index(db)
     current = prefer_eqclient_zone_resolution(index.resolve(text), text)
     if current.identity is None:
         return ()
     zone_id = int(current.identity.entity_id)
     zone_name = str(current.identity.name or text)
 
-    step_zone_tokens = _resolved_step_zone_tokens(db, index, zone_id)
+    token_cache = None
+    if not getattr(db, "knowledge_writable", True):
+        token_cache = getattr(db, "_zone_opportunity_step_tokens", None)
+        if token_cache is None:
+            token_cache = {}
+            setattr(db, "_zone_opportunity_step_tokens", token_cache)
+
+    if token_cache is not None and zone_id in token_cache:
+        step_zone_tokens = token_cache[zone_id]
+    else:
+        step_zone_tokens = _resolved_step_zone_tokens(db, index, zone_id)
+        if token_cache is not None:
+            token_cache[zone_id] = step_zone_tokens
+
     if not step_zone_tokens:
         return ()
 

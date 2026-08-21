@@ -231,9 +231,12 @@ class RuntimeDatabase(Database):
                 "Incompatible EverQuestie knowledge schema: "
                 f"expected {KNOWLEDGE_SCHEMA_VERSION}, found {found or 'missing'}"
             )
-        quick = str(self.conn.execute("PRAGMA knowledge.quick_check").fetchone()[0])
-        if quick != "ok":
-            raise ValueError(f"Knowledge DB quick_check failed: {quick}")
+        # Full SQLite integrity scans are release/diagnostic operations, not
+        # application-startup gates.  A production snapshot can be many GiB; running
+        # PRAGMA quick_check here forces SQLite to walk the immutable knowledge DB
+        # before the UI can appear.  Startup already validates the snapshot role and
+        # schema above.  Full integrity checking remains available through explicit
+        # diagnostics and the release pipeline.
 
     def _install_knowledge_views(self) -> None:
         rows = self.conn.execute(

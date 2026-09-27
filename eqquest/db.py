@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS source_pages (
     source_key TEXT NOT NULL DEFAULT '',
     source_version TEXT NOT NULL DEFAULT '',
     local_path TEXT NOT NULL DEFAULT '',
+    local_mtime_ns INTEGER NOT NULL DEFAULT 0,
+    local_size INTEGER NOT NULL DEFAULT 0,
     fetched_at TEXT,
     title TEXT,
     entity_type TEXT,
@@ -239,7 +241,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
 );
 """
 
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 
 
 def normalize_name(name: str) -> str:
@@ -290,6 +292,8 @@ class Database:
             "source_key": "TEXT NOT NULL DEFAULT ''",
             "source_version": "TEXT NOT NULL DEFAULT ''",
             "local_path": "TEXT NOT NULL DEFAULT ''",
+            "local_mtime_ns": "INTEGER NOT NULL DEFAULT 0",
+            "local_size": "INTEGER NOT NULL DEFAULT 0",
             "fetched_at": "TEXT",
         }
         for name, ddl in additions.items():
@@ -388,6 +392,17 @@ class Database:
                 """
             )
             schema_version = 2
+
+        if schema_version < 3:
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_source_pages_local_fingerprint
+                ON source_pages(
+                    source_name, local_path, local_mtime_ns, local_size
+                )
+                """
+            )
+            schema_version = 3
 
         if schema_version <= DATABASE_SCHEMA_VERSION:
             self.conn.execute(

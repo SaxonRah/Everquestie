@@ -3,6 +3,7 @@ import unittest
 
 from eqquest.allakhazam import AllakhazamImporter
 from eqquest.app import EverQuestieApp
+from eqquest.mapview import MapViewerFrame
 
 
 class RuntimeSourcePolicyTests(unittest.TestCase):
@@ -30,6 +31,30 @@ class RuntimeSourcePolicyTests(unittest.TestCase):
         )
         self.assertNotIn("self.importer.import_mirror(", mirror_source)
         self.assertIn("self.importer.import_saved_html(", saved_source)
+
+    def test_packaged_runtime_guards_every_builder_mutation_entrypoint(self):
+        guarded = (
+            EverQuestieApp._rebuild_search_index,
+            EverQuestieApp._import_eq_client,
+            EverQuestieApp._compile_eq_client_via_mcp,
+            EverQuestieApp._import_db_mirror,
+            EverQuestieApp._import_wiki_mirror,
+            EverQuestieApp._import_saved_html,
+            EverQuestieApp._import_html_folder,
+        )
+        for method in guarded:
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIn("knowledge_writable", source)
+                self.assertIn("builder-only", source)
+
+    def test_packaged_map_catalog_is_read_only_shipped_knowledge(self):
+        ensure_source = inspect.getsource(MapViewerFrame.ensure_map_catalog)
+        index_source = inspect.getsource(MapViewerFrame.index_map_catalog)
+
+        self.assertIn("knowledge_writable", ensure_source)
+        self.assertIn("knowledge_writable", index_source)
+        self.assertIn("shipped immutable knowledge", index_source)
 
     def test_mcp_compiler_is_scoped_to_explicit_worker_action(self):
         init_source = inspect.getsource(EverQuestieApp.__init__)

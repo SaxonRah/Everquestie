@@ -51,3 +51,11 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Add runtime split tests for tracked quest identity across snapshot row-ID/provider changes.
 - [x] Add performance smoke fixtures with a configurable large synthetic entity/alias corpus.
 - [x] Record a repeatable large-corpus runtime baseline for DB open, search, first/steady Live projection, and loot refresh; preserve raw JSON for future delta comparisons.
+
+## Field validation / runtime continuity
+
+- [x] Harden continuous EQ log following across repeated appends, truncation, and pathname replacement.
+- [x] Add regression coverage proving the log follower observes more than the first post-start append.
+- [x] Add regression coverage proving repeated live zone changes trigger Map's current-zone reload path.
+- [x] Add an explicit clean-knowledge-build helper that preserves builder inputs and player state by default.
+- [ ] Exercise continuous Live + automatic map changes against the real EQ client/log on the development machine.

@@ -29,6 +29,7 @@ from .zone_travel import ZoneTravelCatalog
 # Schema compatibility and content release identity are deliberately separate.
 # Bump this only when a packaged knowledge DB requires a different reader contract.
 KNOWLEDGE_SCHEMA_VERSION = "1"
+RUNTIME_SOURCE_TEXT_LIMIT = 20_000
 
 USER_STATE_TABLES = (
     "quest_progress",
@@ -160,11 +161,11 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
                 """
             )
 
-            # Raw HTML is builder/rebuild input, not runtime knowledge. Keep the
-            # normalized facts plus compact provenance and readable plain text, but do
-            # not ship a second copy of the complete Allakhazam website inside the
-            # gameplay database. MCP snapshot JSON is also builder-only and may contain
-            # the builder's local EverQuest installation path.
+            # Raw HTML/full page text are builder/rebuild inputs, not runtime
+            # knowledge. The Knowledge UI exposes at most RUNTIME_SOURCE_TEXT_LIMIT
+            # characters of primary source text, so keep only that bounded readable
+            # excerpt plus compact provenance. MCP snapshot JSON remains builder-only
+            # and may contain the builder's local EverQuest installation path.
             stripped_payloads = int(
                 db.conn.execute(
                     """
@@ -172,7 +173,12 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
                     FROM source_pages
                     WHERE raw_html<>''
                        OR (source_kind='mcp_local_snapshot' AND plain_text<>'')
-                    """
+                       OR (
+                           source_kind<>'mcp_local_snapshot'
+                           AND length(plain_text)>?
+                       )
+                    """,
+                    (RUNTIME_SOURCE_TEXT_LIMIT,),
                 ).fetchone()[0]
             )
             db.conn.execute(
@@ -181,6 +187,15 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
             db.conn.execute(
                 "UPDATE source_pages SET plain_text='' "
                 "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+            )
+            db.conn.execute(
+                """
+                UPDATE source_pages
+                SET plain_text=substr(plain_text, 1, ?)
+                WHERE source_kind<>'mcp_local_snapshot'
+                  AND length(plain_text)>?
+                """,
+                (RUNTIME_SOURCE_TEXT_LIMIT, RUNTIME_SOURCE_TEXT_LIMIT),
             )
 
         if _table_exists(db, "map_sources"):

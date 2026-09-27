@@ -7,6 +7,7 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.profile_availability import entity_profile_decision
 from eqquest.runtime import RuntimeDatabase
 from eqquest.world_profiles import active_world_profile_id, set_active_world_profile, zone_profile_decisions
 
@@ -36,6 +37,10 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
                 external_id="9",
                 external_namespace="eqclient:zone",
                 data={"expansion": "EverQuest"},
+            )
+            quest_id = builder.upsert_entity(
+                kind="quest",
+                name="Cached Profile Quest",
             )
         finally:
             builder.close()
@@ -105,6 +110,10 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
             cache = getattr(runtime, "_zone_profile_decisions_cache")
             self.assertIs(cache["live"], live_first)
             self.assertIs(cache["p99"], p99)
+
+            entity_first = entity_profile_decision(runtime, quest_id, "live")
+            entity_second = entity_profile_decision(runtime, quest_id, "live")
+            self.assertIs(entity_first, entity_second)
         finally:
             runtime.close()
 

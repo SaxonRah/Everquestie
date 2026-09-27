@@ -221,7 +221,7 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
                     ]
                 )
             self.assertEqual(code, 0)
-            self.assertIn("noncanonical interrupted", stderr.getvalue())
+            self.assertIn("completion provenance is unverified", stderr.getvalue())
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertFalse(payload["canonical_complete"])
             self.assertTrue(payload["interrupted_clean_capture_accepted"])

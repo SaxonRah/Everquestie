@@ -389,6 +389,94 @@ class ActivityPathwayEngine:
                 );
                 CREATE INDEX IF NOT EXISTS ix_activity_pathway_graph_lookup
                 ON activity_pathway_graph(event_kind, normalized_subject);
+
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_step_insert
+                AFTER INSERT ON quest_steps
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_step_update
+                AFTER UPDATE ON quest_steps
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_step_delete
+                AFTER DELETE ON quest_steps
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_relation_insert
+                AFTER INSERT ON entity_relationships
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_relation_update
+                AFTER UPDATE ON entity_relationships
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_relation_delete
+                AFTER DELETE ON entity_relationships
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_alias_insert
+                AFTER INSERT ON entity_aliases
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_alias_update
+                AFTER UPDATE ON entity_aliases
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_alias_delete
+                AFTER DELETE ON entity_aliases
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_entity_insert
+                AFTER INSERT ON entities
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_entity_update
+                AFTER UPDATE OF name,normalized_name,kind ON entities
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
+                CREATE TRIGGER IF NOT EXISTS eq_activity_pathways_dirty_entity_delete
+                AFTER DELETE ON entities
+                BEGIN
+                  INSERT INTO app_meta(key,value)
+                  VALUES('activity_pathway_catalog_dirty','1')
+                  ON CONFLICT(key) DO UPDATE SET value='1';
+                END;
                 """
             )
             self.db.conn.execute("DELETE FROM activity_pathway_objectives")
@@ -442,18 +530,25 @@ class ActivityPathwayEngine:
                 "activity_pathway_catalog_version",
                 ACTIVITY_PATHWAY_CATALOG_VERSION,
             )
+            self.db.set_meta("activity_pathway_catalog_dirty", "0")
 
+        self.reset_knowledge_cache()
         return {
             "direct": len(direct_rows),
             "graph": len(graph_rows),
         }
 
+    def reset_knowledge_cache(self) -> None:
+        """Forget derived in-process indexes after builder knowledge changes."""
+        self._index = None
+        self._graph_index = None
+        self._compiled_catalog_available_cache = None
+        self._direct_candidate_cache.clear()
+        self._graph_candidate_cache.clear()
+
     def _compiled_catalog_available(self) -> bool:
-        # Mutable builder databases continue to build from current normalized rows.
-        # Only immutable packaged knowledge is allowed to trust the finalized catalog.
-        if getattr(self.db, "knowledge_writable", True):
-            return False
-        if self._compiled_catalog_available_cache is not None:
+        immutable_runtime = not getattr(self.db, "knowledge_writable", True)
+        if immutable_runtime and self._compiled_catalog_available_cache is not None:
             return self._compiled_catalog_available_cache
 
         rows = self.db.conn.execute(
@@ -472,7 +567,23 @@ class ActivityPathwayEngine:
             "activity_pathway_objectives",
             "activity_pathway_graph",
         }.issubset(names)
-        self._compiled_catalog_available_cache = available
+        available = bool(
+            available
+            and self.db.get_meta(
+                "activity_pathway_catalog_version",
+                "",
+            ) == ACTIVITY_PATHWAY_CATALOG_VERSION
+        )
+        if not immutable_runtime:
+            available = bool(
+                available
+                and self.db.get_meta(
+                    "activity_pathway_catalog_dirty",
+                    "1",
+                ) != "1"
+            )
+        else:
+            self._compiled_catalog_available_cache = available
         return available
 
     def _direct_candidates(self, key: tuple[str, str]):

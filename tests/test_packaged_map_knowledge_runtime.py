@@ -10,7 +10,7 @@ from eqquest.db import Database
 from eqquest.events import Event
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.local_search import search_local_hits
-from eqquest.locations import location_evidence_for_term, where_text
+from eqquest.locations import location_evidence_for_entity, location_evidence_for_term, where_text
 from eqquest.map_catalog import MapCatalog
 from eqquest.runtime import RuntimeDatabase
 from eqquest.zone_catalog import ZoneMapCatalog
@@ -143,6 +143,19 @@ class PackagedMapKnowledgeRuntimeTests(unittest.TestCase):
                 {(row.x, row.y, row.z) for row in mapped},
                 {(-10.0, -20.0, 3.0), (-30.0, -40.0, 5.0)},
             )
+
+            first_cached_locations = location_evidence_for_entity(runtime, npc_id)
+            statements: list[str] = []
+            runtime.conn.set_trace_callback(statements.append)
+            try:
+                second_cached_locations = location_evidence_for_entity(runtime, npc_id)
+            finally:
+                runtime.conn.set_trace_callback(None)
+            self.assertEqual(first_cached_locations, second_cached_locations)
+            self.assertIsNot(first_cached_locations, second_cached_locations)
+            cached_sql = "\n".join(statements).casefold()
+            self.assertNotIn("from entity_locations", cached_sql)
+            self.assertNotIn("from map_labels", cached_sql)
 
             rendered = where_text(runtime, npc_id)
             self.assertIn("WHERE | [npc] Guard Hezlan", rendered)

@@ -543,14 +543,20 @@ class EverQuestieApp(tk.Tk):
         scroll.grid(row=0, column=1, sticky="ns")
         self.database_text.configure(yscrollcommand=scroll.set)
         if getattr(self.db, "runtime_split", False):
-            self._set_database_text(
+            message = (
                 "Packaged knowledge snapshot loaded.\n\n"
                 "Full SQLite integrity diagnostics are intentionally deferred because "
-                "the immutable knowledge database may be many GiB. Click "
-                "'Refresh diagnostics' to run them explicitly."
+                "the immutable knowledge database may be many GiB."
             )
         else:
-            self._refresh_database_diagnostics()
+            message = (
+                "Builder/development database loaded.\n\n"
+                "Full SQLite integrity diagnostics are intentionally deferred. "
+                "A full Allakhazam corpus can make PRAGMA integrity_check take minutes."
+            )
+        self._set_database_text(
+            message + "\n\nClick 'Refresh diagnostics' only when you explicitly want the full scan."
+        )
 
     def _build_import(self):
         root = self.import_tab.content

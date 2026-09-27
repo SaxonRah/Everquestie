@@ -537,6 +537,23 @@ class MapViewerFrame(ttk.Frame):
         self._refresh_marker_list()
         self.after_idle(lambda: None if self._restore_view() else self.fit())
 
+    def _clear_loaded_map(self) -> None:
+        """Remove stale geometry when the current zone has no resolvable local map."""
+        self.zone_map = None
+        self.map_file.set("")
+        self.canvas.delete("all")
+        self._overlay_entity_by_item.clear()
+        self._map_label_text_by_item.clear()
+        self._raster_photo = None
+        self._display_photo = None
+        self._display_image_item = None
+        self._wall_exact_photos.clear()
+        self._wall_dirty = True
+        self._base_map_status = ""
+        self._invalidate_raster()
+        self._apply_map_background()
+        self._draw_empty_message()
+
     def load_current_zone(self) -> None:
         zone = self.get_zone()
         root = self.map_root.get().strip()
@@ -559,6 +576,9 @@ class MapViewerFrame(ttk.Frame):
 
         path = resolve_map_for_zone(zone, root, bound_stem=bound, hinted_stem=hinted)
         if path is None:
+            # Never leave the previous zone's geometry visible under a new current
+            # zone. An unresolved map is safer and clearer than a stale wrong map.
+            self._clear_loaded_map()
             self.map_status.set(
                 f"No unique map-file match for {zone}. Open the correct .txt once, then press Bind zone."
             )

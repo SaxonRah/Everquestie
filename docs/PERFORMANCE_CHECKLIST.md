@@ -19,7 +19,8 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Remove N+1 alias queries from local search ranking.
 - [x] Precompile Activity Pathway objective/drop indexes into the release knowledge DB.
 - [x] Precompile canonical quest-step zone IDs for Zone Opportunities.
-- [x] Cursor Activity Cluster so refresh cost depends on new events, not total session history.\n- [ ] Cursor any remaining session projections that still rescan accumulated observations.
+- [x] Cursor Activity Cluster so refresh cost depends on new events, not total session history.
+- [ ] Cursor any remaining session projections that still rescan accumulated observations.
 - [ ] Cache other immutable runtime projections that currently rebuild from normalized knowledge.
 
 ## P2 — shrink and isolate the shipped runtime artifact
@@ -32,8 +33,9 @@ This checklist tracks the performance hardening required now that the knowledge 
 
 ## P3 — builder/import responsiveness
 
-- [x] Move full Allakhazam DB mirror import off Tk's UI thread.\n- [ ] Move Wiki/saved-folder import variants off Tk's UI thread.
-- [ ] Avoid `sorted(rglob(...))` full-mirror materialization where ordering is unnecessary.
+- [x] Move full Allakhazam DB mirror import off Tk's UI thread.
+- [x] Move Wiki/saved-folder import variants off Tk's UI thread.
+- [x] Avoid `sorted(rglob(...))` full-mirror materialization where ordering is unnecessary.
 - [x] Add incremental manifest/hash metadata so unchanged mirror files do not require expensive repeated parsing.
 - [ ] Add progress/cancellation to long builder operations.
 - [ ] Keep full integrity/audit/VACUUM work in explicit release/diagnostic commands.

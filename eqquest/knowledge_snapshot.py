@@ -150,14 +150,23 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
             )
             db.conn.execute("UPDATE source_pages SET local_path='' WHERE local_path<>''")
 
-            # MCP snapshot JSON is builder evidence, not runtime knowledge, and can
-            # contain the builder's EverQuest installation path. The normalized
-            # entities/support rows and source hash/version are the distributable data.
+            # Raw HTML is builder/rebuild input, not runtime knowledge. Keep the
+            # normalized facts plus compact provenance and readable plain text, but do
+            # not ship a second copy of the complete Allakhazam website inside the
+            # gameplay database. MCP snapshot JSON is also builder-only and may contain
+            # the builder's local EverQuest installation path.
             stripped_payloads = int(
                 db.conn.execute(
-                    "SELECT COUNT(*) FROM source_pages "
-                    "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+                    """
+                    SELECT COUNT(*)
+                    FROM source_pages
+                    WHERE raw_html<>''
+                       OR (source_kind='mcp_local_snapshot' AND plain_text<>'')
+                    """
                 ).fetchone()[0]
+            )
+            db.conn.execute(
+                "UPDATE source_pages SET raw_html='' WHERE raw_html<>''"
             )
             db.conn.execute(
                 "UPDATE source_pages SET plain_text='' "

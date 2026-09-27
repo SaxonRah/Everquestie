@@ -218,14 +218,10 @@ class EverQuestieApp(tk.Tk):
         self._build_import()
         self._refresh_mcp_status()
 
-        # Source provenance summaries are useful diagnostics, but a finalized
-        # knowledge snapshot can contain hundreds of thousands of source_pages
-        # with very large archived-text payloads.  Building this summary during
-        # Tk construction can dominate packaged startup time.  Packaged runtime
-        # loads it only when the user explicitly requests it.
-        if not getattr(self.db, "runtime_split", False):
-            self._refresh_source_summary()
-
+        # Detailed source/provenance counts are diagnostics, not startup state.
+        # Full-mirror builder databases can contain enormous source_pages/entity
+        # inventories, so every application mode defers this scan until the user
+        # explicitly presses Refresh summary.
         status = ttk.Frame(self, padding=(8, 2, 8, 8))
         status.pack(fill="x")
         ttk.Label(status, textvariable=self.status).pack(side="left")
@@ -702,16 +698,25 @@ class EverQuestieApp(tk.Tk):
         source_scroll.grid(row=0, column=1, sticky="ns")
         self.source_summary_text.configure(yscrollcommand=source_scroll.set)
 
+        self.source_summary_text.configure(state="normal")
         if getattr(self.db, "runtime_split", False):
-            self.source_summary_text.configure(state="normal")
-            self.source_summary_text.insert(
-                "end",
+            source_summary_notice = (
                 "Packaged knowledge snapshot is ready.\n\n"
                 "The detailed provenance/source summary is deferred so EverQuestie "
-                "does not scan the large immutable knowledge database during startup. "
-                "Press 'Refresh summary' when you specifically want those diagnostics."
+                "does not scan the large immutable knowledge database during startup."
             )
-            self.source_summary_text.configure(state="disabled")
+        else:
+            source_summary_notice = (
+                "Builder/development knowledge database is ready.\n\n"
+                "The detailed provenance/source summary is deferred because a full "
+                "Allakhazam mirror can make startup-scale aggregate scans expensive."
+            )
+        self.source_summary_text.insert(
+            "end",
+            source_summary_notice
+            + "\nPress 'Refresh summary' when you specifically want those diagnostics.",
+        )
+        self.source_summary_text.configure(state="disabled")
 
         ttk.Button(summary, text="Refresh summary", command=self._refresh_source_summary).grid(row=1, column=0, sticky="w", pady=(6, 0))
 

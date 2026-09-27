@@ -284,6 +284,14 @@ class RuntimeDatabase(Database):
         )
         self._commit()
 
+    def open_worker_connection(self):
+        """Open the same immutable knowledge + writable user-state pair on a worker."""
+        return RuntimeDatabase(
+            self.knowledge_path,
+            self.state_path,
+            migrate_legacy=False,
+        )
+
     @staticmethod
     def _external_priority(namespace: str) -> tuple[int, str]:
         folded = namespace.casefold()

@@ -588,6 +588,11 @@ class ActivityPathwayEngine:
 
     def _direct_candidates(self, key: tuple[str, str]):
         if not self._compiled_catalog_available():
+            if (
+                getattr(self.db, "knowledge_writable", True)
+                and getattr(self.db, "_runtime_catalog_building", False)
+            ):
+                return ()
             return self._ensure_index().get(key, ())
         cached = self._direct_candidate_cache.get(key)
         if cached is not None:
@@ -620,6 +625,11 @@ class ActivityPathwayEngine:
 
     def _graph_candidates(self, key: tuple[str, str]):
         if not self._compiled_catalog_available():
+            if (
+                getattr(self.db, "knowledge_writable", True)
+                and getattr(self.db, "_runtime_catalog_building", False)
+            ):
+                return ()
             return self._ensure_graph_index().get(key, ())
         cached = self._graph_candidate_cache.get(key)
         if cached is not None:

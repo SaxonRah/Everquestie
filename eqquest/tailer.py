@@ -11,11 +11,10 @@ class LogTailer:
     """Continuously follow one EverQuest log file.
 
     EQ normally appends to a stable log path, but Windows tools/launchers can also
-    truncate or replace the file while EverQuestie is running.  The follower therefore
+    truncate or replace the file while EverQuestie is running. The follower therefore
     treats the pathname as authoritative and periodically verifies that the open handle
-    still refers to the same file.  At EOF it also seeks back to the current position
-    when the pathname grew; this clears TextIOWrapper EOF/decoder state before the next
-    read and makes append-following reliable across platforms.
+    still refers to the same file. It follows in binary mode so file positions are real
+    byte offsets and EOF handling is independent of TextIOWrapper decoder state.
     """
 
     def __init__(
@@ -70,12 +69,7 @@ class LogTailer:
 
         while not self._stop.is_set():
             try:
-                with self.path.open(
-                    "r",
-                    encoding="utf-8",
-                    errors="replace",
-                    newline="",
-                ) as f:
+                with self.path.open("rb") as f:
                     if first_open and self.start_at_end:
                         f.seek(0, os.SEEK_END)
                     first_open = False
@@ -83,10 +77,10 @@ class LogTailer:
 
                     while not self._stop.is_set():
                         pos = f.tell()
-                        line = f.readline()
+                        raw_line = f.readline()
 
-                        if line:
-                            self.on_line(line)
+                        if raw_line:
+                            self.on_line(raw_line.decode("utf-8", errors="replace"))
                             continue
 
                         # EQ or another tool may truncate or atomically replace the log.
@@ -107,9 +101,8 @@ class LogTailer:
                             break
 
                         if size > pos:
-                            # New bytes exist at the pathname. Seeking to the same
-                            # position resets text-stream EOF/decoder state and avoids a
-                            # platform-specific sticky EOF leaving Live apparently dead.
+                            # New bytes exist at the pathname. Re-seeking to the current
+                            # byte offset clears any buffered EOF state before reading.
                             f.seek(pos, os.SEEK_SET)
                             continue
 

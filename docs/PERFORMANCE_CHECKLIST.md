@@ -20,8 +20,9 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Precompile Activity Pathway objective/drop indexes into the release knowledge DB.
 - [x] Precompile canonical quest-step zone IDs for Zone Opportunities.
 - [x] Cursor Activity Cluster so refresh cost depends on new events, not total session history.
-- [ ] Cursor any remaining session projections that still rescan accumulated observations.
-- [ ] Cache other immutable runtime projections that currently rebuild from normalized knowledge.
+- [x] Cursor remaining monitoring hot paths that rescan accumulated observations (Recent Loot and Session Ledger); keep explicit Session Recap/history dialogs on-demand.
+- [x] Cache immutable runtime world-entity contexts used repeatedly by Target Intelligence and Knowledge detail.
+- [ ] Audit lower-frequency immutable projections for additional cache opportunities after real-corpus benchmarks.
 
 ## P2 — shrink and isolate the shipped runtime artifact
 

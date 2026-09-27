@@ -291,7 +291,7 @@ def _path_text(names: tuple[str, ...], *, full_paths: bool, preview_nodes: int) 
     front = max(1, keep * 2 // 3)
     back = max(1, keep - front)
     omitted = len(names) - front - back
-    return " → ".join((*names[:front], f"… {omitted} zone(s) …", *names[-back:]))
+    return " -> ".join((*names[:front], f"… {omitted} zone(s) …", *names[-back:]))
 
 
 def route_acceptance_text(

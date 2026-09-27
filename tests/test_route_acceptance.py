@@ -134,7 +134,7 @@ class RouteAcceptanceTests(unittest.TestCase):
         self.assertEqual(result.path_zone_names[-1], "Labyrinth of Spite")
 
         text = route_acceptance_text(summary)
-        self.assertIn("[PASS reachable] The Hole → Labyrinth of Spite", text)
+        self.assertIn("[PASS reachable] The Hole -> Labyrinth of Spite", text)
         self.assertIn("71 hop(s)", text)
         self.assertIn("…", text)
 

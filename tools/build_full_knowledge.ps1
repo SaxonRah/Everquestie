@@ -203,11 +203,22 @@ Write-Host " Allakhazam Mirror Inventory Coverage"
 Write-Host "============================================"
 Write-Host
 
-python .\tools\audit_allakhazam_mirror.py `
-    $AllakhazamMirror `
-    --httrack-project $AllakhazamProject `
-    --output $MirrorAuditReport `
-    --require-complete
+$MirrorAuditArgs = @(
+    $AllakhazamMirror,
+    "--httrack-project", $AllakhazamProject,
+    "--output", $MirrorAuditReport,
+    "--require-complete"
+)
+if ($AllowInterruptedMirror) {
+    Write-Warning (
+        "Developer override enabled: an interrupted but inactive Allakhazam mirror " +
+        "with zero temporary files may be imported. The resulting snapshot is NOT " +
+        "canonical crawl-complete."
+    )
+    $MirrorAuditArgs += "--allow-interrupted-clean"
+}
+
+python .\tools\audit_allakhazam_mirror.py @MirrorAuditArgs
 Assert-LastExitCode "Allakhazam completed-mirror inventory audit"
 
 # ------------------------------------------------------------
@@ -219,7 +230,8 @@ Write-Host "Determining source versions from local files..."
 Write-Host
 
 $BuildDate = Get-Date
-$Version = $BuildDate.ToString("yyyy.MM.dd") + "-full"
+$VersionSuffix = if ($AllowInterruptedMirror) { "-full-interrupted-mirror" } else { "-full" }
+$Version = $BuildDate.ToString("yyyy.MM.dd") + $VersionSuffix
 
 $AllakhazamVersion = Get-NewestFileDate `
     -Path $AllakhazamMirror `
@@ -466,7 +478,12 @@ Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
 Write-Host "  Allakhazam temp    : audited read-only"
-Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"
+if ($AllowInterruptedMirror) {
+    Write-Host "  Allakhazam mirror  : INTERRUPTED CLEAN CAPTURE accepted by developer override"
+    Write-Host "                       NOT canonical crawl-complete / NOT release-complete"
+} else {
+    Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"
+}
 Write-Host "  Allakhazam delta   : audited"
 Write-Host "  MCP inventory      : verified"
 Write-Host "  MCP rich details   : verified"

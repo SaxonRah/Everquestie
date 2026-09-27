@@ -121,6 +121,48 @@ class ActivityClusterTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_repeated_refresh_consumes_only_new_session_events(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                db.add_event(Event(kind="zone", raw="zone", zone="Cursor Zone"))
+                for _ in range(3):
+                    db.add_event(Event(kind="kill", raw="kill", actor="Cursor Mob"))
+
+                first = activity_cluster_summary(
+                    db,
+                    0,
+                    current_zone="Cursor Zone",
+                )
+                self.assertEqual(first.mobs_observed_slain, 3)
+                cache = getattr(db, "_activity_cluster_accumulators")
+                self.assertEqual(len(cache), 1)
+                accumulator = next(iter(cache.values()))
+                first_cursor = accumulator.last_event_id
+
+                db.add_event(Event(kind="loot", raw="loot", item="Cursor Token"))
+                db.add_event(Event(kind="loot", raw="loot", item="Cursor Token"))
+                db.add_event(Event(kind="npc_say", raw="irrelevant", actor="Someone"))
+
+                second = activity_cluster_summary(
+                    db,
+                    0,
+                    current_zone="Cursor Zone",
+                )
+                self.assertEqual(second.mobs_observed_slain, 3)
+                self.assertEqual(second.items_looted, 2)
+                self.assertIs(next(iter(cache.values())), accumulator)
+                self.assertGreater(accumulator.last_event_id, first_cursor)
+                newest = db.conn.execute(
+                    "SELECT MAX(id) AS n FROM observed_events"
+                ).fetchone()
+                self.assertEqual(
+                    accumulator.last_event_id,
+                    int(newest["n"]),
+                )
+            finally:
+                db.close()
+
     def test_one_off_events_stay_quiet(self):
         with tempfile.TemporaryDirectory() as tempdir:
             db = Database(Path(tempdir) / "working.sqlite3")

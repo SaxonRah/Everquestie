@@ -302,8 +302,10 @@ def entity_detail_text(db: Database, entity_id: int, *, include_source_text: boo
     lines.extend(map_evidence_lines(db, entity_id))
     lines.extend(knowledge_world_detail_lines(db, entity_id))
 
-    if include_source_text and r["source_text"]:
-        lines += ["", "--- Primary source text snapshot ---", r["source_text"][:20000]]
+    if include_source_text:
+        source_text = db.primary_source_text(entity_id, limit=20000)
+        if source_text:
+            lines += ["", "--- Primary source text snapshot ---", source_text]
 
     return "\n".join(lines)
 

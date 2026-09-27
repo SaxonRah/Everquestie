@@ -38,10 +38,6 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
                 external_namespace="eqclient:zone",
                 data={"expansion": "EverQuest"},
             )
-            quest_id = builder.upsert_entity(
-                kind="quest",
-                name="Cached Profile Quest",
-            )
         finally:
             builder.close()
 
@@ -89,6 +85,10 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
                 external_id="9",
                 external_namespace="eqclient:zone",
                 data={"expansion": "EverQuest"},
+            )
+            quest_id = builder.upsert_entity(
+                kind="quest",
+                name="Cached Profile Quest",
             )
         finally:
             builder.close()

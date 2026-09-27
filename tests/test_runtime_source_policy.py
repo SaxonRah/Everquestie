@@ -19,7 +19,11 @@ class RuntimeSourcePolicyTests(unittest.TestCase):
         saved_source = inspect.getsource(EverQuestieApp._import_saved_html)
 
         self.assertIn("self.mirror_importer = AllakhazamMirrorImporter(self.db)", init_source)
-        self.assertIn("self.mirror_importer.import_mirror(", mirror_source)
+        self.assertIn("worker_db = Database(db_path)", mirror_source)
+        self.assertIn(
+            "AllakhazamMirrorImporter(worker_db).import_mirror(",
+            mirror_source,
+        )
         self.assertNotIn("self.importer.import_mirror(", mirror_source)
         self.assertIn("self.importer.import_saved_html(", saved_source)
 

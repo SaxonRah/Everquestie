@@ -117,6 +117,10 @@ class RuntimeDatabaseSplitTests(unittest.TestCase):
             db.track_quest(quest_id)
             db.set_step_progress(quest_id, 1, 1, True)
 
+            def fail_if_state_table_is_scanned(_state):
+                self.fail("tracked-quest lookup scanned and resolved every state row")
+
+            db._resolve_state_identity = fail_if_state_table_is_scanned
             self.assertTrue(db.is_quest_tracked(quest_id))
             self.assertEqual(int(db.quest_steps(quest_id)[0]["complete"]), 1)
             self.assertEqual(db.get_meta("map_root"), r"C:\EverQuest\maps")

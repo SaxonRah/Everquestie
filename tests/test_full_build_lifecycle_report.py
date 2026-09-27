@@ -91,12 +91,12 @@ class FullBuildLifecycleReportTests(unittest.TestCase):
             '$MirrorAuditReport = Join-Path $ProjectRoot "build\\allakhazam-mirror-audit.json"',
             script,
         )
-        audit_call = "python .\\tools\\audit_allakhazam_mirror.py"
+        audit_call = "python .\\tools\\audit_allakhazam_mirror.py @MirrorAuditArgs"
         build_call = "python .\\tools\\build_knowledge_db.py"
         self.assertIn(audit_call, script)
-        self.assertIn("--httrack-project $AllakhazamProject", script)
-        self.assertIn("--output $MirrorAuditReport", script)
-        self.assertIn("--require-complete", script)
+        self.assertIn('"--httrack-project", $AllakhazamProject', script)
+        self.assertIn('"--output", $MirrorAuditReport', script)
+        self.assertIn('"--require-complete"', script)
         self.assertLess(script.index(audit_call), script.index(build_call))
         self.assertIn("Mirror inventory   : $MirrorAuditReport", script)
         self.assertIn(

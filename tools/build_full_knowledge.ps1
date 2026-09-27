@@ -27,6 +27,11 @@
 # map packs, or a source checkout. Those are builder inputs only.
 # ============================================================
 
+param(
+    [Alias("AllowInterruptedMirror")]
+    [switch]$AllowUnverifiedMirror
+)
+
 $ErrorActionPreference = "Stop"
 
 # ------------------------------------------------------------
@@ -209,13 +214,13 @@ $MirrorAuditArgs = @(
     "--output", $MirrorAuditReport,
     "--require-complete"
 )
-if ($AllowInterruptedMirror) {
+if ($AllowUnverifiedMirror) {
     Write-Warning (
-        "Developer override enabled: an interrupted but inactive Allakhazam mirror " +
-        "with zero temporary files may be imported. The resulting snapshot is NOT " +
-        "canonical crawl-complete."
+        "Developer override enabled: a clean Allakhazam corpus with unverified " +
+        "completion provenance may be imported when inactive and free of temporary " +
+        "files. The resulting snapshot is NOT canonical crawl-complete."
     )
-    $MirrorAuditArgs += "--allow-interrupted-clean"
+    $MirrorAuditArgs += "--allow-unverified-clean"
 }
 
 python .\tools\audit_allakhazam_mirror.py @MirrorAuditArgs
@@ -230,7 +235,7 @@ Write-Host "Determining source versions from local files..."
 Write-Host
 
 $BuildDate = Get-Date
-$VersionSuffix = if ($AllowInterruptedMirror) { "-full-interrupted-mirror" } else { "-full" }
+$VersionSuffix = if ($AllowUnverifiedMirror) { "-full-unverified-mirror" } else { "-full" }
 $Version = $BuildDate.ToString("yyyy.MM.dd") + $VersionSuffix
 
 $AllakhazamVersion = Get-NewestFileDate `
@@ -478,8 +483,8 @@ Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
 Write-Host "  Allakhazam temp    : audited read-only"
-if ($AllowInterruptedMirror) {
-    Write-Host "  Allakhazam mirror  : INTERRUPTED CLEAN CAPTURE accepted by developer override"
+if ($AllowUnverifiedMirror) {
+    Write-Host "  Allakhazam mirror  : CLEAN CAPTURE WITH UNVERIFIED PROVENANCE accepted by override"
     Write-Host "                       NOT canonical crawl-complete / NOT release-complete"
 } else {
     Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"

@@ -138,6 +138,15 @@ def main(argv: list[str] | None = None) -> int:
             "--httrack-project and fails closed for active, interrupted, or unknown runs."
         ),
     )
+    parser.add_argument(
+        "--allow-interrupted-clean",
+        action="store_true",
+        help=(
+            "Developer-only override for rebuilding from an interrupted capture when "
+            "the HTTrack project is inactive, its log is readable, and the mirror has "
+            "no temporary files. This does NOT mark the mirror canonical-complete."
+        ),
+    )
     args = parser.parse_args(argv)
 
     report = audit_allakhazam_mirror(args.mirror)
@@ -146,6 +155,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.httrack_project:
         httrack_payload = _audit_httrack_project(args.httrack_project)
         payload.update(httrack_payload)
+
+    interrupted_clean_accepted = False
+    if args.require_complete and httrack_payload is not None:
+        run_state = str(httrack_payload["httrack_run_state"])
+        interrupted_clean_accepted = bool(
+            args.allow_interrupted_clean
+            and run_state == "interrupted"
+            and not report.temporary_files
+            and not bool(httrack_payload["httrack_lock_file_present"])
+            and bool(httrack_payload["httrack_log_file_present"])
+            and httrack_payload["httrack_log_read_error"] is None
+        )
+
+    payload["completion_policy"] = (
+        "allow-interrupted-clean" if args.allow_interrupted_clean else "canonical-complete"
+    )
+    payload["canonical_complete"] = bool(
+        httrack_payload is not None
+        and not report.temporary_files
+        and str(httrack_payload["httrack_run_state"]) == "completed"
+    )
+    payload["interrupted_clean_capture_accepted"] = interrupted_clean_accepted
 
     if args.output:
         _write_json_report(args.output, payload)
@@ -156,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         print(format_allakhazam_mirror_audit(report))
         if httrack_payload is not None:
             print(_format_httrack_project_audit(httrack_payload))
+        if interrupted_clean_accepted:
+            print(
+                "\nDEVELOPER OVERRIDE: accepting an interrupted, inactive capture with "
+                "no temporary files. This mirror is NOT canonical-complete."
+            )
 
     if not args.require_complete:
         return 0
@@ -174,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{report.temporary_files:,} temporary HTTrack file(s) remain in the mirror"
         )
     run_state = str(httrack_payload["httrack_run_state"])
-    if run_state != "completed":
+    if run_state != "completed" and not interrupted_clean_accepted:
         failures.append(f"HTTrack run state is {run_state!r}, not 'completed'")
 
     if failures:
@@ -183,6 +219,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if interrupted_clean_accepted:
+        print(
+            "WARNING: proceeding with a noncanonical interrupted Allakhazam capture; "
+            "do not publish this snapshot as crawl-complete.",
+            file=sys.stderr,
+        )
     return 0
 
 

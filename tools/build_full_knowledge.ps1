@@ -78,15 +78,18 @@ function Get-NewestFileDate {
         throw "$SourceName directory does not exist: $Path"
     }
 
-    $Newest = Get-ChildItem $Path -File -Recurse -ErrorAction Stop |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+    $NewestDate = $null
+    Get-ChildItem $Path -File -Recurse -ErrorAction Stop | ForEach-Object {
+        if ($null -eq $NewestDate -or $_.LastWriteTime -gt $NewestDate) {
+            $NewestDate = $_.LastWriteTime
+        }
+    }
 
-    if ($null -eq $Newest) {
+    if ($null -eq $NewestDate) {
         throw "$SourceName directory contains no files: $Path"
     }
 
-    return $Newest.LastWriteTime.ToString("yyyy-MM-dd")
+    return $NewestDate.ToString("yyyy-MM-dd")
 }
 
 function Assert-LastExitCode {

@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS observed_events (
 );
 CREATE INDEX IF NOT EXISTS ix_observed_events_kind
 ON observed_events(kind);
+CREATE INDEX IF NOT EXISTS ix_observed_events_kind_id
+ON observed_events(kind, id);
+CREATE INDEX IF NOT EXISTS ix_observed_events_kind_actor
+ON observed_events(kind, actor COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS ix_observed_events_kind_target
+ON observed_events(kind, target COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS user_state_meta (
     key TEXT PRIMARY KEY,

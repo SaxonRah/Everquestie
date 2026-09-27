@@ -89,7 +89,18 @@ class LogTailer:
                         try:
                             path_stat = self.path.stat()
                             handle_stat = os.fstat(f.fileno())
-                        except (FileNotFoundError, PermissionError, OSError):
+                        except FileNotFoundError:
+                            # The pathname disappeared or is between atomic-replace
+                            # steps. Reopen when it becomes available again.
+                            break
+                        except PermissionError:
+                            # Keep following the already-open handle. A transient
+                            # Windows metadata-sharing failure must not rewind/replay
+                            # the whole log.
+                            self._stop.wait(max(self.poll_seconds, 0.05))
+                            continue
+                        except OSError:
+                            # The open handle itself may no longer be usable.
                             break
 
                         if not self._same_file(handle_stat, path_stat):

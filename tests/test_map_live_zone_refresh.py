@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from eqquest.mapview import MapViewerFrame
 
@@ -93,6 +95,35 @@ class MapLiveZoneRefreshTests(unittest.TestCase):
         self.assertEqual(harness.manual_zone.get(), "West Freeport")
         self.assertEqual(harness.loaded, 2)
         self.assertEqual(len(harness.after_calls), 2)
+
+
+    def test_unresolved_new_zone_clears_stale_map(self):
+        class _Db:
+            def get_meta(self, _key, default=""):
+                return default
+
+            def resolve_entity(self, _zone, _kind):
+                return None, "missing"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            harness = type("Harness", (), {})()
+            harness.get_zone = lambda: "Unresolved Test Zone"
+            harness.map_root = _Var(tempdir)
+            harness.db = _Db()
+            harness.map_status = _Var()
+            harness.cleared = 0
+            harness._clear_loaded_map = lambda: setattr(
+                harness, "cleared", harness.cleared + 1
+            )
+            harness._refresh_overlay_cache = lambda force=False: False
+            harness._refresh_marker_list = lambda: None
+            harness.load_map = lambda _path: self.fail("unexpected map load")
+
+            with patch("eqquest.mapview.resolve_map_for_zone", return_value=None):
+                MapViewerFrame.load_current_zone(harness)
+
+            self.assertEqual(harness.cleared, 1)
+            self.assertIn("No unique map-file match", harness.map_status.get())
 
 
 if __name__ == "__main__":

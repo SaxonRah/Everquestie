@@ -165,6 +165,13 @@ def compile_zone_opportunity_catalog(db) -> dict[str, int]:
             db.get_meta("zone_opportunity_catalog_dirty", "1") != "1"
         )
 
+    if (
+        not compiled_available
+        and getattr(db, "knowledge_writable", True)
+        and getattr(db, "_runtime_catalog_building", False)
+    ):
+        return ()
+
     if compiled_available:
         rows = db.conn.execute(
             """

@@ -779,6 +779,13 @@ class EverQuestieApp(tk.Tk):
             command=self._import_db_mirror,
         )
         self.db_mirror_import_button.grid(row=0, column=3, padx=(6, 0))
+        self.db_mirror_cancel_button = ttk.Button(
+            mirrors,
+            text="Cancel",
+            command=self._cancel_db_mirror_import,
+            state="disabled",
+        )
+        self.db_mirror_cancel_button.grid(row=0, column=4, padx=(6, 0))
 
         ttk.Label(mirrors, text="Wiki mirror").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(mirrors, textvariable=self.wiki_mirror_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
@@ -790,7 +797,7 @@ class EverQuestieApp(tk.Tk):
             text="Manual only: EverQuestie does not scan, watch, index, modify, or otherwise open these mirror paths until you press the corresponding Import/Index button. Canonical Allakhazam URLs remain provenance keys; EverQuestie never fetches the mirror itself from the network.",
             wraplength=950,
             justify="left",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
         single = ttk.LabelFrame(root, text="Single saved Allakhazam page", padding=10)
         single.pack(fill="x", pady=(8, 0))
@@ -1359,6 +1366,33 @@ class EverQuestieApp(tk.Tk):
         self.status.set("Local EverQuest data compile failed")
         messagebox.showerror("EverQuest client compile failed", str(exc))
 
+    def _cancel_db_mirror_import(self) -> None:
+        cancel_event = getattr(self, "_db_mirror_cancel_event", None)
+        if cancel_event is None or not getattr(self, "_db_mirror_import_running", False):
+            return
+        cancel_event.set()
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Cancelling Allakhazam mirror import after the current page…")
+
+    def _update_db_mirror_import_progress(
+        self,
+        processed: int,
+        changed: int,
+        unchanged: int,
+        ignored: int,
+        read_errors: int,
+        detail: str,
+    ) -> None:
+        if not getattr(self, "_db_mirror_import_running", False):
+            return
+        suffix = f" | {detail}" if detail else ""
+        self.status.set(
+            f"Allakhazam mirror: {processed:,} files processed | "
+            f"{changed:,} changed | {unchanged:,} unchanged | "
+            f"{ignored:,} ignored | {read_errors:,} read errors{suffix}"
+        )
+
     def _import_db_mirror(self) -> None:
         if getattr(self, "_db_mirror_import_running", False):
             return
@@ -1377,8 +1411,12 @@ class EverQuestieApp(tk.Tk):
 
         self._save_settings_now()
         self._db_mirror_import_running = True
+        cancel_event = threading.Event()
+        self._db_mirror_cancel_event = cancel_event
         if hasattr(self, "db_mirror_import_button"):
             self.db_mirror_import_button.configure(state="disabled")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="normal")
         self.status.set(
             f"Importing Allakhazam mirror in background: {Path(folder).name}"
         )
@@ -1388,7 +1426,31 @@ class EverQuestieApp(tk.Tk):
             worker_db = None
             try:
                 worker_db = Database(db_path)
-                summary = AllakhazamMirrorImporter(worker_db).import_mirror(folder)
+
+                def progress(summary, path) -> None:
+                    detail = path.name if path is not None else ""
+                    self.after(
+                        0,
+                        lambda processed=summary.processed,
+                               changed=summary.changed,
+                               unchanged=summary.unchanged,
+                               ignored=summary.ignored,
+                               read_errors=summary.read_errors,
+                               detail=detail: self._update_db_mirror_import_progress(
+                            processed,
+                            changed,
+                            unchanged,
+                            ignored,
+                            read_errors,
+                            detail,
+                        ),
+                    )
+
+                summary = AllakhazamMirrorImporter(worker_db).import_mirror(
+                    folder,
+                    progress=progress,
+                    cancelled=cancel_event.is_set,
+                )
 
                 # Source-checkout/developer play should use the same bounded lookup
                 # catalogs as packaged runtime. Rebuild them only when mirror facts
@@ -1456,8 +1518,11 @@ class EverQuestieApp(tk.Tk):
 
     def _finish_db_mirror_import(self, folder: str, summary) -> None:
         self._db_mirror_import_running = False
+        self._db_mirror_cancel_event = None
         if hasattr(self, "db_mirror_import_button"):
             self.db_mirror_import_button.configure(state="normal")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
 
         self.db.set_meta("allakhazam_db_mirror", folder)
 
@@ -1482,12 +1547,23 @@ class EverQuestieApp(tk.Tk):
             ):
                 self._reconcile_tracked_quest(imported.entity_id)
 
-        self.status.set(
-            f"Allakhazam mirror refresh complete: {summary.changed:,} changed, "
-            f"{summary.unchanged:,} unchanged"
-        )
+        if summary.cancelled:
+            self.status.set(
+                f"Allakhazam mirror import cancelled after {summary.processed:,} files; "
+                f"{summary.changed:,} changed pages were preserved"
+            )
+            dialog_title = "Allakhazam DB mirror import cancelled"
+        else:
+            self.status.set(
+                f"Allakhazam mirror refresh complete: {summary.changed:,} changed, "
+                f"{summary.unchanged:,} unchanged"
+            )
+            dialog_title = "Allakhazam DB mirror refreshed"
+
         messagebox.showinfo(
-            "Allakhazam DB mirror refreshed",
+            dialog_title,
+            f"Files processed: {summary.processed}\n"
+            f"Cancelled: {'yes' if summary.cancelled else 'no'}\n"
             f"Imported/changed entity pages: {summary.changed}\n"
             f"Unchanged entity pages: {summary.unchanged}\n"
             f"Ignored/non-entity pages: {summary.ignored}\n"
@@ -1503,8 +1579,11 @@ class EverQuestieApp(tk.Tk):
 
     def _finish_db_mirror_import_error(self, exc: Exception) -> None:
         self._db_mirror_import_running = False
+        self._db_mirror_cancel_event = None
         if hasattr(self, "db_mirror_import_button"):
             self.db_mirror_import_button.configure(state="normal")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
         self.status.set("Allakhazam DB mirror import failed")
         messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
 

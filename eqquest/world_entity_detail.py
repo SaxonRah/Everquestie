@@ -28,7 +28,25 @@ def build_world_entity_context_for_id(
     Knowledge UI has already resolved identity through its tree/search result. Reusing
     that ID is both cheaper and safer than resolving the display name again, especially
     when distinct provider/client entities intentionally share a name.
+
+    Packaged knowledge is immutable for the lifetime of RuntimeDatabase. Cache the
+    frozen projection there so repeated Target/Knowledge renders do not rebuild the
+    same relationship/source/location graph on every live refresh. Builder databases
+    deliberately remain uncached because imports may mutate knowledge in-process.
     """
+    safe_location_limit = max(1, int(location_limit))
+    safe_related_limit = max(1, int(related_location_limit))
+    cache = None
+    cache_key = (int(entity_id), safe_location_limit, safe_related_limit)
+    if not getattr(db, "knowledge_writable", True):
+        cache = getattr(db, "_world_entity_context_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(db, "_world_entity_context_cache", cache)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     entity = db.entity(int(entity_id))
     if entity is None:
         return None
@@ -42,7 +60,7 @@ def build_world_entity_context_for_id(
         canonical_id,
         name,
         kind,
-        limit=max(1, int(location_limit)),
+        limit=safe_location_limit,
     )
 
     relation_by_entity: dict[int, str] = {}
@@ -61,13 +79,13 @@ def build_world_entity_context_for_id(
             name,
             kind,
             relation_by_entity=relation_by_entity,
-            limit=max(1, int(related_location_limit)),
+            limit=safe_related_limit,
         )
         if relation_by_entity
         else ()
     )
 
-    return WorldEntityContext(
+    result = WorldEntityContext(
         entity_id=canonical_id,
         kind=kind,
         name=name,
@@ -85,6 +103,9 @@ def build_world_entity_context_for_id(
         related_locations=related_locations,
         quest_steps=_quest_steps(db, canonical_id) if kind == "quest" else (),
     )
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _location_summary(row) -> str:

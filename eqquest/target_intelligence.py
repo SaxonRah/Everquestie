@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import normalize_name
-from .personal_observations import personal_observation_summary
+from .personal_observations import personal_observation_counts
 from .profile_availability import entity_profile_decision
 from .world_entity_detail import build_world_entity_context_for_id
 from .world_profiles import active_world_profile_id
@@ -155,10 +155,8 @@ def _known_zones(context, *, limit: int = 4) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _personal_count(summary, label: str) -> int:
-    if summary is None:
-        return 0
-    for row in summary.counts:
+def _personal_count(rows, label: str) -> int:
+    for row in rows:
         if row.label == label:
             return int(row.count)
     return 0
@@ -214,7 +212,11 @@ def current_target_intelligence(
     context = build_world_entity_context_for_id(db, entity_id)
     selected_profile = profile_id or active_world_profile_id(db)
     decision = entity_profile_decision(db, entity_id, selected_profile)
-    personal = personal_observation_summary(db, entity_id)
+    personal = personal_observation_counts(
+        db,
+        entity_id,
+        ("Observed slain", "Targeted"),
+    )
     return TargetIntelligence(
         status="resolved",
         observed_name=observed,

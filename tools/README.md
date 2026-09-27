@@ -157,6 +157,32 @@ A source checkout can be launched without MCP:
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
 
 
+## Rebuilding from an interrupted but clean Allakhazam capture
+
+The canonical full build still requires HTTrack to report a naturally completed crawl.
+For development or corpus inspection, an explicitly interrupted capture can be imported
+without weakening that default gate when all of the following are true:
+
+- no `hts-in_progress.lock` is present;
+- the HTTrack log is readable;
+- the run state is `interrupted`;
+- the mirror contains zero temporary HTTrack files.
+
+Use the explicit developer override:
+
+```powershell
+.\tools\build_full_knowledge.ps1 -AllowInterruptedMirror
+```
+
+The generated build version is suffixed `-full-interrupted-mirror`, the mirror audit
+JSON records `canonical_complete: false` and
+`interrupted_clean_capture_accepted: true`, and the final console summary warns that
+the snapshot is not canonical crawl-complete. Do not publish such a snapshot as a
+crawl-complete release artifact.
+
+You do not need to run the cleanup script again after a completion-gate failure that
+occurred before the database build stage.
+
 ## Builder path resolution
 
 The full knowledge build reads the same `%USERPROFILE%\.eqquest\settings.ini`

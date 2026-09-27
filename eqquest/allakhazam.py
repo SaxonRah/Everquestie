@@ -465,7 +465,7 @@ class AllakhazamImporter:
 
         summary = MirrorImportResult()
         with self.db.batch():
-            for path in sorted(root.rglob("*.htm*")):
+            for path in root.rglob("*.htm*"):
                 if path.name.lower().endswith(".tmp"):
                     summary.ignored += 1
                     continue

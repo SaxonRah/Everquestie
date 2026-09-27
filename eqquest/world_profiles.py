@@ -282,6 +282,17 @@ def zone_profile_decisions(
     profile_id: str | None = None,
 ) -> dict[int, ZoneProfileDecision]:
     profile = world_profile(profile_id or active_world_profile_id(db))
+
+    runtime_cache = None
+    if not getattr(db, "knowledge_writable", True):
+        runtime_cache = getattr(db, "_zone_profile_decisions_cache", None)
+        if runtime_cache is None:
+            runtime_cache = {}
+            setattr(db, "_zone_profile_decisions_cache", runtime_cache)
+        cached = runtime_cache.get(profile.profile_id)
+        if cached is not None:
+            return cached
+
     rows = db.conn.execute(
         """
         SELECT e.id,e.name,e.data_json
@@ -432,6 +443,9 @@ def zone_profile_decisions(
                 zone_expansions,
             )
         result[zone_id] = decision
+
+    if runtime_cache is not None:
+        runtime_cache[profile.profile_id] = result
     return result
 
 

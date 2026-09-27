@@ -11,6 +11,23 @@ class RuntimeSourcePolicyTests(unittest.TestCase):
         init_source = inspect.getsource(EverQuestieApp.__init__)
         self.assertNotIn("rebuild_imported_pages(", init_source)
 
+    def test_tracked_quest_history_replay_is_not_in_blocking_constructor(self):
+        init_source = inspect.getsource(EverQuestieApp.__init__)
+        reconcile_source = inspect.getsource(
+            EverQuestieApp._maybe_reconcile_tracked_quests_async
+        )
+
+        self.assertNotIn("reconcile_quest_from_history(", init_source)
+        self.assertIn(
+            "self.after(0, self._maybe_reconcile_tracked_quests_async)",
+            init_source,
+        )
+        self.assertIn("runtime_split", reconcile_source)
+        self.assertIn("open_worker_connection()", reconcile_source)
+        self.assertIn("observed_event_history()", reconcile_source)
+        self.assertIn("TRACKED_RECONCILE_META_KEY", reconcile_source)
+        self.assertIn("threading.Thread(", reconcile_source)
+
     def test_startup_defers_full_source_provenance_summary(self):
         build_source = inspect.getsource(EverQuestieApp._build_ui)
         self.assertNotIn("self._refresh_source_summary()", build_source)

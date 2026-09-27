@@ -50,4 +50,4 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Add tests for exact/ambiguous item identity in optimized Recent Loot lookup.
 - [x] Add runtime split tests for tracked quest identity across snapshot row-ID/provider changes.
 - [x] Add performance smoke fixtures with a configurable large synthetic entity/alias corpus.
-- [ ] Record startup, DB-open, first-live-event, search, and loot-refresh benchmarks before/after.
+- [x] Record a repeatable large-corpus runtime baseline for DB open, search, first/steady Live projection, and loot refresh; preserve raw JSON for future delta comparisons.

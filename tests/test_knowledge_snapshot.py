@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from eqquest.db import Database
-from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.knowledge_snapshot import RUNTIME_SOURCE_TEXT_LIMIT, create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 
 
@@ -48,7 +48,10 @@ class KnowledgeSnapshotTests(unittest.TestCase):
                 title="Archived Mirror Quest",
                 entity_type="quest",
                 sha256="allakhazam-raw-html",
-                plain_text="Readable source text remains available at runtime.",
+                plain_text=(
+                    "Readable source text remains available at runtime. "
+                    + ("source-body-" * 3000)
+                ),
                 raw_html="<html><body>builder-only raw mirror page</body></html>",
                 source_name="Allakhazam",
                 source_kind="local_mirror",
@@ -114,6 +117,13 @@ class KnowledgeSnapshotTests(unittest.TestCase):
                 ).fetchone()[0],
                 r"C:\EverQuest",
             )
+            self.assertGreater(
+                working.execute(
+                    "SELECT length(plain_text) FROM source_pages "
+                    "WHERE url='https://everquest.allakhazam.com/db/quest.html?quest=999999'"
+                ).fetchone()[0],
+                RUNTIME_SOURCE_TEXT_LIMIT,
+            )
         finally:
             working.close()
 
@@ -137,9 +147,11 @@ class KnowledgeSnapshotTests(unittest.TestCase):
                 "SELECT plain_text,raw_html FROM source_pages "
                 "WHERE url='https://everquest.allakhazam.com/db/quest.html?quest=999999'"
             ).fetchone()
-            self.assertEqual(
-                mirror["plain_text"],
-                "Readable source text remains available at runtime.",
+            self.assertEqual(len(mirror["plain_text"]), RUNTIME_SOURCE_TEXT_LIMIT)
+            self.assertTrue(
+                mirror["plain_text"].startswith(
+                    "Readable source text remains available at runtime. "
+                )
             )
             self.assertEqual(mirror["raw_html"], "")
 

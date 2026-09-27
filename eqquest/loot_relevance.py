@@ -53,41 +53,66 @@ def _bounded(text: str, limit: int = 500) -> str:
     return " ".join(str(text or "").split())[:limit]
 
 
-def _unique_item_name_index(db) -> dict[str, int]:
-    """Map exact item text to one canonical item using exact-first identity semantics.
+def _chunks(values: list[str], size: int = 400):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
-    A canonical exact name is stronger evidence than an alias on another item.  Aliases
-    are consulted only when no canonical item carries that normalized name at all.  True
-    duplicate canonical names and duplicate aliases remain ambiguous and are omitted.
-    This mirrors the fail-closed identity policy used by tracked quest progress without
-    introducing fuzzy or substring matching into Recent Loot.
+
+def _unique_item_name_index(db, normalized_names: Iterable[str]) -> dict[str, int]:
+    """Resolve only observed item names through indexed exact-name/alias lookups.
+
+    The old implementation materialized every item and every item alias in the full
+    knowledge corpus on each Live refresh. With the full Allakhazam mirror that makes
+    one loot event proportional to the entire database. This version keeps the same
+    exact-first, fail-closed semantics while querying only names actually observed.
     """
-    exact_rows = db.conn.execute(
-        """
-        SELECT e.id AS entity_id, e.normalized_name AS value
-        FROM entities e
-        WHERE e.kind='item'
-        """
-    ).fetchall()
-    exact_owners: dict[str, set[int]] = {}
-    for row in exact_rows:
-        key = str(row["value"] or "")
-        if key:
-            exact_owners.setdefault(key, set()).add(int(row["entity_id"]))
+    keys = sorted(
+        {
+            normalize_name(str(value or ""))
+            for value in normalized_names
+            if normalize_name(str(value or ""))
+        }
+    )
+    if not keys:
+        return {}
 
-    aliases = db.conn.execute(
-        """
-        SELECT e.id AS entity_id, a.normalized_alias AS value
-        FROM entity_aliases a
-        JOIN entities e ON e.id=a.entity_id
-        WHERE e.kind='item'
-        """
-    ).fetchall()
+    exact_owners: dict[str, set[int]] = {}
+    for chunk in _chunks(keys):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = db.conn.execute(
+            f"""
+            SELECT e.id AS entity_id, e.normalized_name AS value
+            FROM entities e
+            WHERE e.kind='item'
+              AND e.normalized_name IN ({placeholders})
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            key = str(row["value"] or "")
+            if key:
+                exact_owners.setdefault(key, set()).add(int(row["entity_id"]))
+
+    # A canonical exact name always wins over aliases, including when that exact name
+    # is ambiguous. Only names with no canonical owner at all may resolve via aliases.
+    alias_candidates = [key for key in keys if key not in exact_owners]
     alias_owners: dict[str, set[int]] = {}
-    for row in aliases:
-        key = str(row["value"] or "")
-        if key:
-            alias_owners.setdefault(key, set()).add(int(row["entity_id"]))
+    for chunk in _chunks(alias_candidates):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = db.conn.execute(
+            f"""
+            SELECT e.id AS entity_id, a.normalized_alias AS value
+            FROM entity_aliases a
+            JOIN entities e ON e.id=a.entity_id
+            WHERE e.kind='item'
+              AND a.normalized_alias IN ({placeholders})
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            key = str(row["value"] or "")
+            if key:
+                alias_owners.setdefault(key, set()).add(int(row["entity_id"]))
 
     resolved: dict[str, int] = {
         key: next(iter(entity_ids))
@@ -95,8 +120,6 @@ def _unique_item_name_index(db) -> dict[str, int]:
         if len(entity_ids) == 1
     }
     for key, entity_ids in alias_owners.items():
-        if key in exact_owners:
-            continue
         if len(entity_ids) == 1:
             resolved[key] = next(iter(entity_ids))
     return resolved
@@ -176,17 +199,21 @@ def recent_loot_relevance(
     """
     rows = db.conn.execute(
         """
-        SELECT id,item
+        SELECT item, COUNT(*) AS observed_count, MAX(id) AS last_event_id
         FROM observed_events
         WHERE id>? AND kind='loot' AND COALESCE(item,'')<>''
-        ORDER BY id
+        GROUP BY item COLLATE NOCASE
+        ORDER BY last_event_id DESC
         """,
         (int(after_event_id),),
     ).fetchall()
     if not rows:
         return ()
 
-    unique_items = _unique_item_name_index(db)
+    unique_items = _unique_item_name_index(
+        db,
+        (normalize_name(str(row["item"] or "")) for row in rows),
+    )
     counts: dict[int, int] = {}
     last_ids: dict[int, int] = {}
     for row in rows:
@@ -194,8 +221,11 @@ def recent_loot_relevance(
         item_id = unique_items.get(key)
         if item_id is None:
             continue
-        counts[item_id] = counts.get(item_id, 0) + 1
-        last_ids[item_id] = max(last_ids.get(item_id, 0), int(row["id"]))
+        counts[item_id] = counts.get(item_id, 0) + int(row["observed_count"] or 0)
+        last_ids[item_id] = max(
+            last_ids.get(item_id, 0),
+            int(row["last_event_id"] or 0),
+        )
 
     uses_by_item = _quest_uses_for_items(db, counts)
     relevance: list[LootRelevance] = []

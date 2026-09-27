@@ -157,6 +157,24 @@ A source checkout can be launched without MCP:
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
 
 
+## Diagnose a travel-supplement build failure without rebuilding providers
+
+If a full provider build reaches the approved travel-supplement stage and fails, the
+expensive provider-built `build\working.sqlite3` is normally already published. Reproduce
+only the travel compilation against a disposable SQLite clone:
+
+```powershell
+python .\tools\diagnose_travel_supplements.py 2>&1 |
+  Tee-Object .\build\travel-supplement-diagnostic.log
+```
+
+The diagnostic never modifies `build\working.sqlite3`. It prints each manifest before
+compilation and emits the full traceback for the first failing manifest. The
+`Tee-Object` copy preserves the failure even if the console buffer is later overwritten.
+
+Full knowledge builds also create a timestamped PowerShell transcript under
+`build\logs\full-knowledge-build-*.log`, including native Python output and failures.
+
 ## Rebuilding from a clean mirror with unverified HTTrack provenance
 
 The canonical full build still requires HTTrack evidence that belongs to the selected

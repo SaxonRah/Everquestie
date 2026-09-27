@@ -102,6 +102,8 @@ class ActivityPathwayEngine:
         self._index: dict[tuple[str, str], list[_Objective]] | None = None
         self._graph_index: dict[tuple[str, str], list[_GraphOpportunity]] | None = None
         self._compiled_catalog_available_cache: bool | None = None
+        self._direct_candidate_cache: dict[tuple[str, str], tuple[_Objective, ...]] = {}
+        self._graph_candidate_cache: dict[tuple[str, str], tuple[_GraphOpportunity, ...]] = {}
         self._counts: dict[tuple[str, str], int] = {}
         self._display_names: dict[tuple[str, str], str] = {}
         self._zone_counts: dict[tuple[str, str, str], int] = {}
@@ -476,6 +478,9 @@ class ActivityPathwayEngine:
     def _direct_candidates(self, key: tuple[str, str]):
         if not self._compiled_catalog_available():
             return self._ensure_index().get(key, ())
+        cached = self._direct_candidate_cache.get(key)
+        if cached is not None:
+            return cached
         rows = self.db.conn.execute(
             """
             SELECT c.quest_entity_id,q.name AS quest_name,c.event_kind,c.subject,
@@ -487,7 +492,7 @@ class ActivityPathwayEngine:
             """,
             key,
         ).fetchall()
-        return tuple(
+        result = tuple(
             _Objective(
                 quest_id=int(row["quest_entity_id"]),
                 quest_name=str(row["quest_name"]),
@@ -499,10 +504,15 @@ class ActivityPathwayEngine:
             )
             for row in rows
         )
+        self._direct_candidate_cache[key] = result
+        return result
 
     def _graph_candidates(self, key: tuple[str, str]):
         if not self._compiled_catalog_available():
             return self._ensure_graph_index().get(key, ())
+        cached = self._graph_candidate_cache.get(key)
+        if cached is not None:
+            return cached
         rows = self.db.conn.execute(
             """
             SELECT c.quest_entity_id,q.name AS quest_name,c.event_kind,c.path_kind,
@@ -514,7 +524,7 @@ class ActivityPathwayEngine:
             """,
             key,
         ).fetchall()
-        return tuple(
+        result = tuple(
             _GraphOpportunity(
                 quest_id=int(row["quest_entity_id"]),
                 quest_name=str(row["quest_name"]),
@@ -526,6 +536,8 @@ class ActivityPathwayEngine:
             )
             for row in rows
         )
+        self._graph_candidate_cache[key] = result
+        return result
 
     def _ensure_index(self) -> dict[tuple[str, str], list[_Objective]]:
         if self._index is None:

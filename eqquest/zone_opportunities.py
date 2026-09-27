@@ -86,12 +86,86 @@ def compile_zone_opportunity_catalog(db) -> dict[str, int]:
         );
         CREATE INDEX IF NOT EXISTS ix_zone_opportunity_step_zones_lookup
         ON zone_opportunity_step_zones(status, zone_entity_id);
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_insert
+        AFTER INSERT ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_update
+        AFTER UPDATE ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_delete
+        AFTER DELETE ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_insert
+        AFTER INSERT ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_update
+        AFTER UPDATE ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_delete
+        AFTER DELETE ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_insert
+        AFTER INSERT ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_update
+        AFTER UPDATE ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_delete
+        AFTER DELETE ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
         """
     )
-    if (
-        not getattr(db, "knowledge_writable", True)
-        and _object_exists(db, "zone_opportunity_step_zones")
-    ):
+    compiled_available = _object_exists(db, "zone_opportunity_step_zones")
+    if compiled_available:
+        compiled_available = (
+            db.get_meta("zone_opportunity_catalog_version", "")
+            == ZONE_OPPORTUNITY_CATALOG_VERSION
+        )
+    if compiled_available and getattr(db, "knowledge_writable", True):
+        compiled_available = (
+            db.get_meta("zone_opportunity_catalog_dirty", "1") != "1"
+        )
+
+    if compiled_available:
         rows = db.conn.execute(
             """
             SELECT zone_text AS zone
@@ -159,6 +233,7 @@ def compile_zone_opportunity_catalog(db) -> dict[str, int]:
             "zone_opportunity_catalog_version",
             ZONE_OPPORTUNITY_CATALOG_VERSION,
         )
+        db.set_meta("zone_opportunity_catalog_dirty", "0")
 
     return {
         "tokens": len(payload),

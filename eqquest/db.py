@@ -524,6 +524,15 @@ class Database:
             self._batch_depth = 0
         self.conn.close()
 
+    def open_worker_connection(self):
+        """Open an equivalent SQLite handle safe for use on another thread.
+
+        The base Database owns one writable builder file. RuntimeDatabase overrides
+        this method because packaged mode is a split read-only knowledge + writable
+        user-state pair rather than a single file.
+        """
+        return Database(self.path)
+
     def get_meta(self, key: str, default: str = "") -> str:
         row = self.conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
         return str(row["value"]) if row is not None else default

@@ -33,7 +33,7 @@ This checklist tracks the performance hardening required now that the knowledge 
 
 - [x] Move full Allakhazam DB mirror import off Tk's UI thread.\n- [ ] Move Wiki/saved-folder import variants off Tk's UI thread.
 - [ ] Avoid `sorted(rglob(...))` full-mirror materialization where ordering is unnecessary.
-- [ ] Add incremental manifest/hash metadata so unchanged mirror files do not require expensive repeated parsing.
+- [x] Add incremental manifest/hash metadata so unchanged mirror files do not require expensive repeated parsing.
 - [ ] Add progress/cancellation to long builder operations.
 - [ ] Keep full integrity/audit/VACUUM work in explicit release/diagnostic commands.
 

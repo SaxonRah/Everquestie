@@ -9,6 +9,9 @@ from .profile_availability import entity_profile_decision
 from .zone_authority import authoritative_zones_match
 
 
+ACTIVITY_PATHWAY_CATALOG_VERSION = "1"
+
+
 @dataclass(frozen=True, slots=True)
 class PathwayEvidence:
     event_kind: str
@@ -98,6 +101,7 @@ class ActivityPathwayEngine:
         self.db = db
         self._index: dict[tuple[str, str], list[_Objective]] | None = None
         self._graph_index: dict[tuple[str, str], list[_GraphOpportunity]] | None = None
+        self._compiled_catalog_available_cache: bool | None = None
         self._counts: dict[tuple[str, str], int] = {}
         self._display_names: dict[tuple[str, str], str] = {}
         self._zone_counts: dict[tuple[str, str, str], int] = {}
@@ -348,6 +352,181 @@ class ActivityPathwayEngine:
 
         return graph
 
+    def compile_catalog(self) -> dict[str, int]:
+        """Compile static pathway matches once for the immutable release snapshot."""
+        if not getattr(self.db, "knowledge_writable", True):
+            raise RuntimeError("Activity Pathway catalog compilation is builder-only")
+
+        direct = self._build_index()
+        graph = self._build_graph_index()
+        with self.db.batch():
+            self.db.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS activity_pathway_objectives (
+                    id INTEGER PRIMARY KEY,
+                    event_kind TEXT NOT NULL,
+                    normalized_subject TEXT NOT NULL,
+                    quest_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    subject TEXT NOT NULL,
+                    step_order INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    zone TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS ix_activity_pathway_objectives_lookup
+                ON activity_pathway_objectives(event_kind, normalized_subject);
+
+                CREATE TABLE IF NOT EXISTS activity_pathway_graph (
+                    id INTEGER PRIMARY KEY,
+                    event_kind TEXT NOT NULL,
+                    normalized_subject TEXT NOT NULL,
+                    quest_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    path_kind TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    related_item TEXT NOT NULL DEFAULT '',
+                    relationship_evidence TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS ix_activity_pathway_graph_lookup
+                ON activity_pathway_graph(event_kind, normalized_subject);
+                """
+            )
+            self.db.conn.execute("DELETE FROM activity_pathway_objectives")
+            self.db.conn.execute("DELETE FROM activity_pathway_graph")
+
+            direct_rows = [
+                (
+                    event_kind,
+                    normalized_subject,
+                    objective.quest_id,
+                    objective.subject,
+                    objective.step_order,
+                    objective.description,
+                    objective.zone,
+                )
+                for (event_kind, normalized_subject), objectives in direct.items()
+                for objective in objectives
+            ]
+            graph_rows = [
+                (
+                    event_kind,
+                    normalized_subject,
+                    opportunity.quest_id,
+                    opportunity.path_kind,
+                    opportunity.subject,
+                    opportunity.related_item,
+                    opportunity.relationship_evidence,
+                )
+                for (event_kind, normalized_subject), opportunities in graph.items()
+                for opportunity in opportunities
+            ]
+            self.db.conn.executemany(
+                """
+                INSERT INTO activity_pathway_objectives(
+                    event_kind,normalized_subject,quest_entity_id,subject,
+                    step_order,description,zone
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                direct_rows,
+            )
+            self.db.conn.executemany(
+                """
+                INSERT INTO activity_pathway_graph(
+                    event_kind,normalized_subject,quest_entity_id,path_kind,
+                    subject,related_item,relationship_evidence
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                graph_rows,
+            )
+            self.db.set_meta(
+                "activity_pathway_catalog_version",
+                ACTIVITY_PATHWAY_CATALOG_VERSION,
+            )
+
+        return {
+            "direct": len(direct_rows),
+            "graph": len(graph_rows),
+        }
+
+    def _compiled_catalog_available(self) -> bool:
+        # Mutable builder databases continue to build from current normalized rows.
+        # Only immutable packaged knowledge is allowed to trust the finalized catalog.
+        if getattr(self.db, "knowledge_writable", True):
+            return False
+        if self._compiled_catalog_available_cache is not None:
+            return self._compiled_catalog_available_cache
+
+        rows = self.db.conn.execute(
+            """
+            SELECT name FROM sqlite_temp_master
+            WHERE type IN ('table','view')
+              AND name IN ('activity_pathway_objectives','activity_pathway_graph')
+            UNION
+            SELECT name FROM sqlite_master
+            WHERE type IN ('table','view')
+              AND name IN ('activity_pathway_objectives','activity_pathway_graph')
+            """
+        ).fetchall()
+        names = {str(row["name"]) for row in rows}
+        available = {
+            "activity_pathway_objectives",
+            "activity_pathway_graph",
+        }.issubset(names)
+        self._compiled_catalog_available_cache = available
+        return available
+
+    def _direct_candidates(self, key: tuple[str, str]):
+        if not self._compiled_catalog_available():
+            return self._ensure_index().get(key, ())
+        rows = self.db.conn.execute(
+            """
+            SELECT c.quest_entity_id,q.name AS quest_name,c.event_kind,c.subject,
+                   c.step_order,c.description,c.zone
+            FROM activity_pathway_objectives c
+            JOIN entities q ON q.id=c.quest_entity_id
+            WHERE c.event_kind=? AND c.normalized_subject=?
+            ORDER BY c.id
+            """,
+            key,
+        ).fetchall()
+        return tuple(
+            _Objective(
+                quest_id=int(row["quest_entity_id"]),
+                quest_name=str(row["quest_name"]),
+                event_kind=str(row["event_kind"]),
+                subject=str(row["subject"]),
+                step_order=int(row["step_order"]),
+                description=str(row["description"]),
+                zone=str(row["zone"] or ""),
+            )
+            for row in rows
+        )
+
+    def _graph_candidates(self, key: tuple[str, str]):
+        if not self._compiled_catalog_available():
+            return self._ensure_graph_index().get(key, ())
+        rows = self.db.conn.execute(
+            """
+            SELECT c.quest_entity_id,q.name AS quest_name,c.event_kind,c.path_kind,
+                   c.subject,c.related_item,c.relationship_evidence
+            FROM activity_pathway_graph c
+            JOIN entities q ON q.id=c.quest_entity_id
+            WHERE c.event_kind=? AND c.normalized_subject=?
+            ORDER BY c.id
+            """,
+            key,
+        ).fetchall()
+        return tuple(
+            _GraphOpportunity(
+                quest_id=int(row["quest_entity_id"]),
+                quest_name=str(row["quest_name"]),
+                event_kind=str(row["event_kind"]),
+                path_kind=str(row["path_kind"]),
+                subject=str(row["subject"]),
+                related_item=str(row["related_item"] or ""),
+                relationship_evidence=str(row["relationship_evidence"] or ""),
+            )
+            for row in rows
+        )
+
     def _ensure_index(self) -> dict[tuple[str, str], list[_Objective]]:
         if self._index is None:
             self._index = self._build_index()
@@ -440,15 +619,13 @@ class ActivityPathwayEngine:
     ) -> list[PathwaySuggestion]:
         if not self._counts:
             return []
-        index = self._ensure_index()
-        graph_index = self._ensure_graph_index()
         grouped: dict[int, dict[str, Any]] = {}
         zone_key = normalize_name(current_zone or "")
 
         for key, count in self._counts.items():
             if count <= 0:
                 continue
-            for objective in index.get(key, ()):
+            for objective in self._direct_candidates(key):
                 direct_count = self._direct_observed_count(key, objective)
                 if direct_count <= 0:
                     continue
@@ -480,7 +657,7 @@ class ActivityPathwayEngine:
                     )
                 )
 
-            for opportunity in graph_index.get(key, ()):
+            for opportunity in self._graph_candidates(key):
                 entry = self._entry_for(
                     grouped, opportunity.quest_id, opportunity.quest_name
                 )

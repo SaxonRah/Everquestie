@@ -1242,6 +1242,44 @@ class EverQuestieApp(tk.Tk):
             try:
                 worker_db = Database(db_path)
                 summary = AllakhazamMirrorImporter(worker_db).import_mirror(folder)
+
+                # Source-checkout/developer play should use the same bounded lookup
+                # catalogs as packaged runtime. Rebuild them only when mirror facts
+                # changed or a previous knowledge edit marked the catalog stale.
+                from .activity_pathways import (
+                    ACTIVITY_PATHWAY_CATALOG_VERSION,
+                    ActivityPathwayEngine,
+                )
+                from .zone_opportunities import (
+                    ZONE_OPPORTUNITY_CATALOG_VERSION,
+                    compile_zone_opportunity_catalog,
+                )
+
+                if (
+                    summary.changed
+                    or worker_db.get_meta(
+                        "zone_opportunity_catalog_version",
+                        "",
+                    ) != ZONE_OPPORTUNITY_CATALOG_VERSION
+                    or worker_db.get_meta(
+                        "zone_opportunity_catalog_dirty",
+                        "1",
+                    ) == "1"
+                ):
+                    compile_zone_opportunity_catalog(worker_db)
+
+                if (
+                    summary.changed
+                    or worker_db.get_meta(
+                        "activity_pathway_catalog_version",
+                        "",
+                    ) != ACTIVITY_PATHWAY_CATALOG_VERSION
+                    or worker_db.get_meta(
+                        "activity_pathway_catalog_dirty",
+                        "1",
+                    ) == "1"
+                ):
+                    ActivityPathwayEngine(worker_db).compile_catalog()
             except Exception as exc:
                 if worker_db is not None:
                     try:
@@ -1275,6 +1313,11 @@ class EverQuestieApp(tk.Tk):
             self.db_mirror_import_button.configure(state="normal")
 
         self.db.set_meta("allakhazam_db_mirror", folder)
+
+        pathway_engine = getattr(self, "activity_pathway_engine", None)
+        reset_pathway_cache = getattr(pathway_engine, "reset_knowledge_cache", None)
+        if callable(reset_pathway_cache):
+            reset_pathway_cache()
 
         relationships = sum(r.relationships for r in summary.imported)
         discovered = sum(r.discovered_entities for r in summary.imported)

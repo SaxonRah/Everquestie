@@ -5,6 +5,7 @@ This checklist tracks the performance hardening required now that the knowledge 
 ## P0 — restore normal client responsiveness
 
 - [x] Defer full SQLite integrity checks; never run `PRAGMA integrity_check` during normal startup.
+- [x] Defer detailed source/provenance aggregate scans during builder and packaged startup.
 - [x] Version database migrations so historical backfills run once instead of on every `Database(...)` open.
 - [x] Make `Database.entity()` a lightweight normalized-entity lookup; fetch archived source text only on explicit demand.
 - [x] Replace Recent Loot's full item + alias corpus scan with indexed lookups for only observed item names.

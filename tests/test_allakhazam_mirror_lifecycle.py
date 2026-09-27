@@ -121,6 +121,61 @@ class AllakhazamMirrorLifecycleTests(unittest.TestCase):
         self.assertEqual(second.changed, 0)
         self.assertEqual(second.unchanged, 1)
 
+    def test_mirror_import_can_cancel_and_resume_without_discarding_completed_pages(self):
+        mirror = self.root / "cancel-mirror"
+        mirror.mkdir()
+
+        for index in (1, 2):
+            (mirror / f"quest-{index}.html").write_text(
+                f"""
+                <html><head>
+                  <title>Cancel Quest {index} :: EverQuest</title>
+                  <link rel="canonical" href="https://everquest.allakhazam.com/db/quest.html?quest=8800{index}">
+                </head><body>
+                  <h1>Cancel Quest {index}</h1>
+                  <table>
+                    <tr><td><strong>Quest Started By:</strong></td><td>Nobody</td></tr>
+                  </table>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+
+        progress_calls: list[int] = []
+
+        def progress(summary, _path) -> None:
+            progress_calls.append(summary.processed)
+
+        first = self.importer.import_mirror(
+            mirror,
+            progress=progress,
+            cancelled=lambda: bool(progress_calls),
+            progress_every=1,
+        )
+
+        self.assertTrue(first.cancelled)
+        self.assertEqual(first.processed, 1)
+        self.assertEqual(first.changed, 1)
+        self.assertIn(1, progress_calls)
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM source_pages WHERE source_name='Allakhazam'"
+            ).fetchone()[0],
+            1,
+        )
+
+        second = self.importer.import_mirror(mirror)
+        self.assertFalse(second.cancelled)
+        self.assertEqual(second.processed, 2)
+        self.assertEqual(second.changed, 1)
+        self.assertEqual(second.unchanged, 1)
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) FROM source_pages WHERE source_name='Allakhazam'"
+            ).fetchone()[0],
+            2,
+        )
+
     def test_dates_are_not_promoted_when_explicit_lifecycle_field_is_absent(self):
         path = self.root / "item-no-expansion.html"
         path.write_text(

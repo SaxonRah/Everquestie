@@ -71,6 +71,7 @@ KNOWLEDGE_KIND_LABELS = {
     "help": "Official Help",
 }
 KNOWLEDGE_CHILD_LIMIT = 1000
+TRACKED_RECONCILE_META_KEY = "tracked_reconcile_knowledge_revision"
 
 
 class EverQuestieApp(tk.Tk):
@@ -143,12 +144,10 @@ class EverQuestieApp(tk.Tk):
             value=self._initial_client_compile_status()
         )
 
-        # If a previous run already observed the quest assignment/progress, rebuild
-        # tracked quests immediately after an Allakhazam graph upgrade. If the
-        # stored history lacks a reliable boundary, reconciliation preserves the
-        # existing progress instead of guessing.
-        for tracked in self.db.tracked_quests():
-            self.quest_engine.reconcile_quest_from_history(int(tracked["id"]))
+        # Historical tracked-quest replay is a knowledge-upgrade migration, not
+        # normal startup work. Packaged runtime schedules it once per snapshot after
+        # the UI is visible; builder imports reconcile changed tracked quests directly.
+        self._startup_reconcile_running = False
 
         self._knowledge_entity_by_item: dict[str, int] = {}
         self._knowledge_kind_nodes: dict[str, str] = {}
@@ -171,8 +170,119 @@ class EverQuestieApp(tk.Tk):
         self._bind_settings_autosave()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(0, self._ensure_builder_runtime_catalogs_async)
+        self.after(0, self._maybe_reconcile_tracked_quests_async)
         self.after(100, self._drain_lines)
         self.after(400, self._refresh_guidance)
+
+    def _tracked_reconcile_revision(self) -> str:
+        """Return the immutable knowledge revision that owns quest-step semantics."""
+        if not getattr(self.db, "runtime_split", False):
+            return ""
+        version = self.db.get_meta("knowledge_snapshot_version", "").strip()
+        built_at = self.db.get_meta("knowledge_snapshot_built_at", "").strip()
+        if not version:
+            return ""
+        return f"{version}|{built_at}"
+
+    def _maybe_reconcile_tracked_quests_async(self) -> None:
+        """Replay stored history once after a packaged knowledge upgrade.
+
+        Quest progress is persistent writable player state, so replaying every tracked
+        quest on every launch is wasted work. The old synchronous constructor path also
+        multiplied startup cost by tracked quests × stored event history. Runtime now
+        performs that migration once per immutable snapshot on a worker connection.
+        """
+        if getattr(self, "_closing", False):
+            return
+        if not getattr(self.db, "runtime_split", False):
+            return
+        if getattr(self, "_startup_reconcile_running", False):
+            return
+
+        revision = self._tracked_reconcile_revision()
+        if not revision:
+            return
+        if self.db.get_meta(TRACKED_RECONCILE_META_KEY, "") == revision:
+            return
+
+        tracked_ids = [int(row["id"]) for row in self.db.tracked_quests()]
+        if not tracked_ids:
+            self.db.set_meta(TRACKED_RECONCILE_META_KEY, revision)
+            return
+
+        self._startup_reconcile_running = True
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="disabled")
+        self.status.set(
+            f"Refreshing {len(tracked_ids):,} tracked quest(s) for updated knowledge…"
+        )
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = self.db.open_worker_connection()
+                events = worker_db.observed_event_history()
+                engine = QuestEngine(worker_db)
+                for quest_id in tracked_ids:
+                    engine.reconcile_quest_from_events(
+                        quest_id,
+                        events,
+                        source="stored observation history after knowledge update",
+                    )
+                worker_db.set_meta(TRACKED_RECONCILE_META_KEY, revision)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                if not getattr(self, "_closing", False):
+                    try:
+                        self.after(
+                            0,
+                            lambda exc=exc: self._finish_startup_reconcile_error(exc),
+                        )
+                    except Exception:
+                        pass
+                return
+
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            if not getattr(self, "_closing", False):
+                try:
+                    self.after(
+                        0,
+                        lambda count=len(tracked_ids): self._finish_startup_reconcile(count),
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieTrackedQuestUpgrade",
+            daemon=True,
+        ).start()
+
+    def _finish_startup_reconcile(self, count: int) -> None:
+        self._startup_reconcile_running = False
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="normal")
+        self.status.set(f"Tracked quest knowledge refresh complete: {count:,} quest(s)")
+        try:
+            self._refresh_guidance()
+        except Exception:
+            pass
+
+    def _finish_startup_reconcile_error(self, exc: Exception) -> None:
+        self._startup_reconcile_running = False
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="normal")
+        self.status.set(f"Tracked quest knowledge refresh deferred: {exc}")
 
     def _ensure_builder_runtime_catalogs_async(self) -> None:
         """Prepare compact Live lookup catalogs without blocking Tk startup."""
@@ -309,9 +419,12 @@ class EverQuestieApp(tk.Tk):
             side="left", fill="x", expand=True, padx=6
         )
         ttk.Button(top, text="Browse…", command=self._browse_log).pack(side="left")
-        ttk.Button(top, text="Start monitoring", command=self._start).pack(
-            side="left", padx=(6, 0)
+        self.start_monitor_button = ttk.Button(
+            top,
+            text="Start monitoring",
+            command=self._start,
         )
+        self.start_monitor_button.pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Stop", command=self._stop).pack(side="left", padx=(6, 0))
 
         notebook = ttk.Notebook(self)
@@ -1759,6 +1872,12 @@ class EverQuestieApp(tk.Tk):
                 self.map_view.suggest_root_from_log(path)
 
     def _start(self):
+        if getattr(self, "_startup_reconcile_running", False):
+            self.status.set(
+                "Tracked quest state is being refreshed for updated knowledge; "
+                "monitoring will be available when that one-time migration finishes."
+            )
+            return
         path = self.log_path.get().strip()
         if not path:
             self._browse_log()

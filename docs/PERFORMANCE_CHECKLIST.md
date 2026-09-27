@@ -12,6 +12,7 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Replace runtime tracked-quest scans with indexed state-key/name/external-ID lookup.
 - [x] Cache immutable runtime profile/zone decisions.
 - [x] Add/verify runtime indexes for location-by-zone, observed-event cursoring, quest-step zone lookup, and source classification.
+- [x] Remove synchronous tracked-quest history replay from startup; replay once per packaged knowledge revision on a split worker connection.
 
 ## P1 — remove remaining corpus-size work from interactive paths
 

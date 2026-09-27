@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from .db import normalize_name
@@ -22,6 +22,18 @@ class ActivityFactionSignal:
     @property
     def total(self) -> int:
         return int(self.better) + int(self.worse)
+
+
+@dataclass(slots=True)
+class _ActivityClusterAccumulator:
+    last_event_id: int
+    mob_counts: Counter[str] = field(default_factory=Counter)
+    mob_labels: dict[str, str] = field(default_factory=dict)
+    item_counts: Counter[str] = field(default_factory=Counter)
+    item_labels: dict[str, str] = field(default_factory=dict)
+    faction_better: Counter[str] = field(default_factory=Counter)
+    faction_worse: Counter[str] = field(default_factory=Counter)
+    faction_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,50 +152,90 @@ def activity_cluster_summary(
             # a stale caller-side current_zone value across this boundary.
             zone = ""
 
-    rows = db.conn.execute(
-        """
-        SELECT kind, actor, target, item
-        FROM observed_events
-        WHERE id>? AND kind IN ('kill','loot','faction_up','faction_down')
-        ORDER BY id
-        """,
-        (segment_after,),
-    ).fetchall()
+    cache = getattr(db, "_activity_cluster_accumulators", None)
+    if cache is None:
+        cache = {}
+        setattr(db, "_activity_cluster_accumulators", cache)
 
-    mob_counts: Counter[str] = Counter()
-    mob_labels: dict[str, str] = {}
-    item_counts: Counter[str] = Counter()
-    item_labels: dict[str, str] = {}
-    faction_better: Counter[str] = Counter()
-    faction_worse: Counter[str] = Counter()
-    faction_labels: dict[str, str] = {}
+    cache_key = (boundary, segment_after)
+    accumulator = cache.get(cache_key)
+    if accumulator is None:
+        accumulator = _ActivityClusterAccumulator(last_event_id=segment_after)
+        cache[cache_key] = accumulator
+        # Monitoring normally owns only one active segment. Keep a small bounded set
+        # for session recap/tests without allowing long-running clients to accumulate
+        # one Python counter graph per historical zone forever.
+        while len(cache) > 16:
+            oldest = next(iter(cache))
+            if oldest == cache_key and len(cache) == 1:
+                break
+            cache.pop(oldest, None)
 
-    for row in rows:
-        kind = str(row["kind"] or "").casefold()
-        if kind == "kill":
-            _add(mob_counts, mob_labels, row["actor"])
-        elif kind == "loot":
-            _add(item_counts, item_labels, row["item"])
-        elif kind == "faction_up":
-            _add(faction_better, faction_labels, row["target"])
-        elif kind == "faction_down":
-            _add(faction_worse, faction_labels, row["target"])
+    upper_row = db.conn.execute(
+        "SELECT COALESCE(MAX(id),0) AS n FROM observed_events"
+    ).fetchone()
+    upper_id = int(upper_row["n"] if upper_row is not None else accumulator.last_event_id)
+    if upper_id > accumulator.last_event_id:
+        rows = db.conn.execute(
+            """
+            SELECT id,kind,actor,target,item
+            FROM observed_events
+            WHERE id>? AND id<=?
+              AND kind IN ('kill','loot','faction_up','faction_down')
+            ORDER BY id
+            """,
+            (accumulator.last_event_id, upper_id),
+        ).fetchall()
 
-    faction_messages = sum(faction_better.values()) + sum(faction_worse.values())
+        for row in rows:
+            kind = str(row["kind"] or "").casefold()
+            if kind == "kill":
+                _add(accumulator.mob_counts, accumulator.mob_labels, row["actor"])
+            elif kind == "loot":
+                _add(accumulator.item_counts, accumulator.item_labels, row["item"])
+            elif kind == "faction_up":
+                _add(
+                    accumulator.faction_better,
+                    accumulator.faction_labels,
+                    row["target"],
+                )
+            elif kind == "faction_down":
+                _add(
+                    accumulator.faction_worse,
+                    accumulator.faction_labels,
+                    row["target"],
+                )
+        accumulator.last_event_id = upper_id
+
+    faction_messages = (
+        sum(accumulator.faction_better.values())
+        + sum(accumulator.faction_worse.values())
+    )
     return ActivityClusterSummary(
         session_after_event_id=boundary,
         segment_after_event_id=segment_after,
         zone=zone,
-        relevant_events=sum(mob_counts.values()) + sum(item_counts.values()),
-        mobs_observed_slain=sum(mob_counts.values()),
-        items_looted=sum(item_counts.values()),
+        relevant_events=(
+            sum(accumulator.mob_counts.values())
+            + sum(accumulator.item_counts.values())
+        ),
+        mobs_observed_slain=sum(accumulator.mob_counts.values()),
+        items_looted=sum(accumulator.item_counts.values()),
         faction_messages=faction_messages,
-        top_mobs=_top(mob_counts, mob_labels, top_limit),
-        top_items=_top(item_counts, item_labels, top_limit),
+        top_mobs=_top(
+            accumulator.mob_counts,
+            accumulator.mob_labels,
+            top_limit,
+        ),
+        top_items=_top(
+            accumulator.item_counts,
+            accumulator.item_labels,
+            top_limit,
+        ),
         top_factions=_top_factions(
-            faction_better,
-            faction_worse,
-            faction_labels,
+            accumulator.faction_better,
+            accumulator.faction_worse,
+            accumulator.faction_labels,
             top_limit,
         ),
     )

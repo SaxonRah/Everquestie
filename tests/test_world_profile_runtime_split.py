@@ -8,7 +8,7 @@ import unittest
 from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.runtime import RuntimeDatabase
-from eqquest.world_profiles import active_world_profile_id, set_active_world_profile
+from eqquest.world_profiles import active_world_profile_id, set_active_world_profile, zone_profile_decisions
 
 
 class WorldProfileRuntimeSplitTests(unittest.TestCase):
@@ -70,6 +70,43 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
             reopened.close()
 
         self.assertEqual(self._digest(knowledge), before)
+
+    def test_runtime_zone_profile_decisions_are_cached_per_profile(self):
+        working = self.root / "cache-working.sqlite3"
+        knowledge = self.root / "cache-knowledge.sqlite3"
+        state = self.root / "cache-user.sqlite3"
+
+        builder = Database(working)
+        try:
+            builder.upsert_entity(
+                kind="zone",
+                name="West Freeport",
+                external_id="9",
+                external_namespace="eqclient:zone",
+                data={"expansion": "EverQuest"},
+            )
+        finally:
+            builder.close()
+
+        create_knowledge_snapshot(
+            working,
+            knowledge,
+            snapshot_version="profile-cache-test",
+            overwrite=True,
+        )
+
+        runtime = RuntimeDatabase(knowledge, state)
+        try:
+            live_first = zone_profile_decisions(runtime, "live")
+            live_second = zone_profile_decisions(runtime, "live")
+            self.assertIs(live_first, live_second)
+
+            p99 = zone_profile_decisions(runtime, "p99")
+            cache = getattr(runtime, "_zone_profile_decisions_cache")
+            self.assertIs(cache["live"], live_first)
+            self.assertIs(cache["p99"], p99)
+        finally:
+            runtime.close()
 
 
 if __name__ == "__main__":

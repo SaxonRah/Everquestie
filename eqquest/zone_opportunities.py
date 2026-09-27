@@ -168,7 +168,7 @@ def compile_zone_opportunity_catalog(db) -> dict[str, int]:
     if (
         not compiled_available
         and getattr(db, "knowledge_writable", True)
-        and getattr(db, "_runtime_catalog_building", False)
+        and getattr(db, "_prefer_bounded_runtime_catalogs", False)
     ):
         return ()
 

@@ -331,7 +331,7 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
         recognized_entity_types = set(ENTITY_KINDS) | {"spell"}
         summary = MirrorImportResult()
         with self.db.batch():
-            for path in sorted(root.rglob("*.htm*")):
+            for path in root.rglob("*.htm*"):
                 if path.name.lower().endswith(".tmp"):
                     summary.ignored += 1
                     continue

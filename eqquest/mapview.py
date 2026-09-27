@@ -318,6 +318,8 @@ class MapViewerFrame(ttk.Frame):
         ttk.Button(lookup_row, text="Search", command=lambda: self._lookup_name(self.lookup_query.get())).grid(row=0, column=1, padx=(4, 0))
         self.index_maps_button = ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog)
         self.index_maps_button.grid(row=0, column=2, padx=(4, 0))
+        if not getattr(self.db, "knowledge_writable", True):
+            self.index_maps_button.configure(state="disabled")
 
         self.lookup_tree = ttk.Treeview(side, columns=("kind", "relation"), show="tree headings", height=8, selectmode="browse")
         self.lookup_tree.heading("#0", text="Name")
@@ -393,12 +395,19 @@ class MapViewerFrame(ttk.Frame):
         self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files | catalog refresh is manual")
 
     def ensure_map_catalog(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            return
         root = self.map_root.get().strip()
         if not root or not Path(root).is_dir() or self._catalog_indexing:
             return
         self.index_map_catalog()
 
     def index_map_catalog(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.lookup_status.set(
+                "Map catalog is shipped immutable knowledge; local map files are rendering assets only."
+            )
+            return
         root = self.map_root.get().strip()
         if not root or not Path(root).is_dir():
             self.lookup_status.set("Choose a valid map pack before indexing.")
@@ -455,7 +464,8 @@ class MapViewerFrame(ttk.Frame):
                     continue
 
                 self._catalog_indexing = False
-                self.index_maps_button.configure(state="normal")
+                if getattr(self.db, "knowledge_writable", True):
+                    self.index_maps_button.configure(state="normal")
                 if status == "ok":
                     stats = payload
                     self.catalog_progress.configure(maximum=1.0)

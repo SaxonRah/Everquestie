@@ -157,6 +157,28 @@ A source checkout can be launched without MCP:
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
 
 
+## Builder path resolution
+
+The full knowledge build reads the same `%USERPROFILE%\.eqquest\settings.ini`
+used by the EverQuestie UI for local source paths. Before starting a long rebuild,
+you can print exactly what the builder will use:
+
+```powershell
+python .\tools\resolve_builder_paths.py
+```
+
+The resolver reads:
+
+- `everquest_install`
+- `allakhazam_db_mirror`
+- `mcp_repository`
+- `map_root`
+
+For Allakhazam, `allakhazam_db_mirror` may point either to the HTTrack project
+directory or directly to its `everquest.allakhazam.com` child; the builder derives
+both paths. For maps, a parent maps directory or either Good's/Brewall pack directory
+is accepted and the sibling pack is derived.
+
 ## Clean full knowledge rebuild
 
 The canonical full build already writes a new `build\working.sqlite3.building`

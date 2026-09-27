@@ -132,6 +132,38 @@ def entity_profile_decision(
     entity_id: int,
     profile_id: str | None = None,
 ) -> EntityProfileDecision:
+    """Return a cached profile projection when packaged knowledge is immutable."""
+    profile = world_profile(profile_id or active_world_profile_id(db))
+    key = (profile.profile_id, int(entity_id))
+
+    if not getattr(db, "knowledge_writable", True):
+        cache = getattr(db, "_entity_profile_decision_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(db, "_entity_profile_decision_cache", cache)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        result = _compute_entity_profile_decision(
+            db,
+            int(entity_id),
+            profile.profile_id,
+        )
+        cache[key] = result
+        return result
+
+    return _compute_entity_profile_decision(
+        db,
+        int(entity_id),
+        profile.profile_id,
+    )
+
+
+def _compute_entity_profile_decision(
+    db: Database,
+    entity_id: int,
+    profile_id: str | None = None,
+) -> EntityProfileDecision:
     """Project one knowledge entity through the active gameplay profile.
 
     Decision precedence is deliberate:

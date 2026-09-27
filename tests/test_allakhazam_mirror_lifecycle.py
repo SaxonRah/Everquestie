@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from eqquest.allakhazam_mirror_importer import AllakhazamMirrorImporter
 from eqquest.db import Database
@@ -78,6 +79,47 @@ class AllakhazamMirrorLifecycleTests(unittest.TestCase):
         evidence = entity_expansion_evidence(self.db, result.entity_id)
         self.assertEqual(tuple(record.expansion for record in evidence), ("Scars of Velious",))
         self.assertIs(p99_expansion_allowed("Scars of Velious"), True)
+
+    def test_mirror_refresh_skips_unchanged_file_before_reading_or_hashing(self):
+        mirror = self.root / "mirror"
+        mirror.mkdir()
+        path = mirror / "cached-quest.html"
+        path.write_text(
+            """
+            <html><head>
+              <title>Cached Quest :: EverQuest</title>
+              <link rel="canonical" href="https://everquest.allakhazam.com/db/quest.html?quest=998877">
+            </head><body>
+              <h1>Cached Quest</h1>
+              <table>
+                <tr><td><strong>Quest Started By:</strong></td><td>Nobody</td></tr>
+              </table>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+
+        first = self.importer.import_mirror(mirror)
+        self.assertEqual(first.changed, 1)
+
+        stored = self.db.conn.execute(
+            """
+            SELECT local_path,local_mtime_ns,local_size
+            FROM source_pages
+            WHERE url='https://everquest.allakhazam.com/db/quest.html?quest=998877'
+            """
+        ).fetchone()
+        self.assertEqual(stored["local_path"], str(path.resolve()))
+        self.assertGreater(int(stored["local_mtime_ns"]), 0)
+        self.assertGreater(int(stored["local_size"]), 0)
+
+        # The second refresh must use stat + indexed fingerprint lookup. If it tries
+        # to decode/hash the HTML again, this patched read fails the test.
+        with patch.object(Path, "read_text", side_effect=AssertionError("unexpected file read")):
+            second = self.importer.import_mirror(mirror)
+
+        self.assertEqual(second.changed, 0)
+        self.assertEqual(second.unchanged, 1)
 
     def test_dates_are_not_promoted_when_explicit_lifecycle_field_is_absent(self):
         path = self.root / "item-no-expansion.html"

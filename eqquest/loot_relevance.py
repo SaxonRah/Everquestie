@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from .db import normalize_name
@@ -47,6 +47,67 @@ class LootRelevance:
         extra = len(self.uses) - 1
         suffix = f" + {extra} more" if extra else ""
         return f"{first.relation_label}: {first.quest_name}{suffix}"
+
+
+@dataclass(slots=True)
+class LootSessionObservationIndex:
+    """Incremental aggregation of looted item labels for one monitoring session."""
+
+    after_event_id: int = 0
+    last_event_id: int = 0
+    counts: dict[str, int] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
+    last_ids: dict[str, int] = field(default_factory=dict)
+
+    def reset(self, after_event_id: int) -> None:
+        boundary = max(0, int(after_event_id))
+        self.after_event_id = boundary
+        self.last_event_id = boundary
+        self.counts.clear()
+        self.labels.clear()
+        self.last_ids.clear()
+
+    def refresh(self, db, after_event_id: int) -> None:
+        boundary = max(0, int(after_event_id))
+        if self.after_event_id != boundary or self.last_event_id < boundary:
+            self.reset(boundary)
+
+        latest = db.conn.execute(
+            "SELECT COALESCE(MAX(id),0) AS n FROM observed_events"
+        ).fetchone()
+        upper = int(latest["n"] if latest is not None else self.last_event_id)
+        if upper <= self.last_event_id:
+            return
+
+        rows = db.conn.execute(
+            """
+            SELECT id,item
+            FROM observed_events
+            WHERE id>? AND id<=? AND kind='loot' AND COALESCE(item,'')<>''
+            ORDER BY id
+            """,
+            (int(self.last_event_id), upper),
+        ).fetchall()
+        for row in rows:
+            label = " ".join(str(row["item"] or "").split()).strip()
+            key = normalize_name(label)
+            if not key:
+                continue
+            self.counts[key] = self.counts.get(key, 0) + 1
+            self.labels.setdefault(key, label)
+            self.last_ids[key] = max(self.last_ids.get(key, 0), int(row["id"]))
+
+        self.last_event_id = upper
+
+    def observed_rows(self) -> list[tuple[str, int, int]]:
+        return [
+            (
+                self.labels.get(key, key),
+                int(count),
+                int(self.last_ids.get(key, 0)),
+            )
+            for key, count in self.counts.items()
+        ]
 
 
 def _bounded(text: str, limit: int = 500) -> str:
@@ -210,6 +271,7 @@ def recent_loot_relevance(
     after_event_id: int,
     *,
     limit_items: int = 10,
+    observation_index: LootSessionObservationIndex | None = None,
 ) -> tuple[LootRelevance, ...]:
     """Return source-backed quest relevance for exact loot observed this session.
 
@@ -217,34 +279,47 @@ def recent_loot_relevance(
     unambiguous canonical item identity and reviewed source-backed quest-item relations.
     Items with no reviewed quest use stay quiet rather than being guessed useful/useless.
     """
-    rows = db.conn.execute(
-        """
-        SELECT item, COUNT(*) AS observed_count, MAX(id) AS last_event_id
-        FROM observed_events
-        WHERE id>? AND kind='loot' AND COALESCE(item,'')<>''
-        GROUP BY item COLLATE NOCASE
-        ORDER BY last_event_id DESC
-        """,
-        (int(after_event_id),),
-    ).fetchall()
-    if not rows:
+    if observation_index is None:
+        rows = db.conn.execute(
+            """
+            SELECT item, COUNT(*) AS observed_count, MAX(id) AS last_event_id
+            FROM observed_events
+            WHERE id>? AND kind='loot' AND COALESCE(item,'')<>''
+            GROUP BY item COLLATE NOCASE
+            ORDER BY last_event_id DESC
+            """,
+            (int(after_event_id),),
+        ).fetchall()
+        observed_rows = [
+            (
+                str(row["item"] or ""),
+                int(row["observed_count"] or 0),
+                int(row["last_event_id"] or 0),
+            )
+            for row in rows
+        ]
+    else:
+        observation_index.refresh(db, int(after_event_id))
+        observed_rows = observation_index.observed_rows()
+
+    if not observed_rows:
         return ()
 
     unique_items = _unique_item_name_index(
         db,
-        (normalize_name(str(row["item"] or "")) for row in rows),
+        (normalize_name(item_name) for item_name, _count, _last_id in observed_rows),
     )
     counts: dict[int, int] = {}
     last_ids: dict[int, int] = {}
-    for row in rows:
-        key = normalize_name(str(row["item"] or ""))
+    for item_name, observed_count, last_event_id in observed_rows:
+        key = normalize_name(item_name)
         item_id = unique_items.get(key)
         if item_id is None:
             continue
-        counts[item_id] = counts.get(item_id, 0) + int(row["observed_count"] or 0)
+        counts[item_id] = counts.get(item_id, 0) + int(observed_count)
         last_ids[item_id] = max(
             last_ids.get(item_id, 0),
-            int(row["last_event_id"] or 0),
+            int(last_event_id),
         )
 
     uses_by_item = _quest_uses_for_items(db, counts)

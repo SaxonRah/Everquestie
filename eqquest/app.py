@@ -790,7 +790,19 @@ class EverQuestieApp(tk.Tk):
         ttk.Label(mirrors, text="Wiki mirror").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(mirrors, textvariable=self.wiki_mirror_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.wiki_mirror_var)).grid(row=1, column=2, pady=(8, 0))
-        ttk.Button(mirrors, text="Index / refresh Wiki mirror", command=self._import_wiki_mirror).grid(row=1, column=3, padx=(6, 0), pady=(8, 0))
+        self.wiki_mirror_import_button = ttk.Button(
+            mirrors,
+            text="Index / refresh Wiki mirror",
+            command=self._import_wiki_mirror,
+        )
+        self.wiki_mirror_import_button.grid(row=1, column=3, padx=(6, 0), pady=(8, 0))
+        self.wiki_mirror_cancel_button = ttk.Button(
+            mirrors,
+            text="Cancel",
+            command=self._cancel_wiki_mirror_import,
+            state="disabled",
+        )
+        self.wiki_mirror_cancel_button.grid(row=1, column=4, padx=(6, 0), pady=(8, 0))
 
         ttk.Label(
             mirrors,
@@ -1587,6 +1599,32 @@ class EverQuestieApp(tk.Tk):
         self.status.set("Allakhazam DB mirror import failed")
         messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
 
+    def _cancel_wiki_mirror_import(self) -> None:
+        cancel_event = getattr(self, "_wiki_mirror_cancel_event", None)
+        if cancel_event is None or not getattr(self, "_wiki_mirror_import_running", False):
+            return
+        cancel_event.set()
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Cancelling Allakhazam Wiki import after the current page…")
+
+    def _update_wiki_mirror_import_progress(
+        self,
+        processed: int,
+        imported: int,
+        unchanged: int,
+        ignored: int,
+        detail: str,
+    ) -> None:
+        if not getattr(self, "_wiki_mirror_import_running", False):
+            return
+        suffix = f" | {detail}" if detail else ""
+        self.status.set(
+            f"Allakhazam Wiki: {processed:,} files processed | "
+            f"{imported:,} changed | {unchanged:,} unchanged | "
+            f"{ignored:,} ignored{suffix}"
+        )
+
     def _import_wiki_mirror(self) -> None:
         if getattr(self, "_wiki_mirror_import_running", False):
             return
@@ -1604,6 +1642,12 @@ class EverQuestieApp(tk.Tk):
             return
 
         self._wiki_mirror_import_running = True
+        cancel_event = threading.Event()
+        self._wiki_mirror_cancel_event = cancel_event
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="disabled")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="normal")
         self.status.set("Indexing Allakhazam Wiki mirror in background…")
         db_path = self.db.path
 
@@ -1611,7 +1655,29 @@ class EverQuestieApp(tk.Tk):
             worker_db = None
             try:
                 worker_db = Database(db_path)
-                result = AllakhazamWikiImporter(worker_db).import_folder(folder)
+
+                def progress(result, path) -> None:
+                    detail = path.name if path is not None else ""
+                    self.after(
+                        0,
+                        lambda processed=result.processed,
+                               imported=result.imported,
+                               unchanged=result.unchanged,
+                               ignored=result.ignored,
+                               detail=detail: self._update_wiki_mirror_import_progress(
+                            processed,
+                            imported,
+                            unchanged,
+                            ignored,
+                            detail,
+                        ),
+                    )
+
+                result = AllakhazamWikiImporter(worker_db).import_folder(
+                    folder,
+                    progress=progress,
+                    cancelled=cancel_event.is_set,
+                )
             except Exception as exc:
                 if worker_db is not None:
                     try:
@@ -1640,20 +1706,44 @@ class EverQuestieApp(tk.Tk):
 
     def _finish_wiki_mirror_import(self, folder: str, result) -> None:
         self._wiki_mirror_import_running = False
+        self._wiki_mirror_cancel_event = None
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="normal")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
         self.db.set_meta("allakhazam_wiki_mirror", folder)
-        self.status.set(
-            f"Allakhazam Wiki refresh complete: {result.imported:,} changed, "
-            f"{result.unchanged:,} unchanged"
-        )
+
+        if result.cancelled:
+            self.status.set(
+                f"Allakhazam Wiki import cancelled after {result.processed:,} files; "
+                f"{result.imported:,} changed pages were preserved"
+            )
+            dialog_title = "Allakhazam Wiki import cancelled"
+        else:
+            self.status.set(
+                f"Allakhazam Wiki refresh complete: {result.imported:,} changed, "
+                f"{result.unchanged:,} unchanged"
+            )
+            dialog_title = "Allakhazam Wiki indexed"
+
         messagebox.showinfo(
-            "Allakhazam Wiki indexed",
-            f"Imported/changed: {result.imported}\nUnchanged: {result.unchanged}\nIgnored: {result.ignored}",
+            dialog_title,
+            f"Files processed: {result.processed}\n"
+            f"Cancelled: {'yes' if result.cancelled else 'no'}\n"
+            f"Imported/changed: {result.imported}\n"
+            f"Unchanged: {result.unchanged}\n"
+            f"Ignored: {result.ignored}",
         )
         self._search_knowledge()
         self._refresh_source_summary()
 
     def _finish_wiki_mirror_import_error(self, exc: Exception) -> None:
         self._wiki_mirror_import_running = False
+        self._wiki_mirror_cancel_event = None
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="normal")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
         self.status.set("Allakhazam Wiki mirror import failed")
         messagebox.showerror("Wiki mirror import failed", str(exc))
 

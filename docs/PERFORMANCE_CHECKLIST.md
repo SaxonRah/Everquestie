@@ -15,15 +15,15 @@ This checklist tracks the performance hardening required now that the knowledge 
 ## P1 — remove remaining corpus-size work from interactive paths
 
 - [x] Make entity resolution exact-first; use substring/FTS only as a bounded fallback.
-- [ ] Remove N+1 alias queries from local search ranking.
-- [ ] Precompile Activity Pathway objective/drop indexes into the release knowledge DB.
-- [ ] Precompile canonical quest-step zone IDs for Zone Opportunities.
+- [x] Remove N+1 alias queries from local search ranking.
+- [x] Precompile Activity Pathway objective/drop indexes into the release knowledge DB.
+- [x] Precompile canonical quest-step zone IDs for Zone Opportunities.
 - [ ] Bound/cursor Activity Cluster and other session projections so refresh cost depends on new events, not total session history.
 - [ ] Cache other immutable runtime projections that currently rebuild from normalized knowledge.
 
 ## P2 — shrink and isolate the shipped runtime artifact
 
-- [ ] Strip raw HTML from finalized runtime snapshots.
+- [x] Strip raw HTML from finalized runtime snapshots.
 - [ ] Decide whether runtime should retain full source-page plain text, bounded excerpts, or a separate optional source archive.
 - [ ] Ensure normal packaged EverQuestie never needs an Allakhazam mirror path.
 - [ ] Keep source import/rebuild/finalization strictly builder-only.

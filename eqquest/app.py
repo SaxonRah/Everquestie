@@ -1494,24 +1494,74 @@ class EverQuestieApp(tk.Tk):
         messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
 
     def _import_wiki_mirror(self) -> None:
+        if getattr(self, "_wiki_mirror_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Allakhazam Wiki compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = self.wiki_mirror_var.get().strip()
         if not folder:
             self._browse_source_folder(self.wiki_mirror_var)
             folder = self.wiki_mirror_var.get().strip()
         if not folder:
             return
-        try:
-            result = self.wiki_importer.import_folder(folder)
-        except Exception as exc:
-            messagebox.showerror("Wiki mirror import failed", str(exc))
-            return
+
+        self._wiki_mirror_import_running = True
+        self.status.set("Indexing Allakhazam Wiki mirror in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+                result = AllakhazamWikiImporter(worker_db).import_folder(folder)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_wiki_mirror_import_error(exc))
+                return
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            self.after(
+                0,
+                lambda result=result, folder=folder: self._finish_wiki_mirror_import(
+                    folder,
+                    result,
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamWiki",
+            daemon=True,
+        ).start()
+
+    def _finish_wiki_mirror_import(self, folder: str, result) -> None:
+        self._wiki_mirror_import_running = False
         self.db.set_meta("allakhazam_wiki_mirror", folder)
+        self.status.set(
+            f"Allakhazam Wiki refresh complete: {result.imported:,} changed, "
+            f"{result.unchanged:,} unchanged"
+        )
         messagebox.showinfo(
             "Allakhazam Wiki indexed",
             f"Imported/changed: {result.imported}\nUnchanged: {result.unchanged}\nIgnored: {result.ignored}",
         )
         self._search_knowledge()
         self._refresh_source_summary()
+
+    def _finish_wiki_mirror_import_error(self, exc: Exception) -> None:
+        self._wiki_mirror_import_running = False
+        self.status.set("Allakhazam Wiki mirror import failed")
+        messagebox.showerror("Wiki mirror import failed", str(exc))
 
     def _browse_log(self):
         path = filedialog.askopenfilename(
@@ -2356,6 +2406,14 @@ class EverQuestieApp(tk.Tk):
         self._refresh_source_summary()
 
     def _import_html_folder(self, folder_override: str | None = None):
+        if getattr(self, "_html_folder_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Saved Allakhazam folder import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = folder_override or filedialog.askdirectory(
             title="Choose local Allakhazam DB mirror or saved HTML folder",
             initialdir=self._existing_initial_dir(
@@ -2366,21 +2424,53 @@ class EverQuestieApp(tk.Tk):
             return
         self.settings.set_path("last_allakhazam_import_dir", folder)
         self.settings.save()
-        try:
-            results = self.importer.import_folder(folder)
-        except Exception as exc:
-            messagebox.showerror("Folder import failed", str(exc))
-            return
+
+        self._html_folder_import_running = True
+        self.status.set("Importing saved Allakhazam folder in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+                results = AllakhazamImporter(worker_db).import_folder(folder)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_html_folder_import_error(exc))
+                return
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            self.after(0, lambda results=results: self._finish_html_folder_import(results))
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamFolder",
+            daemon=True,
+        ).start()
+
+    def _finish_html_folder_import(self, results) -> None:
+        self._html_folder_import_running = False
         if not results:
+            self.status.set("Saved Allakhazam folder import found no entity pages")
             messagebox.showinfo("Import", "No recognizable Allakhazam entity pages were found.")
             return
+
         relationships = sum(r.relationships for r in results)
         discovered = sum(r.discovered_entities for r in results)
         steps = sum(r.quest_steps for r in results)
         locations = sum(r.locations for r in results)
+        tracked_ids = {int(row["id"]) for row in self.db.tracked_quests()}
         for imported in results:
-            if imported.kind == "quest" and self.db.is_quest_tracked(imported.entity_id):
+            if imported.kind == "quest" and int(imported.entity_id) in tracked_ids:
                 self._reconcile_tracked_quest(imported.entity_id)
+
+        self.status.set(f"Saved Allakhazam folder import complete: {len(results):,} changed pages")
         messagebox.showinfo(
             "Imported folder",
             f"Pages imported: {len(results)}\n"
@@ -2392,6 +2482,11 @@ class EverQuestieApp(tk.Tk):
         self._search_knowledge()
         self._refresh_guidance()
         self._refresh_source_summary()
+
+    def _finish_html_folder_import_error(self, exc: Exception) -> None:
+        self._html_folder_import_running = False
+        self.status.set("Saved Allakhazam folder import failed")
+        messagebox.showerror("Folder import failed", str(exc))
 
     def _on_close(self):
         """Fast shutdown path with no Live intelligence recomputation."""

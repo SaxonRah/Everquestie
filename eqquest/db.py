@@ -129,6 +129,8 @@ CREATE INDEX IF NOT EXISTS ix_locations_entity
 ON entity_locations(entity_id);
 CREATE INDEX IF NOT EXISTS ix_locations_source_page
 ON entity_locations(source_page_id);
+CREATE INDEX IF NOT EXISTS ix_locations_zone
+ON entity_locations(zone_entity_id);
 
 CREATE TABLE IF NOT EXISTS quest_steps (
     id INTEGER PRIMARY KEY,
@@ -143,6 +145,8 @@ CREATE TABLE IF NOT EXISTS quest_steps (
 
 CREATE INDEX IF NOT EXISTS ix_quest_steps_source_page
 ON quest_steps(source_page_id);
+CREATE INDEX IF NOT EXISTS ix_quest_steps_zone
+ON quest_steps(zone COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS tracked_quests (
     quest_entity_id INTEGER PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
@@ -226,12 +230,16 @@ CREATE TABLE IF NOT EXISTS observed_events (
 
 CREATE INDEX IF NOT EXISTS ix_observed_events_kind
 ON observed_events(kind);
+CREATE INDEX IF NOT EXISTS ix_observed_events_kind_id
+ON observed_events(kind, id);
 
 CREATE TABLE IF NOT EXISTS app_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
+
+DATABASE_SCHEMA_VERSION = 2
 
 
 def normalize_name(name: str) -> str:
@@ -244,13 +252,34 @@ class Database:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self._batch_depth = 0
+
+        # Detect databases produced by the preceding schema before SCHEMA's
+        # CREATE TABLE IF NOT EXISTS statements make a fresh database look identical.
+        # Those builds already replayed the legacy identity backfills on every open,
+        # so upgrading them can mark that migration complete without walking the full
+        # Allakhazam entity corpus one more time.
+        preexisting_tables = {
+            str(row["name"])
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        identity_tables_preexisting = {
+            "entity_sources",
+            "entity_external_ids",
+        }.issubset(preexisting_tables)
+
         self.conn.executescript(SCHEMA)
-        self._migrate()
+        self._migrate(identity_tables_preexisting=identity_tables_preexisting)
         self.fts_available = self._ensure_fts()
         self._commit()
 
-    def _migrate(self) -> None:
-        """Additive migrations while preserving existing ~/.eqquest databases."""
+    def _migrate(self, *, identity_tables_preexisting: bool = False) -> None:
+        """Additive, versioned migrations for existing builder databases.
+
+        Whole-table backfills are never replayed merely because Database() was opened.
+        The database_schema_version metadata records completed corpus-scale work.
+        """
         # v0.9 generalizes source_pages into a multi-source provenance record while
         # retaining the old table name so existing Allakhazam imports stay valid.
         source_cols = {
@@ -310,23 +339,65 @@ class Database:
             """
         )
 
-        # Backfill primary-source links for rows created before entity_sources existed.
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO entity_sources(entity_id, source_page_id, role)
-            SELECT id, source_page_id, 'primary'
-            FROM entities
-            WHERE source_page_id IS NOT NULL
-            """
-        )
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO entity_external_ids(entity_id, namespace, external_id, source_page_id)
-            SELECT id, 'allakhazam:' || kind, external_id, source_page_id
-            FROM entities
-            WHERE external_id<>'' AND source_url LIKE '%everquest.allakhazam.com/%'
-            """
-        )
+        version_row = self.conn.execute(
+            "SELECT value FROM app_meta WHERE key='database_schema_version'"
+        ).fetchone()
+        try:
+            schema_version = int(version_row["value"]) if version_row is not None else 0
+        except (TypeError, ValueError):
+            schema_version = 0
+
+        if schema_version < 1:
+            # Current pre-versioning databases already contain these identity tables
+            # and have run these backfills on every previous open. Avoid forcing one
+            # more full-corpus pass during the upgrade. Truly older databases, where
+            # the tables did not exist before SCHEMA ran, still receive the required
+            # one-time backfill.
+            if not identity_tables_preexisting:
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO entity_sources(entity_id, source_page_id, role)
+                    SELECT id, source_page_id, 'primary'
+                    FROM entities
+                    WHERE source_page_id IS NOT NULL
+                    """
+                )
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO entity_external_ids(
+                        entity_id, namespace, external_id, source_page_id
+                    )
+                    SELECT id, 'allakhazam:' || kind, external_id, source_page_id
+                    FROM entities
+                    WHERE external_id<>'' AND source_url LIKE '%everquest.allakhazam.com/%'
+                    """
+                )
+            schema_version = 1
+
+        if schema_version < 2:
+            self.conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS ix_locations_zone
+                ON entity_locations(zone_entity_id);
+                CREATE INDEX IF NOT EXISTS ix_observed_events_kind_id
+                ON observed_events(kind, id);
+                CREATE INDEX IF NOT EXISTS ix_quest_steps_zone
+                ON quest_steps(zone COLLATE NOCASE);
+                CREATE INDEX IF NOT EXISTS ix_source_pages_kind_name
+                ON source_pages(source_kind, source_name);
+                """
+            )
+            schema_version = 2
+
+        if schema_version <= DATABASE_SCHEMA_VERSION:
+            self.conn.execute(
+                """
+                INSERT INTO app_meta(key, value)
+                VALUES('database_schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (str(DATABASE_SCHEMA_VERSION),),
+            )
 
     def _ensure_fts(self) -> bool:
         """Create the local full-text index when SQLite was built with FTS5.
@@ -1280,36 +1351,64 @@ class Database:
         ).fetchall()
 
     def resolve_entity(self, term: str, kind: str | None = None):
-        """Return (row, status) where status is exact, alias, unique, ambiguous, missing."""
+        """Return (row, status) where status is exact, alias, unique, ambiguous, missing.
+
+        Indexed exact identity checks run before substring search so routine zone/NPC/
+        item resolution stays independent of total corpus size in the common case.
+        """
         norm = normalize_name(term)
-        rows = self.search_entities(term, kind)
-        exact = [r for r in rows if r["normalized_name"] == norm]
-        if len(exact) == 1:
-            return exact[0], "exact"
+        if not norm:
+            return None, "missing"
+
+        exact_rows = self.conn.execute(
+            """
+            SELECT e.*, sp.title AS source_title
+            FROM entities e
+            LEFT JOIN source_pages sp ON sp.id=e.source_page_id
+            WHERE e.normalized_name=?
+              AND (? IS NULL OR e.kind=?)
+            ORDER BY e.id
+            LIMIT 2
+            """,
+            (norm, kind, kind),
+        ).fetchall()
+        if len(exact_rows) == 1:
+            return exact_rows[0], "exact"
+        if len(exact_rows) > 1:
+            return None, "ambiguous"
 
         alias_rows = self.conn.execute(
             """
-            SELECT DISTINCT e.*
+            SELECT DISTINCT e.*, sp.title AS source_title
             FROM entity_aliases a
             JOIN entities e ON e.id=a.entity_id
+            LEFT JOIN source_pages sp ON sp.id=e.source_page_id
             WHERE a.normalized_alias=?
               AND (? IS NULL OR e.kind=?)
+            ORDER BY e.id
+            LIMIT 2
             """,
             (norm, kind, kind),
         ).fetchall()
         if len(alias_rows) == 1:
             return alias_rows[0], "alias"
+        if len(alias_rows) > 1:
+            return None, "ambiguous"
+
+        rows = self.search_entities(term, kind)
         if len(rows) == 1:
             return rows[0], "unique"
-        if len(rows) > 1 or len(alias_rows) > 1:
+        if len(rows) > 1:
             return None, "ambiguous"
         return None, "missing"
 
     def entity(self, entity_id: int):
+        """Return normalized entity metadata without materializing source-page bodies."""
         return self.conn.execute(
             """
-            SELECT e.*, sp.plain_text AS source_text,
-                   sp.raw_html AS source_html,
+            SELECT e.*, sp.title AS source_title,
+                   NULL AS source_text,
+                   NULL AS source_html,
                    sp.imported_at AS source_imported_at
             FROM entities e
             LEFT JOIN source_pages sp ON sp.id=e.source_page_id
@@ -1317,6 +1416,22 @@ class Database:
             """,
             (entity_id,),
         ).fetchone()
+
+    def primary_source_text(self, entity_id: int, *, limit: int = 20000) -> str:
+        """Return a bounded source-text excerpt only when explicitly requested."""
+        safe_limit = max(0, min(int(limit), 200000))
+        if safe_limit == 0:
+            return ""
+        row = self.conn.execute(
+            """
+            SELECT substr(sp.plain_text, 1, ?) AS source_text
+            FROM entities e
+            JOIN source_pages sp ON sp.id=e.source_page_id
+            WHERE e.id=?
+            """,
+            (safe_limit, int(entity_id)),
+        ).fetchone()
+        return str(row["source_text"] or "") if row is not None else ""
 
     def track_quest(self, quest_id: int) -> None:
         self.conn.execute(

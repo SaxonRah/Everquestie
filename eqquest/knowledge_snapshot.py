@@ -152,7 +152,13 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
                     "SELECT COUNT(*) FROM source_pages WHERE trim(COALESCE(local_path,''))<>''"
                 ).fetchone()[0]
             )
-            db.conn.execute("UPDATE source_pages SET local_path='' WHERE local_path<>''")
+            db.conn.execute(
+                """
+                UPDATE source_pages
+                SET local_path='', local_mtime_ns=0, local_size=0
+                WHERE local_path<>'' OR local_mtime_ns<>0 OR local_size<>0
+                """
+            )
 
             # Raw HTML is builder/rebuild input, not runtime knowledge. Keep the
             # normalized facts plus compact provenance and readable plain text, but do

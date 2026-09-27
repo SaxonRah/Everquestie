@@ -22,7 +22,7 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Cursor Activity Cluster so refresh cost depends on new events, not total session history.
 - [x] Cursor remaining monitoring hot paths that rescan accumulated observations (Recent Loot and Session Ledger); keep explicit Session Recap/history dialogs on-demand.
 - [x] Cache immutable runtime world-entity contexts used repeatedly by Target Intelligence and Knowledge detail.
-- [ ] Audit lower-frequency immutable projections for additional cache opportunities after real-corpus benchmarks.
+- [x] Audit lower-frequency immutable projections; cache runtime location evidence and base/profile travel graphs.
 
 ## P2 — shrink and isolate the shipped runtime artifact
 
@@ -38,8 +38,9 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Move Wiki/saved-folder import variants off Tk's UI thread.
 - [x] Avoid `sorted(rglob(...))` full-mirror materialization where ordering is unnecessary.
 - [x] Add incremental manifest/hash metadata so unchanged mirror files do not require expensive repeated parsing.
-- [ ] Add progress/cancellation to long builder operations.
-- [ ] Keep full integrity/audit/VACUUM work in explicit release/diagnostic commands.
+- [x] Add streaming processed-file progress/cancellation to Allakhazam DB and Wiki mirror operations.
+- [ ] Consider cancellation for MCP full compile and generic saved-folder import if real builder runs show a need.
+- [x] Keep full integrity/audit/VACUUM work in explicit release/diagnostic commands.
 
 ## Validation
 
@@ -47,5 +48,5 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Add tests proving entity reads do not materialize source bodies unless explicitly requested.
 - [x] Add tests for exact/ambiguous item identity in optimized Recent Loot lookup.
 - [x] Add runtime split tests for tracked quest identity across snapshot row-ID/provider changes.
-- [ ] Add performance smoke fixtures with a large synthetic entity/alias corpus.
+- [x] Add performance smoke fixtures with a configurable large synthetic entity/alias corpus.
 - [ ] Record startup, DB-open, first-live-event, search, and loot-refresh benchmarks before/after.

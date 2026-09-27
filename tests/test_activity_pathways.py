@@ -340,6 +340,57 @@ class ActivityPathwayEngineTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_builder_uses_clean_compiled_catalog_and_marks_it_dirty_on_edit(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                page = self._source(db, "builder-compiled")
+                quest = db.upsert_entity(kind="quest", name="Builder Compiled Quest")
+                db.add_quest_step(
+                    quest,
+                    1,
+                    "Loot a Builder Token",
+                    match={"event": "loot", "item": "Builder Token"},
+                    source_page_id=page,
+                )
+
+                compiler = ActivityPathwayEngine(db)
+                counts = compiler.compile_catalog()
+                self.assertGreaterEqual(counts["direct"], 1)
+                self.assertEqual(
+                    db.get_meta("activity_pathway_catalog_dirty"),
+                    "0",
+                )
+
+                engine = ActivityPathwayEngine(db)
+                engine._build_index = lambda: self.fail(
+                    "clean builder catalog fell back to full direct rebuild"
+                )
+                engine._build_graph_index = lambda: self.fail(
+                    "clean builder catalog fell back to full graph rebuild"
+                )
+                db.add_event(Event(kind="loot", raw="loot", item="Builder Token"))
+                engine.refresh_observations()
+                self.assertEqual(
+                    [row.quest_id for row in engine.suggestions()],
+                    [quest],
+                )
+
+                db.add_quest_step(
+                    quest,
+                    2,
+                    "Loot another Builder Token",
+                    match={"event": "loot", "item": "Builder Token"},
+                    source_page_id=page,
+                )
+                self.assertEqual(
+                    db.get_meta("activity_pathway_catalog_dirty"),
+                    "1",
+                )
+                self.assertFalse(engine._compiled_catalog_available())
+            finally:
+                db.close()
+
     def test_packaged_runtime_reads_immutable_knowledge_and_user_observations(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

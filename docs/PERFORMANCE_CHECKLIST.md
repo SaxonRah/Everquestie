@@ -27,10 +27,10 @@ This checklist tracks the performance hardening required now that the knowledge 
 ## P2 — shrink and isolate the shipped runtime artifact
 
 - [x] Strip raw HTML from finalized runtime snapshots.
-- [ ] Decide whether runtime should retain full source-page plain text, bounded excerpts, or a separate optional source archive.
-- [ ] Ensure normal packaged EverQuestie never needs an Allakhazam mirror path.
-- [ ] Keep source import/rebuild/finalization strictly builder-only.
-- [ ] Keep map-catalog construction builder/manual only; runtime consumes the shipped catalog.
+- [x] Retain bounded 20k source-page text excerpts in runtime; full text/raw HTML remain builder-only.
+- [x] Ensure normal packaged EverQuestie never needs an Allakhazam mirror path.
+- [x] Keep source import/rebuild/finalization strictly builder-only.
+- [x] Keep map-catalog construction builder/manual only; runtime consumes the shipped catalog.
 
 ## P3 — builder/import responsiveness
 

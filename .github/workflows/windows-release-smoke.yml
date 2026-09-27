@@ -32,6 +32,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Validate builder PowerShell syntax
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw .\tools\build_full_knowledge.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw .\tools\clean_knowledge_build.ps1))
+
       - name: Test Live log and map continuity
         shell: pwsh
         run: |

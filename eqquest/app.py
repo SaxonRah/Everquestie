@@ -158,12 +158,139 @@ class EverQuestieApp(tk.Tk):
         self._tracked_step_by_item: dict[str, tuple[int, int]] = {}
 
         self._settings_save_job: str | None = None
+
+        # The interactive application must never fall back to rebuilding full-corpus
+        # Live intelligence indexes on Tk's thread. Small standalone builder/tests may
+        # still use the dynamic fallback, while the app prepares compact catalogs in
+        # the background when a source-checkout DB predates them or they became dirty.
+        if getattr(self.db, "knowledge_writable", True):
+            setattr(self.db, "_prefer_bounded_runtime_catalogs", True)
+
         self._build_ui()
         self.theme_manager.apply(ThemeManager.id_for_label(self.ui_theme_var.get()))
         self._bind_settings_autosave()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(0, self._ensure_builder_runtime_catalogs_async)
         self.after(100, self._drain_lines)
         self.after(400, self._refresh_guidance)
+
+    def _ensure_builder_runtime_catalogs_async(self) -> None:
+        """Prepare compact Live lookup catalogs without blocking Tk startup."""
+        if getattr(self, "_closing", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            return
+        if getattr(self, "_runtime_catalog_build_running", False):
+            return
+
+        from .activity_pathways import ACTIVITY_PATHWAY_CATALOG_VERSION
+        from .zone_opportunities import ZONE_OPPORTUNITY_CATALOG_VERSION
+
+        needs_activity = (
+            self.db.get_meta("activity_pathway_catalog_version", "")
+            != ACTIVITY_PATHWAY_CATALOG_VERSION
+            or self.db.get_meta("activity_pathway_catalog_dirty", "1") == "1"
+        )
+        needs_zone = (
+            self.db.get_meta("zone_opportunity_catalog_version", "")
+            != ZONE_OPPORTUNITY_CATALOG_VERSION
+            or self.db.get_meta("zone_opportunity_catalog_dirty", "1") == "1"
+        )
+        if not (needs_activity or needs_zone):
+            return
+
+        self._runtime_catalog_build_running = True
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="disabled")
+        self.status.set("Preparing bounded Live indexes in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                from .activity_pathways import (
+                    ACTIVITY_PATHWAY_CATALOG_VERSION,
+                    ActivityPathwayEngine,
+                )
+                from .zone_opportunities import (
+                    ZONE_OPPORTUNITY_CATALOG_VERSION,
+                    compile_zone_opportunity_catalog,
+                )
+
+                worker_db = Database(db_path)
+                if (
+                    worker_db.get_meta("zone_opportunity_catalog_version", "")
+                    != ZONE_OPPORTUNITY_CATALOG_VERSION
+                    or worker_db.get_meta("zone_opportunity_catalog_dirty", "1") == "1"
+                ):
+                    compile_zone_opportunity_catalog(worker_db)
+                if (
+                    worker_db.get_meta("activity_pathway_catalog_version", "")
+                    != ACTIVITY_PATHWAY_CATALOG_VERSION
+                    or worker_db.get_meta("activity_pathway_catalog_dirty", "1") == "1"
+                ):
+                    ActivityPathwayEngine(worker_db).compile_catalog()
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                if not getattr(self, "_closing", False):
+                    try:
+                        self.after(
+                            0,
+                            lambda exc=exc: self._finish_builder_runtime_catalogs_error(exc),
+                        )
+                    except Exception:
+                        pass
+                return
+
+            worker_db.close()
+            if not getattr(self, "_closing", False):
+                try:
+                    self.after(0, self._finish_builder_runtime_catalogs)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieRuntimeCatalogs",
+            daemon=True,
+        ).start()
+
+    def _finish_builder_runtime_catalogs(self) -> None:
+        self._runtime_catalog_build_running = False
+        if (
+            hasattr(self, "db_mirror_import_button")
+            and not getattr(self, "_db_mirror_import_running", False)
+        ):
+            self.db_mirror_import_button.configure(state="normal")
+
+        pathway_engine = getattr(self, "activity_pathway_engine", None)
+        reset_pathway_cache = getattr(pathway_engine, "reset_knowledge_cache", None)
+        if callable(reset_pathway_cache):
+            reset_pathway_cache()
+
+        self.status.set("Bounded Live indexes ready")
+        refresh_live = getattr(self, "_refresh_activity_pathways", None)
+        if callable(refresh_live):
+            try:
+                refresh_live(force=True)
+            except Exception:
+                pass
+
+    def _finish_builder_runtime_catalogs_error(self, exc: Exception) -> None:
+        self._runtime_catalog_build_running = False
+        if (
+            hasattr(self, "db_mirror_import_button")
+            and not getattr(self, "_db_mirror_import_running", False)
+        ):
+            self.db_mirror_import_button.configure(state="normal")
+        # Keep _prefer_bounded_runtime_catalogs enabled: a failed accelerator build
+        # should suppress optional Live recommendations, never trigger a full-corpus
+        # synchronous fallback that freezes the client.
+        self.status.set(f"Live index preparation failed: {exc}")
 
     def _initial_client_compile_status(self) -> str:
         timestamp = self.db.get_meta("eq_mcp_last_compile", "")

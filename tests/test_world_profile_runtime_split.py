@@ -9,7 +9,13 @@ from eqquest.db import Database
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
 from eqquest.profile_availability import entity_profile_decision
 from eqquest.runtime import RuntimeDatabase
-from eqquest.world_profiles import active_world_profile_id, set_active_world_profile, zone_profile_decisions
+from eqquest.world_profiles import (
+    active_world_profile_id,
+    set_active_world_profile,
+    shortest_path_for_profile,
+    zone_profile_decisions,
+)
+from eqquest.zone_travel import ZoneTravelCatalog
 
 
 class WorldProfileRuntimeSplitTests(unittest.TestCase):
@@ -71,6 +77,69 @@ class WorldProfileRuntimeSplitTests(unittest.TestCase):
             reopened.close()
 
         self.assertEqual(self._digest(knowledge), before)
+
+    def test_runtime_profile_travel_graph_is_cached_per_profile(self):
+        working = self.root / "travel-working.sqlite3"
+        knowledge = self.root / "travel-knowledge.sqlite3"
+        state = self.root / "travel-user.sqlite3"
+
+        builder = Database(working)
+        try:
+            source = builder.upsert_entity(
+                kind="zone",
+                name="Cache Route A",
+                external_id="901",
+                external_namespace="eqclient:zone",
+                data={"expansion": "EverQuest"},
+            )
+            target = builder.upsert_entity(
+                kind="zone",
+                name="Cache Route B",
+                external_id="902",
+                external_namespace="eqclient:zone",
+                data={"expansion": "EverQuest"},
+            )
+            ZoneTravelCatalog(builder).add_provider_connection(
+                source,
+                target,
+                connection_kind="zone_line",
+                bidirectional=True,
+                source_name="Profile cache fixture",
+                source_kind="test",
+                source_key="cache-route",
+            )
+        finally:
+            builder.close()
+
+        create_knowledge_snapshot(
+            working,
+            knowledge,
+            snapshot_version="profile-travel-cache-test",
+            overwrite=True,
+        )
+
+        runtime = RuntimeDatabase(knowledge, state)
+        try:
+            self.assertEqual(
+                shortest_path_for_profile(runtime, source, target, "live"),
+                [source, target],
+            )
+            cache = getattr(runtime, "_profile_travel_adjacency_cache")
+            self.assertIn("live", cache)
+
+            statements: list[str] = []
+            runtime.conn.set_trace_callback(statements.append)
+            try:
+                self.assertEqual(
+                    shortest_path_for_profile(runtime, source, target, "live"),
+                    [source, target],
+                )
+            finally:
+                runtime.conn.set_trace_callback(None)
+            sql = " ".join("\n".join(statements).casefold().split())
+            self.assertNotIn("from zone_travel_edges", sql)
+        finally:
+            runtime.close()
 
     def test_runtime_zone_profile_decisions_are_cached_per_profile(self):
         working = self.root / "cache-working.sqlite3"

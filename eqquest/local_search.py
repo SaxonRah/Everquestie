@@ -203,13 +203,40 @@ def _current_zone_ids(db: Database, current_zone: str | None) -> set[int]:
     return ids
 
 
-def _reason_for(db: Database, row, text: str, zone_match: bool, fts_rank: float | None) -> tuple[tuple, str]:
+def _aliases_for_rows(db: Database, rows, *, enabled: bool) -> dict[int, tuple[str, ...]]:
+    """Batch-load aliases for search candidates instead of issuing one query per row."""
+    if not enabled:
+        return {}
+
+    entity_ids = sorted({int(row["id"]) for row in rows})
+    grouped: dict[int, list[str]] = {}
+    for start in range(0, len(entity_ids), 400):
+        chunk = entity_ids[start : start + 400]
+        if not chunk:
+            continue
+        placeholders = ",".join("?" for _ in chunk)
+        aliases = db.conn.execute(
+            f"""
+            SELECT entity_id, normalized_alias
+            FROM entity_aliases
+            WHERE entity_id IN ({placeholders})
+            ORDER BY entity_id, normalized_alias
+            """,
+            chunk,
+        ).fetchall()
+        for alias in aliases:
+            grouped.setdefault(int(alias["entity_id"]), []).append(
+                str(alias["normalized_alias"] or "")
+            )
+    return {
+        entity_id: tuple(value for value in values if value)
+        for entity_id, values in grouped.items()
+    }
+
+
+def _reason_for(row, text: str, zone_match: bool, fts_rank: float | None, aliases=()) -> tuple[tuple, str]:
     norm = normalize_name(text)
     name = str(row["normalized_name"] or "")
-    aliases = (
-        [str(a["normalized_alias"]) for a in db.aliases_for_entity(int(row["id"]))]
-        if norm else []
-    )
     if norm and name == norm:
         base, reason = 0, "exact name"
     elif norm and norm in aliases:
@@ -287,10 +314,18 @@ def search_local_hits(
         raise
 
     zone_ids = _current_zone_ids(db, current_zone)
+    aliases_by_entity = _aliases_for_rows(db, rows, enabled=bool(query.text))
     hits: list[SearchHit] = []
     for row in rows:
-        zone_match = int(row["id"]) in zone_ids
-        score, reason = _reason_for(db, row, query.text, zone_match, row["fts_rank"])
+        entity_id = int(row["id"])
+        zone_match = entity_id in zone_ids
+        score, reason = _reason_for(
+            row,
+            query.text,
+            zone_match,
+            row["fts_rank"],
+            aliases_by_entity.get(entity_id, ()),
+        )
         hits.append(SearchHit(row=row, score=score, reason=reason, current_zone=zone_match))
     hits.sort(key=lambda hit: hit.score)
     return hits[safe_offset : safe_offset + safe_limit]
@@ -320,10 +355,18 @@ def _search_like_fallback(
     sql += " ORDER BY e.kind, e.name LIMIT 5000"
     rows = db.conn.execute(sql, args).fetchall()
     zone_ids = _current_zone_ids(db, current_zone)
+    aliases_by_entity = _aliases_for_rows(db, rows, enabled=bool(query.text))
     hits = []
     for row in rows:
-        zone_match = int(row["id"]) in zone_ids
-        score, reason = _reason_for(db, row, query.text, zone_match, None)
+        entity_id = int(row["id"])
+        zone_match = entity_id in zone_ids
+        score, reason = _reason_for(
+            row,
+            query.text,
+            zone_match,
+            None,
+            aliases_by_entity.get(entity_id, ()),
+        )
         hits.append(SearchHit(row=row, score=score, reason=reason, current_zone=zone_match))
     hits.sort(key=lambda hit: hit.score)
     return hits[max(0, offset) : max(0, offset) + max(1, limit)]

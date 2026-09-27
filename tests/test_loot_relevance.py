@@ -6,7 +6,11 @@ import unittest
 
 from eqquest.db import Database
 from eqquest.events import Event
-from eqquest.loot_relevance import loot_relevance_text, recent_loot_relevance
+from eqquest.loot_relevance import (
+    LootSessionObservationIndex,
+    loot_relevance_text,
+    recent_loot_relevance,
+)
 
 
 class LootRelevanceTests(unittest.TestCase):
@@ -136,6 +140,59 @@ class LootRelevanceTests(unittest.TestCase):
                 rows = recent_loot_relevance(db, boundary)
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0].observed_count, 1)
+            finally:
+                db.close()
+
+
+    def test_incremental_observation_index_advances_only_from_new_events(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = self._db(tempdir)
+            try:
+                source = self._source(db)
+                item = db.upsert_entity(kind="item", name="Cursor Coin", external_id="item:cursor")
+                quest = db.upsert_entity(
+                    kind="quest",
+                    name="Cursor Coin Quest",
+                    external_id="quest:cursor",
+                    source_page_id=source,
+                )
+                db.upsert_relationship(
+                    quest,
+                    item,
+                    "objective_turn_in_item",
+                    source_page_id=source,
+                    evidence="Turn in the Cursor Coin.",
+                )
+
+                index = LootSessionObservationIndex()
+                index.reset(0)
+
+                db.add_event(Event(kind="loot", raw="first", item="Cursor Coin"))
+                first_id = int(
+                    db.conn.execute("SELECT MAX(id) AS n FROM observed_events").fetchone()["n"]
+                )
+                first = recent_loot_relevance(db, 0, observation_index=index)
+                self.assertEqual(first[0].observed_count, 1)
+                self.assertEqual(index.last_event_id, first_id)
+
+                db.add_event(Event(kind="kill", raw="unrelated", actor="a rat", target="You"))
+                db.add_event(Event(kind="loot", raw="second", item="cursor coin"))
+                latest_id = int(
+                    db.conn.execute("SELECT MAX(id) AS n FROM observed_events").fetchone()["n"]
+                )
+                second = recent_loot_relevance(db, 0, observation_index=index)
+                self.assertEqual(second[0].observed_count, 2)
+                self.assertEqual(index.last_event_id, latest_id)
+
+                unchanged = recent_loot_relevance(db, 0, observation_index=index)
+                self.assertEqual(unchanged[0].observed_count, 2)
+                self.assertEqual(index.last_event_id, latest_id)
+
+                index.reset(latest_id)
+                self.assertEqual(
+                    recent_loot_relevance(db, latest_id, observation_index=index),
+                    (),
+                )
             finally:
                 db.close()
 

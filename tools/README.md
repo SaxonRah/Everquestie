@@ -155,3 +155,45 @@ A source checkout can be launched without MCP:
 ```
 
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
+
+
+## Full-corpus performance smoke
+
+Use the synthetic fixture when you want a repeatable large knowledge corpus without depending on a local Allakhazam mirror:
+
+```powershell
+python .\tools\create_performance_smoke_fixture.py `
+  --working-db .\build\perf-working.sqlite3 `
+  --snapshot-db .\build\perf-knowledge.sqlite3 `
+  --entities 50000 `
+  --aliases-per-entity 2 `
+  --force
+```
+
+The fixture includes 50,000 filler entities by default, two aliases per filler, and a small exact NPC/item/quest chain named `Performance Rat`, `Performance Token`, and `Performance Quest`. It compiles the same Activity Pathway catalog used by release snapshots and finalizes an immutable runtime knowledge DB.
+
+Benchmark the finalized snapshot without modifying it:
+
+```powershell
+python .\tools\benchmark_runtime_performance.py `
+  .\build\perf-knowledge.sqlite3 `
+  --iterations 10 `
+  --json-out .\build\perf-after.json
+```
+
+The benchmark creates temporary user-state databases and reports median/min/max timings for runtime DB open, local search, first Live projection, steady-state Live projection, first loot refresh, steady-state loot refresh, and one-new-event loot refresh. It also records snapshot size and result counts so a suspiciously fast empty lookup is visible.
+
+For the real full-Allakhazam release snapshot, provide representative names that exist in that corpus:
+
+```powershell
+python .\tools\benchmark_runtime_performance.py `
+  .\dist\everquestie-knowledge.sqlite3 `
+  --query "Bone Chips" `
+  --loot-item "Bone Chips" `
+  --kill-npc "a decaying skeleton" `
+  --zone "South Qeynos" `
+  --iterations 10 `
+  --json-out .\build\full-allakhazam-after.json
+```
+
+To compare against an older build, benchmark the old snapshot into a baseline JSON first, then pass `--baseline-json PATH`. The output adds median millisecond and percentage deltas for metrics present in both runs. Keep real-corpus benchmark JSON under `build/` or another local artifact directory unless it is intentionally being added as release evidence.

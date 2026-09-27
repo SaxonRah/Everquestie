@@ -358,13 +358,44 @@ class RuntimeDatabase(Database):
         return rows[0] if len(rows) == 1 else None
 
     def _tracked_key_for_entity(self, entity_id: int) -> str | None:
-        for state in self.conn.execute(
-            "SELECT * FROM tracked_quests ORDER BY tracked_at,quest_key"
-        ).fetchall():
-            entity = self._resolve_state_identity(state)
-            if entity is not None and int(entity["id"]) == int(entity_id):
-                return str(state["quest_key"])
-        return None
+        """Resolve tracked state with indexed identity lookups, never a table scan.
+
+        Runtime knowledge can gain a better provider identity between releases, so a
+        persisted quest_key is not guaranteed to equal the current preferred key.
+        Match any current external identity first, then fall back to the stable
+        kind/normalized-name columns stored in user state.
+        """
+        entity_id = int(entity_id)
+
+        external_matches = self.conn.execute(
+            """
+            SELECT DISTINCT tq.quest_key
+            FROM tracked_quests tq
+            JOIN entity_external_ids x
+              ON x.namespace=tq.external_namespace
+             AND x.external_id=tq.external_id
+            WHERE x.entity_id=?
+            LIMIT 2
+            """,
+            (entity_id,),
+        ).fetchall()
+        if len(external_matches) == 1:
+            return str(external_matches[0]["quest_key"])
+        if len(external_matches) > 1:
+            return None
+
+        identity = self._identity_for_entity(entity_id)
+        name_matches = self.conn.execute(
+            """
+            SELECT quest_key
+            FROM tracked_quests
+            WHERE entity_kind=? AND normalized_name=?
+            ORDER BY tracked_at,quest_key
+            LIMIT 2
+            """,
+            (identity["entity_kind"], identity["normalized_name"]),
+        ).fetchall()
+        return str(name_matches[0]["quest_key"]) if len(name_matches) == 1 else None
 
     def track_quest(self, quest_id: int) -> None:
         if self._tracked_key_for_entity(quest_id) is not None:

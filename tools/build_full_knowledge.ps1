@@ -50,7 +50,7 @@ $ResolvedPathJson = python .\tools\resolve_builder_paths.py --project-root $Proj
 if ($LASTEXITCODE -ne 0) {
     throw "Could not resolve builder source paths from EverQuestie settings.ini."
 }
-$ResolvedPaths = $ResolvedPathJson | ConvertFrom-Json
+$ResolvedPaths = ($ResolvedPathJson -join [Environment]::NewLine) | ConvertFrom-Json
 
 $SettingsPath = [string]$ResolvedPaths.settings_path
 $EqInstall = [string]$ResolvedPaths.eq_install

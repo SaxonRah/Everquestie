@@ -33,7 +33,7 @@ $ErrorActionPreference = "Stop"
 # Project root
 # ------------------------------------------------------------
 
-$ProjectRoot = "C:\Everquestie"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
 
 # ------------------------------------------------------------
@@ -43,7 +43,7 @@ Set-Location $ProjectRoot
 $EqInstall = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest"
 $AllakhazamProject = "C:\AllakhazamEverquest\EQ_Allakhazam_DB"
 $AllakhazamMirror = Join-Path $AllakhazamProject "everquest.allakhazam.com"
-$McpRepo = "C:\Everquestie\third_party\everquest1-mcp"
+$McpRepo = Join-Path $ProjectRoot "third_party\everquest1-mcp"
 $GoodsMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Good's Maps"
 $BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Brewall"
 

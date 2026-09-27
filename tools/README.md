@@ -157,28 +157,37 @@ A source checkout can be launched without MCP:
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
 
 
-## Rebuilding from an interrupted but clean Allakhazam capture
+## Rebuilding from a clean mirror with unverified HTTrack provenance
 
-The canonical full build still requires HTTrack to report a naturally completed crawl.
-For development or corpus inspection, an explicitly interrupted capture can be imported
-without weakening that default gate when all of the following are true:
+The canonical full build still requires HTTrack evidence that belongs to the selected
+project and proves a naturally completed crawl. The audit now reads the HTTrack
+`-O1` output directory from `hts-log.txt` when present; a log copied from a different
+HTTrack project is reported as stale/mismatched and is not allowed to prove the current
+mirror either complete or interrupted.
+
+For development or corpus inspection, a captured corpus can still be imported explicitly
+when all of the following are true:
 
 - no `hts-in_progress.lock` is present;
 - the HTTrack log is readable;
-- the run state is `interrupted`;
-- the mirror contains zero temporary HTTrack files.
+- the mirror contains zero temporary HTTrack files;
+- completion provenance is either an interrupted run for this project or a stale/mismatched
+  `hts-log.txt` from another HTTrack output project.
 
 Use the explicit developer override:
 
 ```powershell
-.\tools\build_full_knowledge.ps1 -AllowInterruptedMirror
+.\tools\build_full_knowledge.ps1 -AllowUnverifiedMirror
 ```
 
-The generated build version is suffixed `-full-interrupted-mirror`, the mirror audit
-JSON records `canonical_complete: false` and
-`interrupted_clean_capture_accepted: true`, and the final console summary warns that
-the snapshot is not canonical crawl-complete. Do not publish such a snapshot as a
-crawl-complete release artifact.
+`-AllowInterruptedMirror` remains an alias for the same switch.
+
+The generated build version is suffixed `-full-unverified-mirror`. The mirror audit
+JSON records `canonical_complete: false`, the reason completion provenance could not
+be verified, and whether the clean-corpus override was accepted. The final console
+summary also warns that the snapshot is not canonical crawl-complete. Do not publish
+such a snapshot as a crawl-complete release artifact until matching completion evidence
+is recovered.
 
 You do not need to run the cleanup script again after a completion-gate failure that
 occurred before the database build stage.

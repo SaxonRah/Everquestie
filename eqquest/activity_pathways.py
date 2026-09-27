@@ -590,7 +590,7 @@ class ActivityPathwayEngine:
         if not self._compiled_catalog_available():
             if (
                 getattr(self.db, "knowledge_writable", True)
-                and getattr(self.db, "_runtime_catalog_building", False)
+                and getattr(self.db, "_prefer_bounded_runtime_catalogs", False)
             ):
                 return ()
             return self._ensure_index().get(key, ())
@@ -627,7 +627,7 @@ class ActivityPathwayEngine:
         if not self._compiled_catalog_available():
             if (
                 getattr(self.db, "knowledge_writable", True)
-                and getattr(self.db, "_runtime_catalog_building", False)
+                and getattr(self.db, "_prefer_bounded_runtime_catalogs", False)
             ):
                 return ()
             return self._ensure_graph_index().get(key, ())

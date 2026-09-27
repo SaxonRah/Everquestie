@@ -39,13 +39,26 @@ Set-Location $ProjectRoot
 # ------------------------------------------------------------
 # Source paths
 # ------------------------------------------------------------
+#
+# The application and the full builder share one source-of-truth for local paths:
+# %USERPROFILE%\.eqquest\settings.ini. Resolve through the same Python SettingsFile
+# implementation used by the UI so a path selected in EverQuestie is the path the
+# clean/full rebuild actually uses.
+# ------------------------------------------------------------
 
-$EqInstall = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest"
-$AllakhazamProject = "C:\AllakhazamEverquest\EQ_Allakhazam_DB"
-$AllakhazamMirror = Join-Path $AllakhazamProject "everquest.allakhazam.com"
-$McpRepo = Join-Path $ProjectRoot "third_party\everquest1-mcp"
-$GoodsMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Good's Maps"
-$BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Brewall"
+$ResolvedPathJson = python .\tools\resolve_builder_paths.py --project-root $ProjectRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not resolve builder source paths from EverQuestie settings.ini."
+}
+$ResolvedPaths = $ResolvedPathJson | ConvertFrom-Json
+
+$SettingsPath = [string]$ResolvedPaths.settings_path
+$EqInstall = [string]$ResolvedPaths.eq_install
+$AllakhazamProject = [string]$ResolvedPaths.allakhazam_project
+$AllakhazamMirror = [string]$ResolvedPaths.allakhazam_mirror
+$McpRepo = [string]$ResolvedPaths.mcp_repository
+$GoodsMaps = [string]$ResolvedPaths.goods_maps
+$BrewallMaps = [string]$ResolvedPaths.brewall_maps
 
 # ------------------------------------------------------------
 # Outputs
@@ -111,6 +124,9 @@ Write-Host
 Write-Host "============================================"
 Write-Host " EverQuestie Full Knowledge Build Preflight"
 Write-Host "============================================"
+Write-Host
+Write-Host "Settings:"
+Write-Host ("    {0}" -f $SettingsPath)
 Write-Host
 
 $RequiredDirectories = [ordered]@{
@@ -221,6 +237,13 @@ Write-Host "============================================"
 Write-Host " Resolved Build Configuration"
 Write-Host "============================================"
 Write-Host
+Write-Host "Settings file:      $SettingsPath"
+Write-Host "EQ install:         $EqInstall"
+Write-Host "Allakhazam project: $AllakhazamProject"
+Write-Host "Allakhazam mirror:  $AllakhazamMirror"
+Write-Host "MCP repository:     $McpRepo"
+Write-Host "Good's maps:        $GoodsMaps"
+Write-Host "Brewall maps:       $BrewallMaps"
 Write-Host "Build version:      $Version"
 Write-Host "Allakhazam version: $AllakhazamVersion"
 Write-Host "Good's version:     $GoodsVersion"

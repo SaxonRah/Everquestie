@@ -108,7 +108,7 @@ class RouteAcceptanceCliTests(unittest.TestCase):
             )
         self.assertEqual(code, 2)
         text = stdout.getvalue()
-        self.assertIn("[FAIL directionality_blocked] The Hole → Feldax Hive", text)
+        self.assertIn("[FAIL directionality_blocked] The Hole -> Feldax Hive", text)
 
         conn = open_read_only(self.path)
         try:
@@ -116,6 +116,22 @@ class RouteAcceptanceCliTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(count, 2)
+
+    def test_human_report_is_cp1252_encodable_for_windows_powershell(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(
+                [
+                    str(self.path),
+                    "--route",
+                    "Feldax Hive",
+                    "The Hole",
+                ]
+            )
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("Feldax Hive -> The Hole", text)
+        text.encode("cp1252")
 
     def test_human_report_names_unresolved_endpoint_without_guessing(self):
         stdout = io.StringIO()
@@ -130,7 +146,7 @@ class RouteAcceptanceCliTests(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         text = stdout.getvalue()
-        self.assertIn("[FAIL source_unresolved] Definitely Not A Zone → The Hole", text)
+        self.assertIn("[FAIL source_unresolved] Definitely Not A Zone -> The Hole", text)
         self.assertIn("no conservative canonical zone identity match", text)
 
 

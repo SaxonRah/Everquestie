@@ -335,6 +335,37 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
                 if path.name.lower().endswith(".tmp"):
                     summary.ignored += 1
                     continue
+
+                try:
+                    stat = path.stat()
+                except OSError:
+                    summary.read_errors += 1
+                    continue
+                local_path = str(path.resolve())
+
+                # Once a mirror page has been hashed/imported under this exact file
+                # fingerprint, a refresh can skip decoding and hashing it entirely.
+                # The URL/hash check below remains the correctness fallback whenever
+                # mtime/size changed or this metadata predates the fingerprint cache.
+                cached = self.db.conn.execute(
+                    """
+                    SELECT id, entity_type
+                    FROM source_pages
+                    WHERE source_name='Allakhazam'
+                      AND local_path=?
+                      AND local_mtime_ns=?
+                      AND local_size=?
+                    LIMIT 1
+                    """,
+                    (local_path, int(stat.st_mtime_ns), int(stat.st_size)),
+                ).fetchone()
+                if (
+                    cached is not None
+                    and cached["entity_type"] in recognized_entity_types
+                ):
+                    summary.unchanged += 1
+                    continue
+
                 try:
                     raw = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
@@ -360,6 +391,19 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
                     and existing["sha256"] == digest
                     and existing["entity_type"] in recognized_entity_types
                 ):
+                    self.db.conn.execute(
+                        """
+                        UPDATE source_pages
+                        SET local_path=?, local_mtime_ns=?, local_size=?
+                        WHERE id=?
+                        """,
+                        (
+                            local_path,
+                            int(stat.st_mtime_ns),
+                            int(stat.st_size),
+                            int(existing["id"]),
+                        ),
+                    )
                     summary.unchanged += 1
                     continue
 
@@ -368,6 +412,18 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
                 except ValueError:
                     summary.ignored += 1
                     continue
+                self.db.conn.execute(
+                    """
+                    UPDATE source_pages
+                    SET local_mtime_ns=?, local_size=?
+                    WHERE id=?
+                    """,
+                    (
+                        int(stat.st_mtime_ns),
+                        int(stat.st_size),
+                        int(result.source_page_id),
+                    ),
+                )
                 summary.imported.append(result)
         return summary
 

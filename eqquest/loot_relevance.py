@@ -185,6 +185,26 @@ def _quest_uses_for_items(db, item_ids: Iterable[int]) -> dict[int, tuple[LootQu
     return out
 
 
+def loot_quest_uses_for_name(
+    db,
+    item_name: str,
+) -> tuple[LootQuestUse, ...]:
+    """Resolve one observed loot label and return only its reviewed quest uses.
+
+    This hot-path helper deliberately avoids reading session history. The caller
+    already knows which item was just looted, so only that normalized label is
+    resolved against indexed canonical names/aliases before relationship lookup.
+    """
+    key = normalize_name(str(item_name or ""))
+    if not key:
+        return ()
+    resolved = _unique_item_name_index(db, (key,))
+    item_id = resolved.get(key)
+    if item_id is None:
+        return ()
+    return _quest_uses_for_items(db, (item_id,)).get(item_id, ())
+
+
 def recent_loot_relevance(
     db,
     after_event_id: int,

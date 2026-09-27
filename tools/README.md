@@ -157,6 +157,53 @@ A source checkout can be launched without MCP:
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
 
 
+## Clean full knowledge rebuild
+
+The canonical full build already writes a new `build\working.sqlite3.building`
+database and atomically replaces the old working DB only after provider compilation
+succeeds. For an explicit cleanup of generated artifacts before a from-scratch build:
+
+```powershell
+.\tools\clean_knowledge_build.ps1
+.\tools\build_full_knowledge.ps1
+```
+
+Default cleanup removes the canonical builder DB/snapshot, SQLite sidecars, temporary
+builder DB, and full-build audit reports. It deliberately preserves source inputs and
+all player state.
+
+Useful opt-in cleanup switches:
+
+```powershell
+# Also delete the legacy mutable DB used by plain source-checkout launches.
+.\tools\clean_knowledge_build.ps1 -IncludeSourceCheckoutDb
+
+# Also delete packaged writable player state (tracked quests, observed history, bindings).
+.\tools\clean_knowledge_build.ps1 -IncludeUserState
+
+# Also remove generated release staging/output directories.
+.\tools\clean_knowledge_build.ps1 -IncludeReleaseArtifacts
+
+# Deliberate total local DB/release reset while preserving source inputs/settings.
+.\tools\clean_knowledge_build.ps1 `
+  -IncludeSourceCheckoutDb `
+  -IncludeUserState `
+  -IncludeReleaseArtifacts
+```
+
+The cleanup helper never deletes the EQ installation, Allakhazam HTTrack mirror,
+everquest1-mcp checkout, Good/Brewall map packs, or `%USERPROFILE%\.eqquest\settings.ini`.
+
+After rebuilding, test the new finalized database with:
+
+```powershell
+.\tools\run_packaged.ps1
+```
+
+Do not use plain `py EverQuestie.py` to validate a freshly built runtime snapshot
+unless you intentionally want source-checkout mode; that launcher may use
+`%USERPROFILE%\.eqquest\eqquest.sqlite3` instead of the new `dist` snapshot.
+
 ## Full-corpus performance smoke
 
 Use the synthetic fixture when you want a repeatable large knowledge corpus without depending on a local Allakhazam mirror:

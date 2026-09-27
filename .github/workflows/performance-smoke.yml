@@ -1,0 +1,79 @@
+name: Runtime performance smoke
+
+on:
+  pull_request:
+    paths:
+      - 'eqquest/**'
+      - 'tools/benchmark_runtime_performance.py'
+      - 'tools/create_performance_smoke_fixture.py'
+      - '.github/workflows/performance-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build release-shaped synthetic corpus
+        run: |
+          mkdir -p build/performance-smoke
+          python tools/create_performance_smoke_fixture.py \
+            --working-db build/performance-smoke/working.sqlite3 \
+            --snapshot-db build/performance-smoke/everquestie-knowledge.sqlite3 \
+            --entities 20000 \
+            --aliases-per-entity 2 \
+            --force
+
+      - name: Benchmark bounded runtime paths
+        run: |
+          python tools/benchmark_runtime_performance.py \
+            build/performance-smoke/everquestie-knowledge.sqlite3 \
+            --iterations 5 \
+            --json-out build/performance-smoke/benchmark.json
+          cat build/performance-smoke/benchmark.json
+
+      - name: Enforce catastrophic-regression ceilings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("build/performance-smoke/benchmark.json").read_text())
+          ceilings_ms = {
+              "runtime_db_open": 2000.0,
+              "local_search": 2000.0,
+              "first_live_event": 2000.0,
+              "steady_live_projection": 500.0,
+              "first_loot_refresh": 2000.0,
+              "steady_loot_refresh": 500.0,
+              "incremental_loot_refresh": 1000.0,
+          }
+          failed = []
+          for name, ceiling in ceilings_ms.items():
+              actual = float(payload["metrics"][name]["median_ms"])
+              print(f"{name}: {actual:.3f} ms (ceiling {ceiling:.0f} ms)")
+              if actual > ceiling:
+                  failed.append((name, actual, ceiling))
+          if failed:
+              raise SystemExit(
+                  "performance smoke failed: "
+                  + ", ".join(
+                      f"{name}={actual:.3f}ms>{ceiling:.0f}ms"
+                      for name, actual, ceiling in failed
+                  )
+              )
+          PY
+
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-performance-smoke
+          path: build/performance-smoke/benchmark.json
+          if-no-files-found: error

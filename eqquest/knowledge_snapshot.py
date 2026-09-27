@@ -21,6 +21,7 @@ from .release_input_audit import audit_reviewed_release_inputs
 from .search_index import rebuild_compact_search_index
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
+from .zone_opportunities import compile_zone_opportunity_catalog
 from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 from .zone_travel import ZoneTravelCatalog
 
@@ -49,6 +50,7 @@ KNOWLEDGE_META_KEYS = {
     "map_catalog_last_source",
     "map_links_dirty",
     "activity_pathway_catalog_version",
+    "zone_opportunity_catalog_version",
     "mechanics_catalog_version",
     "mechanics_catalog_coverage",
     "provider_zone_catalog_version",
@@ -317,6 +319,7 @@ def finalize_knowledge_snapshot(
     # graph on the player's Tk thread. Compile exact observation-key lookups once into
     # the immutable release artifact; mutable builder databases retain the fallback
     # reconstruction path for development/import work.
+    compile_zone_opportunity_catalog(db)
     ActivityPathwayEngine(db).compile_catalog()
 
     stripped_user = strip_user_state(db)

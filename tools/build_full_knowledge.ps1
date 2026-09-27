@@ -41,6 +41,15 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
 
+$BuildLogDirectory = Join-Path $ProjectRoot "build\logs"
+New-Item -ItemType Directory -Force -Path $BuildLogDirectory | Out-Null
+$BuildLog = Join-Path $BuildLogDirectory (
+    "full-knowledge-build-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log"
+)
+Start-Transcript -Path $BuildLog -Force | Out-Null
+
+try {
+
 # ------------------------------------------------------------
 # Source paths
 # ------------------------------------------------------------
@@ -501,3 +510,13 @@ Write-Host "  Route acceptance   : passed"
 Write-Host "  Regression tests   : passed"
 Write-Host
 Write-Host "============================================"
+
+} finally {
+    Write-Host
+    Write-Host ("Build transcript: {0}" -f $BuildLog)
+    try {
+        Stop-Transcript | Out-Null
+    }
+    catch {
+    }
+}

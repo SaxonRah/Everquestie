@@ -371,6 +371,12 @@ class ActivityPathwayEngineTests(unittest.TestCase):
             runtime = RuntimeDatabase(knowledge, state)
             try:
                 engine = ActivityPathwayEngine(runtime)
+                engine._build_index = lambda: self.fail(
+                    "packaged runtime rebuilt the full direct pathway index"
+                )
+                engine._build_graph_index = lambda: self.fail(
+                    "packaged runtime rebuilt the full pathway relationship graph"
+                )
                 engine.reset_session(engine.latest_observed_event_id())
                 runtime.add_event(
                     Event(

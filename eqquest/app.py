@@ -650,7 +650,12 @@ class EverQuestieApp(tk.Tk):
         ttk.Label(mirrors, text="DB mirror").grid(row=0, column=0, sticky="w")
         ttk.Entry(mirrors, textvariable=self.db_mirror_var).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.db_mirror_var)).grid(row=0, column=2)
-        ttk.Button(mirrors, text="Import / refresh DB mirror", command=self._import_db_mirror).grid(row=0, column=3, padx=(6, 0))
+        self.db_mirror_import_button = ttk.Button(
+            mirrors,
+            text="Import / refresh DB mirror",
+            command=self._import_db_mirror,
+        )
+        self.db_mirror_import_button.grid(row=0, column=3, padx=(6, 0))
 
         ttk.Label(mirrors, text="Wiki mirror").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(mirrors, textvariable=self.wiki_mirror_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
@@ -1208,17 +1213,66 @@ class EverQuestieApp(tk.Tk):
         messagebox.showerror("EverQuest client compile failed", str(exc))
 
     def _import_db_mirror(self) -> None:
+        if getattr(self, "_db_mirror_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Allakhazam mirror compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = self.db_mirror_var.get().strip()
         if not folder:
             self._browse_source_folder(self.db_mirror_var)
             folder = self.db_mirror_var.get().strip()
         if not folder:
             return
-        try:
-            summary = self.mirror_importer.import_mirror(folder)
-        except Exception as exc:
-            messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
-            return
+
+        self._save_settings_now()
+        self._db_mirror_import_running = True
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="disabled")
+        self.status.set(
+            f"Importing Allakhazam mirror in background: {Path(folder).name}"
+        )
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+                summary = AllakhazamMirrorImporter(worker_db).import_mirror(folder)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(
+                    0,
+                    lambda exc=exc: self._finish_db_mirror_import_error(exc),
+                )
+                return
+
+            worker_db.close()
+            self.after(
+                0,
+                lambda summary=summary, folder=folder: self._finish_db_mirror_import(
+                    folder,
+                    summary,
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamMirror",
+            daemon=True,
+        ).start()
+
+    def _finish_db_mirror_import(self, folder: str, summary) -> None:
+        self._db_mirror_import_running = False
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="normal")
 
         self.db.set_meta("allakhazam_db_mirror", folder)
 
@@ -1226,10 +1280,22 @@ class EverQuestieApp(tk.Tk):
         discovered = sum(r.discovered_entities for r in summary.imported)
         steps = sum(r.quest_steps for r in summary.imported)
         locations = sum(r.locations for r in summary.imported)
+
+        tracked_ids = {
+            int(row["id"])
+            for row in self.db.tracked_quests()
+        }
         for imported in summary.imported:
-            if imported.kind == "quest" and self.db.is_quest_tracked(imported.entity_id):
+            if (
+                imported.kind == "quest"
+                and int(imported.entity_id) in tracked_ids
+            ):
                 self._reconcile_tracked_quest(imported.entity_id)
 
+        self.status.set(
+            f"Allakhazam mirror refresh complete: {summary.changed:,} changed, "
+            f"{summary.unchanged:,} unchanged"
+        )
         messagebox.showinfo(
             "Allakhazam DB mirror refreshed",
             f"Imported/changed entity pages: {summary.changed}\n"
@@ -1244,6 +1310,13 @@ class EverQuestieApp(tk.Tk):
         self._search_knowledge()
         self._refresh_guidance()
         self._refresh_source_summary()
+
+    def _finish_db_mirror_import_error(self, exc: Exception) -> None:
+        self._db_mirror_import_running = False
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="normal")
+        self.status.set("Allakhazam DB mirror import failed")
+        messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
 
     def _import_wiki_mirror(self) -> None:
         folder = self.wiki_mirror_var.get().strip()

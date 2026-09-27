@@ -10,6 +10,10 @@ class RuntimeSourcePolicyTests(unittest.TestCase):
         init_source = inspect.getsource(EverQuestieApp.__init__)
         self.assertNotIn("rebuild_imported_pages(", init_source)
 
+    def test_startup_defers_full_source_provenance_summary(self):
+        build_source = inspect.getsource(EverQuestieApp._build_ui)
+        self.assertNotIn("self._refresh_source_summary()", build_source)
+
     def test_legacy_allakhazam_rebuild_remains_explicitly_available(self):
         self.assertTrue(callable(AllakhazamImporter.rebuild_imported_pages))
 

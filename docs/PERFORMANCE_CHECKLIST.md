@@ -18,7 +18,7 @@ This checklist tracks the performance hardening required now that the knowledge 
 - [x] Remove N+1 alias queries from local search ranking.
 - [x] Precompile Activity Pathway objective/drop indexes into the release knowledge DB.
 - [x] Precompile canonical quest-step zone IDs for Zone Opportunities.
-- [ ] Bound/cursor Activity Cluster and other session projections so refresh cost depends on new events, not total session history.
+- [x] Cursor Activity Cluster so refresh cost depends on new events, not total session history.\n- [ ] Cursor any remaining session projections that still rescan accumulated observations.
 - [ ] Cache other immutable runtime projections that currently rebuild from normalized knowledge.
 
 ## P2 — shrink and isolate the shipped runtime artifact

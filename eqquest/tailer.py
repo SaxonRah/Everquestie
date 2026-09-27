@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Callable
 
@@ -48,6 +47,9 @@ class LogTailer:
 
     def stop(self) -> None:
         self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self.poll_seconds * 5.0))
 
     @staticmethod
     def _same_file(handle_stat, path_stat) -> bool:

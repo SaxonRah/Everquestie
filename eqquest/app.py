@@ -1025,6 +1025,11 @@ class EverQuestieApp(tk.Tk):
             self._set_database_text(f"Database diagnostics failed:\n\n{exc}")
 
     def _rebuild_search_index(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Search-index rebuilding is builder-only; packaged EverQuestie uses the shipped index."
+            )
+            return
         if getattr(self, "_database_rebuild_running", False):
             return
         self._database_rebuild_running = True
@@ -1225,6 +1230,11 @@ class EverQuestieApp(tk.Tk):
         self.source_summary_text.configure(state="disabled")
 
     def _import_eq_client(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "EverQuest client-data import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         folder = self.eq_game_path_var.get().strip()
         if not folder:
             self._browse_eq_game_path()
@@ -1249,6 +1259,11 @@ class EverQuestieApp(tk.Tk):
         self._refresh_source_summary()
 
     def _compile_eq_client_via_mcp(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "EverQuest client-data compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         eq_path = self.eq_game_path_var.get().strip()
         mcp_path = self.mcp_path_var.get().strip()
         if not eq_path:
@@ -2358,6 +2373,11 @@ class EverQuestieApp(tk.Tk):
             open_url(r["source_url"])
 
     def _import_saved_html(self):
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Saved Allakhazam page import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         source_url = self.import_url_var.get().strip() or None
 
         html_path = filedialog.askopenfilename(

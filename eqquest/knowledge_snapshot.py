@@ -8,6 +8,7 @@ import re
 import sqlite3
 from typing import Any
 
+from .activity_pathways import ActivityPathwayEngine
 from .db import Database
 from .db_audit import identity_audit_text
 from .entity_lifecycle_records import reconcile_allakhazam_spell_lifecycle
@@ -47,6 +48,7 @@ KNOWLEDGE_META_KEYS = {
     "map_catalog_version",
     "map_catalog_last_source",
     "map_links_dirty",
+    "activity_pathway_catalog_version",
     "mechanics_catalog_version",
     "mechanics_catalog_coverage",
     "provider_zone_catalog_version",
@@ -310,6 +312,12 @@ def finalize_knowledge_snapshot(
     # Coverage is compiled only after both map and provider topology are finalized, so
     # release metrics describe the exact graph users will receive.
     zone_coverage = ZoneCoverageCatalog(db).compile_summary()
+
+    # Potential Pathways must never reconstruct the full quest/item/NPC relationship
+    # graph on the player's Tk thread. Compile exact observation-key lookups once into
+    # the immutable release artifact; mutable builder databases retain the fallback
+    # reconstruction path for development/import work.
+    ActivityPathwayEngine(db).compile_catalog()
 
     stripped_user = strip_user_state(db)
     stripped_paths, stripped_meta, stripped_payloads = strip_builder_local_state(db)

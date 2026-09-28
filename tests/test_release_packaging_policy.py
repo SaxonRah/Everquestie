@@ -29,8 +29,12 @@ class ReleasePackagingPolicyTests(unittest.TestCase):
         )
 
     def test_release_defaults_to_builder_workspace_not_legacy_runtime_db(self):
-        self.assertIn('Join-Path (Join-Path $ProjectRoot "build") "working.sqlite3"', self.script)
+        self.assertIn('$WorkingDb = Resolve-FromProject $WorkingDb "build\\working.sqlite3"', self.script)
         self.assertNotIn('Join-Path (Join-Path $HOME ".eqquest") "eqquest.sqlite3"', self.script)
+
+    def test_release_resolves_explicit_relative_working_db_from_project_root(self):
+        self.assertIn('$WorkingDb = Resolve-FromProject $WorkingDb "build\\working.sqlite3"', self.script)
+        self.assertNotIn('$WorkingDb = [System.IO.Path]::GetFullPath($WorkingDb)', self.script)
 
     def test_publishable_release_has_route_acceptance_gate(self):
         self.assertIn('audit_route_acceptance.py', self.script)

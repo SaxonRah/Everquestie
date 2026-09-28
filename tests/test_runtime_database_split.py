@@ -117,6 +117,10 @@ class RuntimeDatabaseSplitTests(unittest.TestCase):
             db.track_quest(quest_id)
             db.set_step_progress(quest_id, 1, 1, True)
 
+            def fail_if_state_table_is_scanned(_state):
+                self.fail("tracked-quest lookup scanned and resolved every state row")
+
+            db._resolve_state_identity = fail_if_state_table_is_scanned
             self.assertTrue(db.is_quest_tracked(quest_id))
             self.assertEqual(int(db.quest_steps(quest_id)[0]["complete"]), 1)
             self.assertEqual(db.get_meta("map_root"), r"C:\EverQuest\maps")
@@ -141,6 +145,48 @@ class RuntimeDatabaseSplitTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(len(db.observed_event_history()), 1)
+        finally:
+            db.close()
+
+    def test_worker_connection_preserves_split_runtime_boundary(self):
+        knowledge = self.root / "worker-knowledge.sqlite3"
+        state = self.root / "worker-user.sqlite3"
+        quest_id = self._build_snapshot(knowledge)
+
+        db = RuntimeDatabase(knowledge, state, migrate_legacy=False)
+        try:
+            db.track_quest(quest_id)
+            worker = db.open_worker_connection()
+            try:
+                self.assertTrue(worker.runtime_split)
+                self.assertEqual(worker.knowledge_path, db.knowledge_path)
+                self.assertEqual(worker.state_path, db.state_path)
+                self.assertTrue(worker.is_quest_tracked(quest_id))
+
+                worker.add_event(
+                    Event(
+                        kind="loot",
+                        raw="worker observation",
+                        item="Portable Token",
+                    )
+                )
+                worker.set_meta(
+                    "tracked_reconcile_knowledge_revision",
+                    "snapshot|built-at",
+                )
+                with self.assertRaises(sqlite3.OperationalError):
+                    worker.upsert_entity(
+                        kind="item",
+                        name="Worker Must Not Write Knowledge",
+                    )
+            finally:
+                worker.close()
+
+            self.assertEqual(len(db.observed_event_history()), 1)
+            self.assertEqual(
+                db.get_meta("tracked_reconcile_knowledge_revision"),
+                "snapshot|built-at",
+            )
         finally:
             db.close()
 

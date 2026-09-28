@@ -8,7 +8,11 @@ import unittest
 from eqquest.activity_pathways import ActivityPathwayEngine
 from eqquest.db import Database
 from eqquest.events import Event
-from eqquest.session_activity_ledger import latest_observed_event, session_ledger_entry
+from eqquest.session_activity_ledger import (
+    SessionLedgerCounter,
+    latest_observed_event,
+    session_ledger_entry,
+)
 
 
 class SessionActivityLedgerTests(unittest.TestCase):
@@ -161,6 +165,66 @@ class SessionActivityLedgerTests(unittest.TestCase):
         self.assertIn("no personal kill credit inferred", text)
         self.assertIn("target observed slain; this log line does not prove your kill credit", text)
         self.assertIn("POTENTIAL PATHWAY | Potential Rat Research", text)
+
+
+    def test_incremental_counter_resets_at_new_monitoring_boundary(self) -> None:
+        counter = SessionLedgerCounter()
+        counter.reset(self.boundary)
+
+        self.db.add_event(
+            Event(kind="kill", raw="first live kill", actor="a sewer rat", target="You")
+        )
+        first_id = self._latest_id()
+        first = session_ledger_entry(
+            self.db,
+            first_id,
+            self.boundary,
+            current_zone="South Qeynos",
+            pathway_suggestions=self._suggestions(),
+            counter=counter,
+        )
+        self.assertIn("personal kill #1", "\n".join(first.annotations))
+        self.assertEqual(counter.subject_counts("kill", "a sewer rat"), (1, 1))
+        self.assertEqual(counter.last_event_id, first_id)
+
+        self.db.add_event(
+            Event(
+                kind="kill",
+                raw="second live kill",
+                actor="a sewer rat",
+                target="HelpfulRanger",
+            )
+        )
+        second_id = self._latest_id()
+        second = session_ledger_entry(
+            self.db,
+            second_id,
+            self.boundary,
+            current_zone="South Qeynos",
+            pathway_suggestions=self._suggestions(),
+            counter=counter,
+        )
+        self.assertIn("observed slain x2 this session", "\n".join(second.annotations))
+        self.assertEqual(counter.subject_counts("kill", "a sewer rat"), (2, 1))
+        self.assertEqual(counter.last_event_id, second_id)
+
+        counter.reset(second_id)
+        self.db.add_event(
+            Event(kind="kill", raw="new session kill", actor="a sewer rat", target="You")
+        )
+        third_id = self._latest_id()
+        third = session_ledger_entry(
+            self.db,
+            third_id,
+            second_id,
+            current_zone="South Qeynos",
+            pathway_suggestions=(),
+            counter=counter,
+        )
+        third_text = "\n".join(third.annotations)
+        self.assertIn("personal kill #1", third_text)
+        self.assertIn("observed slain x1 this session", third_text)
+        self.assertEqual(counter.subject_counts("kill", "a sewer rat"), (1, 1))
 
     def test_loot_tracks_count_corpse_source_pathway_and_reviewed_item_use(self) -> None:
         self.db.add_event(

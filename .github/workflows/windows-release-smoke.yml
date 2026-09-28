@@ -32,6 +32,18 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Validate builder PowerShell syntax
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw .\tools\build_full_knowledge.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw .\tools\clean_knowledge_build.ps1))
+
+      - name: Test Live log and map continuity
+        shell: pwsh
+        run: |
+          python -m unittest tests.test_tailer tests.test_map_live_zone_refresh -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install PyInstaller
         shell: pwsh
         run: |

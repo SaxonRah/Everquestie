@@ -155,3 +155,167 @@ A source checkout can be launched without MCP:
 ```
 
 The legacy `run_with_submodule.cmd` filename remains only as a compatibility alias and no longer initializes, installs, verifies, or builds MCP. It simply launches the source application.
+
+
+## Diagnose a travel-supplement build failure without rebuilding providers
+
+If a full provider build reaches the approved travel-supplement stage and fails, the
+expensive provider-built `build\working.sqlite3` is normally already published. Reproduce
+only the travel compilation against a disposable SQLite clone:
+
+```powershell
+python .\tools\diagnose_travel_supplements.py 2>&1 |
+  Tee-Object .\build\travel-supplement-diagnostic.log
+```
+
+The diagnostic never modifies `build\working.sqlite3`. It prints each manifest before
+compilation and emits the full traceback for the first failing manifest. The
+`Tee-Object` copy preserves the failure even if the console buffer is later overwritten.
+
+Full knowledge builds also create a timestamped PowerShell transcript under
+`build\logs\full-knowledge-build-*.log`, including native Python output and failures.
+
+## Rebuilding from a clean mirror with unverified HTTrack provenance
+
+The canonical full build still requires HTTrack evidence that belongs to the selected
+project and proves a naturally completed crawl. The audit now reads the HTTrack
+`-O1` output directory from `hts-log.txt` when present; a log copied from a different
+HTTrack project is reported as stale/mismatched and is not allowed to prove the current
+mirror either complete or interrupted.
+
+For development or corpus inspection, a captured corpus can still be imported explicitly
+when all of the following are true:
+
+- no `hts-in_progress.lock` is present;
+- the HTTrack log is readable;
+- the mirror contains zero temporary HTTrack files;
+- completion provenance is either an interrupted run for this project or a stale/mismatched
+  `hts-log.txt` from another HTTrack output project.
+
+Use the explicit developer override:
+
+```powershell
+.\tools\build_full_knowledge.ps1 -AllowUnverifiedMirror
+```
+
+`-AllowInterruptedMirror` remains an alias for the same switch.
+
+The generated build version is suffixed `-full-unverified-mirror`. The mirror audit
+JSON records `canonical_complete: false`, the reason completion provenance could not
+be verified, and whether the clean-corpus override was accepted. The final console
+summary also warns that the snapshot is not canonical crawl-complete. Do not publish
+such a snapshot as a crawl-complete release artifact until matching completion evidence
+is recovered.
+
+You do not need to run the cleanup script again after a completion-gate failure that
+occurred before the database build stage.
+
+## Builder path resolution
+
+The full knowledge build reads the same `%USERPROFILE%\.eqquest\settings.ini`
+used by the EverQuestie UI for local source paths. Before starting a long rebuild,
+you can print exactly what the builder will use:
+
+```powershell
+python .\tools\resolve_builder_paths.py
+```
+
+The resolver reads:
+
+- `everquest_install`
+- `allakhazam_db_mirror`
+- `mcp_repository`
+- `map_root`
+
+For Allakhazam, `allakhazam_db_mirror` may point either to the HTTrack project
+directory or directly to its `everquest.allakhazam.com` child; the builder derives
+both paths. For maps, a parent maps directory or either Good's/Brewall pack directory
+is accepted and the sibling pack is derived.
+
+## Clean full knowledge rebuild
+
+The canonical full build already writes a new `build\working.sqlite3.building`
+database and atomically replaces the old working DB only after provider compilation
+succeeds. For an explicit cleanup of generated artifacts before a from-scratch build:
+
+```powershell
+.\tools\clean_knowledge_build.ps1
+.\tools\build_full_knowledge.ps1
+```
+
+Default cleanup removes the canonical builder DB/snapshot, SQLite sidecars, temporary
+builder DB, and full-build audit reports. It deliberately preserves source inputs and
+all player state.
+
+Useful opt-in cleanup switches:
+
+```powershell
+# Also delete the legacy mutable DB used by plain source-checkout launches.
+.\tools\clean_knowledge_build.ps1 -IncludeSourceCheckoutDb
+
+# Also delete packaged writable player state (tracked quests, observed history, bindings).
+.\tools\clean_knowledge_build.ps1 -IncludeUserState
+
+# Also remove generated release staging/output directories.
+.\tools\clean_knowledge_build.ps1 -IncludeReleaseArtifacts
+
+# Deliberate total local DB/release reset while preserving source inputs/settings.
+.\tools\clean_knowledge_build.ps1 `
+  -IncludeSourceCheckoutDb `
+  -IncludeUserState `
+  -IncludeReleaseArtifacts
+```
+
+The cleanup helper never deletes the EQ installation, Allakhazam HTTrack mirror,
+everquest1-mcp checkout, Good/Brewall map packs, or `%USERPROFILE%\.eqquest\settings.ini`.
+
+After rebuilding, test the new finalized database with:
+
+```powershell
+.\tools\run_packaged.ps1
+```
+
+Do not use plain `py EverQuestie.py` to validate a freshly built runtime snapshot
+unless you intentionally want source-checkout mode; that launcher may use
+`%USERPROFILE%\.eqquest\eqquest.sqlite3` instead of the new `dist` snapshot.
+
+## Full-corpus performance smoke
+
+Use the synthetic fixture when you want a repeatable large knowledge corpus without depending on a local Allakhazam mirror:
+
+```powershell
+python .\tools\create_performance_smoke_fixture.py `
+  --working-db .\build\perf-working.sqlite3 `
+  --snapshot-db .\build\perf-knowledge.sqlite3 `
+  --entities 50000 `
+  --aliases-per-entity 2 `
+  --force
+```
+
+The fixture includes 50,000 filler entities by default, two aliases per filler, and a small exact NPC/item/quest chain named `Performance Rat`, `Performance Token`, and `Performance Quest`. It compiles the same Activity Pathway catalog used by release snapshots and finalizes an immutable runtime knowledge DB.
+
+Benchmark the finalized snapshot without modifying it:
+
+```powershell
+python .\tools\benchmark_runtime_performance.py `
+  .\build\perf-knowledge.sqlite3 `
+  --iterations 10 `
+  --json-out .\build\perf-after.json
+```
+
+The benchmark creates temporary user-state databases and reports median/min/max timings for runtime DB open, local search, first Live projection, steady-state Live projection, first loot refresh, steady-state loot refresh, and one-new-event loot refresh. It also records snapshot size and result counts so a suspiciously fast empty lookup is visible.
+
+For the real full-Allakhazam release snapshot, provide representative names that exist in that corpus:
+
+```powershell
+python .\tools\benchmark_runtime_performance.py `
+  .\dist\everquestie-knowledge.sqlite3 `
+  --query "Bone Chips" `
+  --loot-item "Bone Chips" `
+  --kill-npc "a decaying skeleton" `
+  --zone "South Qeynos" `
+  --iterations 10 `
+  --json-out .\build\full-allakhazam-after.json
+```
+
+To compare against an older build, benchmark the old snapshot into a baseline JSON first, then pass `--baseline-json PATH`. The output adds median millisecond and percentage deltas for metrics present in both runs. Keep real-corpus benchmark JSON under `build/` or another local artifact directory unless it is intentionally being added as release evidence.

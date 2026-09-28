@@ -251,10 +251,15 @@ class MirrorImportResult:
     unchanged: int = 0
     ignored: int = 0
     read_errors: int = 0
+    cancelled: bool = False
 
     @property
     def changed(self) -> int:
         return len(self.imported)
+
+    @property
+    def processed(self) -> int:
+        return self.changed + self.unchanged + self.ignored + self.read_errors
 
 
 class AllakhazamImporter:
@@ -465,7 +470,7 @@ class AllakhazamImporter:
 
         summary = MirrorImportResult()
         with self.db.batch():
-            for path in sorted(root.rglob("*.htm*")):
+            for path in root.rglob("*.htm*"):
                 if path.name.lower().endswith(".tmp"):
                     summary.ignored += 1
                     continue

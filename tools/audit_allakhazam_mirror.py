@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,27 @@ _HTTRACK_INTERRUPTION_MARKERS = (
     "mirror aborted",
     "exit requested by engine",
 )
+
+
+_HTTRACK_OUTPUT_RE = re.compile(
+    r"(?:^|\s)-O1\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s)]+))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _extract_httrack_output_root(log_text: str) -> str | None:
+    match = _HTTRACK_OUTPUT_RE.search(log_text)
+    if match is None:
+        return None
+    return next((value for value in match.groups() if value), None)
+
+
+def _project_path_key(value: str | Path) -> str:
+    text = str(value).strip().replace("\\", "/").rstrip("/")
+    wsl = re.match(r"^/mnt/([a-zA-Z])/(.*)$", text)
+    if wsl:
+        text = f"{wsl.group(1)}:/{wsl.group(2)}"
+    return text.casefold()
 
 
 def _write_json_report(path: str | Path, payload: dict[str, object]) -> Path:
@@ -47,6 +69,8 @@ def _audit_httrack_project(folder: str | Path) -> dict[str, object]:
     log_read_error: str | None = None
     completion_summary_present = False
     interruption_markers: list[str] = []
+    logged_output_root: str | None = None
+    log_project_match: bool | None = None
 
     if log_present:
         try:
@@ -59,9 +83,18 @@ def _audit_httrack_project(folder: str | Path) -> dict[str, object]:
             interruption_markers = [
                 marker for marker in _HTTRACK_INTERRUPTION_MARKERS if marker in folded
             ]
+            logged_output_root = _extract_httrack_output_root(log_text)
+            if logged_output_root:
+                log_project_match = (
+                    _project_path_key(logged_output_root) == _project_path_key(root)
+                )
 
     if lock_present:
         run_state = "active"
+    elif log_project_match is False:
+        # A copied/stale hts-log.txt from a different HTTrack output project cannot
+        # prove this project's completion or interruption state.
+        run_state = "unknown"
     elif interruption_markers:
         run_state = "interrupted"
     elif log_present and log_read_error is None and completion_summary_present:
@@ -77,6 +110,8 @@ def _audit_httrack_project(folder: str | Path) -> dict[str, object]:
         "httrack_log_read_error": log_read_error,
         "httrack_completion_summary_present": completion_summary_present,
         "httrack_interruption_markers": interruption_markers,
+        "httrack_logged_output_root": logged_output_root,
+        "httrack_log_project_match": log_project_match,
     }
 
 
@@ -94,6 +129,8 @@ def _format_httrack_project_audit(payload: dict[str, object]) -> str:
             f"  hts-log.txt present: {payload['httrack_log_file_present']}",
             f"  Completion summary present: {payload['httrack_completion_summary_present']}",
             f"  Interruption markers: {marker_text}",
+            f"  Logged HTTrack output root: {payload['httrack_logged_output_root'] or 'not recorded'}",
+            f"  Log matches project root: {payload['httrack_log_project_match']}",
             f"  Log read error: {read_error}",
         ]
     )
@@ -138,6 +175,18 @@ def main(argv: list[str] | None = None) -> int:
             "--httrack-project and fails closed for active, interrupted, or unknown runs."
         ),
     )
+    parser.add_argument(
+        "--allow-unverified-clean",
+        "--allow-interrupted-clean",
+        dest="allow_unverified_clean",
+        action="store_true",
+        help=(
+            "Developer-only override for rebuilding from a clean captured corpus when "
+            "the project is inactive and has no temporary files, but completion "
+            "provenance is interrupted or the attached hts-log belongs to a different "
+            "HTTrack output project. This does NOT mark the mirror canonical-complete."
+        ),
+    )
     args = parser.parse_args(argv)
 
     report = audit_allakhazam_mirror(args.mirror)
@@ -146,6 +195,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.httrack_project:
         httrack_payload = _audit_httrack_project(args.httrack_project)
         payload.update(httrack_payload)
+
+    unverified_clean_reason: str | None = None
+    unverified_clean_accepted = False
+    if args.require_complete and httrack_payload is not None:
+        run_state = str(httrack_payload["httrack_run_state"])
+        if run_state == "interrupted":
+            unverified_clean_reason = "interrupted HTTrack run"
+        elif run_state == "unknown" and httrack_payload["httrack_log_project_match"] is False:
+            unverified_clean_reason = "hts-log.txt belongs to a different HTTrack output project"
+
+        unverified_clean_accepted = bool(
+            args.allow_unverified_clean
+            and unverified_clean_reason is not None
+            and not report.temporary_files
+            and not bool(httrack_payload["httrack_lock_file_present"])
+            and bool(httrack_payload["httrack_log_file_present"])
+            and httrack_payload["httrack_log_read_error"] is None
+        )
+
+    payload["completion_policy"] = (
+        "allow-unverified-clean" if args.allow_unverified_clean else "canonical-complete"
+    )
+    payload["canonical_complete"] = bool(
+        httrack_payload is not None
+        and not report.temporary_files
+        and str(httrack_payload["httrack_run_state"]) == "completed"
+    )
+    payload["unverified_clean_capture_accepted"] = unverified_clean_accepted
+    payload["unverified_clean_capture_reason"] = unverified_clean_reason
+    payload["interrupted_clean_capture_accepted"] = bool(
+        unverified_clean_accepted and str(httrack_payload["httrack_run_state"]) == "interrupted"
+    ) if httrack_payload is not None else False
 
     if args.output:
         _write_json_report(args.output, payload)
@@ -156,6 +237,12 @@ def main(argv: list[str] | None = None) -> int:
         print(format_allakhazam_mirror_audit(report))
         if httrack_payload is not None:
             print(_format_httrack_project_audit(httrack_payload))
+        if unverified_clean_accepted:
+            print(
+                "\nDEVELOPER OVERRIDE: accepting a clean captured corpus with "
+                f"unverified completion provenance ({unverified_clean_reason}). "
+                "This mirror is NOT canonical-complete."
+            )
 
     if not args.require_complete:
         return 0
@@ -174,8 +261,14 @@ def main(argv: list[str] | None = None) -> int:
             f"{report.temporary_files:,} temporary HTTrack file(s) remain in the mirror"
         )
     run_state = str(httrack_payload["httrack_run_state"])
-    if run_state != "completed":
-        failures.append(f"HTTrack run state is {run_state!r}, not 'completed'")
+    if run_state != "completed" and not unverified_clean_accepted:
+        if httrack_payload["httrack_log_project_match"] is False:
+            failures.append(
+                "hts-log.txt belongs to a different HTTrack output project and cannot "
+                "prove this mirror complete"
+            )
+        else:
+            failures.append(f"HTTrack run state is {run_state!r}, not 'completed'")
 
     if failures:
         print(
@@ -183,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if unverified_clean_accepted:
+        print(
+            "WARNING: proceeding with a noncanonical Allakhazam capture whose completion "
+            f"provenance is unverified ({unverified_clean_reason}); do not publish this "
+            "snapshot as crawl-complete.",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from eqquest.db import Database
-from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.knowledge_snapshot import RUNTIME_SOURCE_TEXT_LIMIT, create_knowledge_snapshot
 from eqquest.map_catalog import MapCatalog
 
 
@@ -42,6 +42,21 @@ class KnowledgeSnapshotTests(unittest.TestCase):
                 external_id="500",
                 external_namespace="eqclient:quest",
                 notes="Knowledge that should remain in the release snapshot.",
+            )
+            db.upsert_source_page(
+                url="https://everquest.allakhazam.com/db/quest.html?quest=999999",
+                title="Archived Mirror Quest",
+                entity_type="quest",
+                sha256="allakhazam-raw-html",
+                plain_text=(
+                    "Readable source text remains available at runtime. "
+                    + ("source-body-" * 3000)
+                ),
+                raw_html="<html><body>builder-only raw mirror page</body></html>",
+                source_name="Allakhazam",
+                source_kind="local_mirror",
+                source_key="quest/999999.html",
+                source_version="mirror-test",
             )
             db.conn.execute(
                 "INSERT INTO tracked_quests(quest_entity_id,tracked_at,active_step) VALUES(?,?,?)",
@@ -84,7 +99,7 @@ class KnowledgeSnapshotTests(unittest.TestCase):
         self.assertEqual(report.stripped_user_rows["quest_progress"], 1)
         self.assertEqual(report.stripped_user_rows["observed_events"], 1)
         self.assertEqual(report.stripped_source_paths, 1)
-        self.assertEqual(report.stripped_builder_payloads, 1)
+        self.assertEqual(report.stripped_builder_payloads, 2)
         self.assertEqual(report.diagnostics["integrity"], "ok")
         reviewed = report.diagnostics["reviewed_release_inputs"]
         self.assertEqual(reviewed["status"], "ok")
@@ -101,6 +116,13 @@ class KnowledgeSnapshotTests(unittest.TestCase):
                     "SELECT local_path FROM source_pages WHERE url='eqclient+mcp://save_data_snapshot'"
                 ).fetchone()[0],
                 r"C:\EverQuest",
+            )
+            self.assertGreater(
+                working.execute(
+                    "SELECT length(plain_text) FROM source_pages "
+                    "WHERE url='https://everquest.allakhazam.com/db/quest.html?quest=999999'"
+                ).fetchone()[0],
+                RUNTIME_SOURCE_TEXT_LIMIT,
             )
         finally:
             working.close()
@@ -120,6 +142,18 @@ class KnowledgeSnapshotTests(unittest.TestCase):
             self.assertEqual(source["plain_text"], "")
             self.assertEqual(source["source_name"], "EverQuest Client via everquest1-mcp")
             self.assertEqual(source["source_version"], "1.2.3 @ abcdef")
+
+            mirror = snapshot.execute(
+                "SELECT plain_text,raw_html FROM source_pages "
+                "WHERE url='https://everquest.allakhazam.com/db/quest.html?quest=999999'"
+            ).fetchone()
+            self.assertEqual(len(mirror["plain_text"]), RUNTIME_SOURCE_TEXT_LIMIT)
+            self.assertTrue(
+                mirror["plain_text"].startswith(
+                    "Readable source text remains available at runtime. "
+                )
+            )
+            self.assertEqual(mirror["raw_html"], "")
 
             meta = dict(snapshot.execute("SELECT key,value FROM app_meta").fetchall())
             self.assertEqual(meta["database_role"], "knowledge_snapshot")

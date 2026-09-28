@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .live_composition import chain_live_start
-from .session_activity_ledger import latest_observed_event, session_ledger_entry
+from .session_activity_ledger import SessionLedgerCounter, latest_observed_event, session_ledger_entry
 
 
 _SESSION_ACTIVITY_LEDGER_MARKER = "_everquestie_session_activity_ledger_ui"
@@ -26,9 +26,12 @@ def install_session_activity_ledger_ui() -> None:
 
     def _build_live(self) -> None:
         current_build_live(self)
-        self._session_activity_ledger_last_event_id = int(
+        boundary = int(
             getattr(self, "_activity_session_start_event_id", 0) or 0
         )
+        self._session_activity_ledger_last_event_id = boundary
+        self._session_activity_ledger_counter = SessionLedgerCounter()
+        self._session_activity_ledger_counter.reset(boundary)
         # Keep the existing chronological text surface and scrollbar. Only its label
         # changes so the player knows indented source-backed intelligence can appear
         # beneath the untouched parsed event rows.
@@ -43,9 +46,15 @@ def install_session_activity_ledger_ui() -> None:
                 pass
 
     def _reset_session_activity_ledger_after_start(self) -> None:
-        self._session_activity_ledger_last_event_id = int(
+        boundary = int(
             getattr(self, "_activity_session_start_event_id", 0) or 0
         )
+        self._session_activity_ledger_last_event_id = boundary
+        counter = getattr(self, "_session_activity_ledger_counter", None)
+        if counter is None:
+            counter = SessionLedgerCounter()
+            self._session_activity_ledger_counter = counter
+        counter.reset(boundary)
 
     def _append_event(self, text: str) -> None:
         current_append_event(self, text)
@@ -88,6 +97,7 @@ def install_session_activity_ledger_ui() -> None:
             boundary,
             current_zone=getattr(self.state_model, "current_zone", None),
             pathway_suggestions=suggestions,
+            counter=self._session_activity_ledger_counter,
         )
         if entry is None:
             return

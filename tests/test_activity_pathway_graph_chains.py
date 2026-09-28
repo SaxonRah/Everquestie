@@ -7,6 +7,8 @@ import unittest
 from eqquest.activity_pathways import ActivityPathwayEngine, pathway_detail_text
 from eqquest.db import Database
 from eqquest.events import Event
+from eqquest.knowledge_snapshot import create_knowledge_snapshot
+from eqquest.runtime import RuntimeDatabase
 
 
 class ActivityPathwayGraphChainTests(unittest.TestCase):
@@ -106,6 +108,71 @@ class ActivityPathwayGraphChainTests(unittest.TestCase):
                 self.assertIn("Loot two Bloodied Emblems", detail)
             finally:
                 db.close()
+
+    def test_packaged_runtime_uses_compiled_drop_chain_catalog(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            working = root / "working.sqlite3"
+            knowledge = root / "everquestie-knowledge.sqlite3"
+            state = root / "everquestie-user.sqlite3"
+
+            builder = Database(working)
+            try:
+                page = self._source(builder, "packaged-drop-chain")
+                quest = builder.upsert_entity(kind="quest", name="Packaged Drop Chain")
+                item = builder.upsert_entity(kind="item", name="Packaged Emblem")
+                npc = builder.upsert_entity(kind="npc", name="a packaged bloodsaber")
+                builder.upsert_relationship(
+                    item,
+                    npc,
+                    "drops_from",
+                    source_page_id=page,
+                    evidence="Drops Packaged Emblem",
+                )
+                builder.upsert_relationship(
+                    quest,
+                    item,
+                    "objective_loot",
+                    source_page_id=page,
+                    evidence="Loot Packaged Emblem",
+                )
+            finally:
+                builder.close()
+
+            create_knowledge_snapshot(
+                working,
+                knowledge,
+                snapshot_version="activity-graph-runtime-test",
+                overwrite=True,
+            )
+
+            runtime = RuntimeDatabase(knowledge, state)
+            try:
+                engine = ActivityPathwayEngine(runtime)
+                engine._build_index = lambda: self.fail(
+                    "packaged runtime rebuilt the direct pathway index"
+                )
+                engine._build_graph_index = lambda: self.fail(
+                    "packaged runtime rebuilt the relationship graph"
+                )
+                engine.reset_session(0)
+                runtime.add_event(
+                    Event(
+                        kind="kill",
+                        raw="kill",
+                        actor="a packaged bloodsaber",
+                    )
+                )
+                engine.refresh_observations()
+                suggestions = engine.suggestions()
+
+                self.assertEqual([row.quest_id for row in suggestions], [quest])
+                self.assertEqual(
+                    suggestions[0].evidence[0].path_kind,
+                    "mob_drop_quest",
+                )
+            finally:
+                runtime.close()
 
     def test_unprovenanced_relationships_never_create_graph_pathways(self):
         with tempfile.TemporaryDirectory() as tempdir:

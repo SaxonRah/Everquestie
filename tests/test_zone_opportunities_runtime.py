@@ -64,6 +64,20 @@ class ZoneOpportunityRuntimeTests(unittest.TestCase):
 
             runtime = RuntimeDatabase(knowledge, state)
             try:
+                compiled = runtime.conn.execute(
+                    """
+                    SELECT zone_entity_id,status
+                    FROM zone_opportunity_step_zones
+                    WHERE zone_text='Opportunity Zone'
+                    """
+                ).fetchone()
+                self.assertIsNotNone(compiled)
+                self.assertEqual(compiled["status"], "linked")
+                self.assertEqual(
+                    runtime.get_meta("zone_opportunity_catalog_version"),
+                    "1",
+                )
+
                 rows = zone_opportunities(runtime, "Opportunity Zone")
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0].quest_name, "Opportunity Quest")

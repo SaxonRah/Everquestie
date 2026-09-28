@@ -175,9 +175,11 @@ class ReleaseRouteAcceptanceContractTests(unittest.TestCase):
         self.assertEqual(
             [path.name for path in travel_manifests],
             [
+                "odus-current-live-zone-lines.json",
                 "odus-hole-pok.json",
                 "plane-of-knowledge-city-portals.json",
                 "shattering-of-ro.json",
+                "tss-current-live-bridges.json",
             ],
         )
         travel_importer = TravelSupplementImporter(self.db)

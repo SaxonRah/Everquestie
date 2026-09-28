@@ -322,28 +322,94 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
             sha256=digest,
         )
 
-    def import_mirror(self, folder: str | Path) -> MirrorImportResult:
-        """Incrementally compile recognized local HTTrack pages, including spell facts."""
+    def import_mirror(
+        self,
+        folder: str | Path,
+        *,
+        progress=None,
+        cancelled=None,
+        progress_every: int = 250,
+    ) -> MirrorImportResult:
+        """Incrementally compile recognized local HTTrack pages, including spell facts.
+
+        Traversal is streaming: progress is a processed-file count rather than a
+        percentage, so reporting never requires a second full mirror walk. Cancellation
+        is cooperative and commits already-processed pages before returning.
+        """
         root = Path(folder)
         if not root.is_dir():
             raise ValueError(f"Allakhazam mirror directory does not exist: {root}")
 
         recognized_entity_types = set(ENTITY_KINDS) | {"spell"}
         summary = MirrorImportResult()
+        report_every = max(1, int(progress_every))
+        last_reported = 0
+
+        def report(path=None, *, force: bool = False) -> None:
+            nonlocal last_reported
+            if progress is None:
+                return
+            processed = summary.processed
+            if not force and processed % report_every != 0:
+                return
+            if not force and processed == last_reported:
+                return
+            progress(summary, path)
+            last_reported = processed
+
         with self.db.batch():
-            for path in sorted(root.rglob("*.htm*")):
+            for path in root.rglob("*.htm*"):
+                if cancelled is not None and cancelled():
+                    summary.cancelled = True
+                    break
                 if path.name.lower().endswith(".tmp"):
                     summary.ignored += 1
+                    report(path)
                     continue
+
+                try:
+                    stat = path.stat()
+                except OSError:
+                    summary.read_errors += 1
+                    report(path)
+                    continue
+                local_path = str(path.resolve())
+
+                # Once a mirror page has been hashed/imported under this exact file
+                # fingerprint, a refresh can skip decoding and hashing it entirely.
+                # The URL/hash check below remains the correctness fallback whenever
+                # mtime/size changed or this metadata predates the fingerprint cache.
+                cached = self.db.conn.execute(
+                    """
+                    SELECT id, entity_type
+                    FROM source_pages
+                    WHERE source_name='Allakhazam'
+                      AND local_path=?
+                      AND local_mtime_ns=?
+                      AND local_size=?
+                    LIMIT 1
+                    """,
+                    (local_path, int(stat.st_mtime_ns), int(stat.st_size)),
+                ).fetchone()
+                if (
+                    cached is not None
+                    and cached["entity_type"] in recognized_entity_types
+                ):
+                    summary.unchanged += 1
+                    report(path)
+                    continue
+
                 try:
                     raw = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     summary.read_errors += 1
+                    report(path)
                     continue
 
                 canonical = extract_canonical_url(raw)
                 if not canonical or not is_allakhazam_url(canonical):
                     summary.ignored += 1
+                    report(path)
                     continue
 
                 digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
@@ -360,15 +426,44 @@ class AllakhazamMirrorImporter(AllakhazamImporter):
                     and existing["sha256"] == digest
                     and existing["entity_type"] in recognized_entity_types
                 ):
+                    self.db.conn.execute(
+                        """
+                        UPDATE source_pages
+                        SET local_path=?, local_mtime_ns=?, local_size=?
+                        WHERE id=?
+                        """,
+                        (
+                            local_path,
+                            int(stat.st_mtime_ns),
+                            int(stat.st_size),
+                            int(existing["id"]),
+                        ),
+                    )
                     summary.unchanged += 1
+                    report(path)
                     continue
 
                 try:
                     result = self._import_html_text(raw, path, canonical)
                 except ValueError:
                     summary.ignored += 1
+                    report(path)
                     continue
+                self.db.conn.execute(
+                    """
+                    UPDATE source_pages
+                    SET local_mtime_ns=?, local_size=?
+                    WHERE id=?
+                    """,
+                    (
+                        int(stat.st_mtime_ns),
+                        int(stat.st_size),
+                        int(result.source_page_id),
+                    ),
+                )
                 summary.imported.append(result)
+                report(path)
+        report(None, force=True)
         return summary
 
     def rebuild_imported_pages(self) -> list[ImportResult]:

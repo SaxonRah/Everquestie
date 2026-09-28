@@ -148,6 +148,19 @@ class ZoneTravelCatalogTests(unittest.TestCase):
             self.assertEqual(len(edges), 1)
             self.assertEqual(edges[0].target_zone_entity_id, target)
             self.assertEqual(catalog.shortest_path(source, target), [source, target])
+
+            statements: list[str] = []
+            runtime.conn.set_trace_callback(statements.append)
+            try:
+                self.assertEqual(catalog.shortest_path(source, target), [source, target])
+            finally:
+                runtime.conn.set_trace_callback(None)
+            sql = "\n".join(statements).casefold()
+            self.assertNotIn(
+                "select source_zone_entity_id,target_zone_entity_id,bidirectional from zone_travel_edges",
+                " ".join(sql.split()),
+            )
+
             with self.assertRaisesRegex(RuntimeError, "builder-only"):
                 catalog.reconcile_from_maps()
         finally:

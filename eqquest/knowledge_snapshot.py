@@ -8,6 +8,7 @@ import re
 import sqlite3
 from typing import Any
 
+from .activity_pathways import ActivityPathwayEngine
 from .db import Database
 from .db_audit import identity_audit_text
 from .entity_lifecycle_records import reconcile_allakhazam_spell_lifecycle
@@ -20,6 +21,7 @@ from .release_input_audit import audit_reviewed_release_inputs
 from .search_index import rebuild_compact_search_index
 from .zone_catalog import ZoneMapCatalog
 from .zone_coverage import ZoneCoverageCatalog
+from .zone_opportunities import compile_zone_opportunity_catalog
 from .zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 from .zone_travel import ZoneTravelCatalog
 
@@ -27,6 +29,7 @@ from .zone_travel import ZoneTravelCatalog
 # Schema compatibility and content release identity are deliberately separate.
 # Bump this only when a packaged knowledge DB requires a different reader contract.
 KNOWLEDGE_SCHEMA_VERSION = "1"
+RUNTIME_SOURCE_TEXT_LIMIT = 20_000
 
 USER_STATE_TABLES = (
     "quest_progress",
@@ -47,6 +50,8 @@ KNOWLEDGE_META_KEYS = {
     "map_catalog_version",
     "map_catalog_last_source",
     "map_links_dirty",
+    "activity_pathway_catalog_version",
+    "zone_opportunity_catalog_version",
     "mechanics_catalog_version",
     "mechanics_catalog_coverage",
     "provider_zone_catalog_version",
@@ -148,20 +153,49 @@ def strip_builder_local_state(db: Database) -> tuple[int, int, int]:
                     "SELECT COUNT(*) FROM source_pages WHERE trim(COALESCE(local_path,''))<>''"
                 ).fetchone()[0]
             )
-            db.conn.execute("UPDATE source_pages SET local_path='' WHERE local_path<>''")
+            db.conn.execute(
+                """
+                UPDATE source_pages
+                SET local_path='', local_mtime_ns=0, local_size=0
+                WHERE local_path<>'' OR local_mtime_ns<>0 OR local_size<>0
+                """
+            )
 
-            # MCP snapshot JSON is builder evidence, not runtime knowledge, and can
-            # contain the builder's EverQuest installation path. The normalized
-            # entities/support rows and source hash/version are the distributable data.
+            # Raw HTML/full page text are builder/rebuild inputs, not runtime
+            # knowledge. The Knowledge UI exposes at most RUNTIME_SOURCE_TEXT_LIMIT
+            # characters of primary source text, so keep only that bounded readable
+            # excerpt plus compact provenance. MCP snapshot JSON remains builder-only
+            # and may contain the builder's local EverQuest installation path.
             stripped_payloads = int(
                 db.conn.execute(
-                    "SELECT COUNT(*) FROM source_pages "
-                    "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+                    """
+                    SELECT COUNT(*)
+                    FROM source_pages
+                    WHERE raw_html<>''
+                       OR (source_kind='mcp_local_snapshot' AND plain_text<>'')
+                       OR (
+                           source_kind<>'mcp_local_snapshot'
+                           AND length(plain_text)>?
+                       )
+                    """,
+                    (RUNTIME_SOURCE_TEXT_LIMIT,),
                 ).fetchone()[0]
+            )
+            db.conn.execute(
+                "UPDATE source_pages SET raw_html='' WHERE raw_html<>''"
             )
             db.conn.execute(
                 "UPDATE source_pages SET plain_text='' "
                 "WHERE source_kind='mcp_local_snapshot' AND plain_text<>''"
+            )
+            db.conn.execute(
+                """
+                UPDATE source_pages
+                SET plain_text=substr(plain_text, 1, ?)
+                WHERE source_kind<>'mcp_local_snapshot'
+                  AND length(plain_text)>?
+                """,
+                (RUNTIME_SOURCE_TEXT_LIMIT, RUNTIME_SOURCE_TEXT_LIMIT),
             )
 
         if _table_exists(db, "map_sources"):
@@ -301,6 +335,13 @@ def finalize_knowledge_snapshot(
     # Coverage is compiled only after both map and provider topology are finalized, so
     # release metrics describe the exact graph users will receive.
     zone_coverage = ZoneCoverageCatalog(db).compile_summary()
+
+    # Potential Pathways must never reconstruct the full quest/item/NPC relationship
+    # graph on the player's Tk thread. Compile exact observation-key lookups once into
+    # the immutable release artifact; mutable builder databases retain the fallback
+    # reconstruction path for development/import work.
+    compile_zone_opportunity_catalog(db)
+    ActivityPathwayEngine(db).compile_catalog()
 
     stripped_user = strip_user_state(db)
     stripped_paths, stripped_meta, stripped_payloads = strip_builder_local_state(db)

@@ -141,6 +141,46 @@ def _count_event(db, kind: str, field: str, labels: tuple[str, ...]) -> tuple[in
     return int(row["n"]), str(row["first_observed"] or ""), str(row["last_observed"] or "")
 
 
+def personal_observation_counts(
+    db,
+    entity_id: int,
+    wanted_labels: tuple[str, ...],
+) -> tuple[PersonalObservationCount, ...]:
+    """Return only selected personal-history counters for one canonical entity.
+
+    Compact Live surfaces should not construct the full personal-observation report:
+    that report also derives historical zone context and grouped loot/source details.
+    This helper keeps the same exact/unique label policy while issuing only the count
+    queries the caller actually displays.
+    """
+    entity = db.entity(int(entity_id))
+    if entity is None:
+        return ()
+    kind = str(entity["kind"] or "")
+    specs = _EVENT_FIELDS.get(kind)
+    if not specs:
+        return ()
+
+    wanted = {str(label) for label in wanted_labels}
+    labels = _candidate_labels(db, int(entity_id), kind)
+    if not labels:
+        return ()
+
+    out: list[PersonalObservationCount] = []
+    for event_kind, field, label in specs:
+        if wanted and label not in wanted:
+            continue
+        where, params = _where_labels(field, labels)
+        row = db.conn.execute(
+            f"SELECT COUNT(*) AS n FROM observed_events WHERE kind=? AND {where}",
+            [event_kind, *params],
+        ).fetchone()
+        count = int(row["n"]) if row is not None else 0
+        if count:
+            out.append(PersonalObservationCount(label, count))
+    return tuple(out)
+
+
 def _merge_time(first: str, last: str, candidate_first: str, candidate_last: str) -> tuple[str, str]:
     if candidate_first and (not first or candidate_first < first):
         first = candidate_first

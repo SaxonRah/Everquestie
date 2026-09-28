@@ -11,14 +11,16 @@ FULL_BUILD = REPO_ROOT / "tools" / "build_full_knowledge.ps1"
 class FullBuildAllakhazamNormalizationDeltaTests(unittest.TestCase):
     def test_full_build_reuses_prebuild_mirror_report_after_snapshot_finalization(self) -> None:
         text = FULL_BUILD.read_text(encoding="utf-8")
-        mirror_audit = text.index("audit_allakhazam_mirror.py")
-        require_complete = text.index("--require-complete", mirror_audit)
-        build = text.index("build_knowledge_db.py", require_complete)
+        mirror_args = text.index("$MirrorAuditArgs = @(")
+        require_complete = text.index('"--require-complete"', mirror_args)
+        mirror_audit = text.index("audit_allakhazam_mirror.py @MirrorAuditArgs", require_complete)
+        build = text.index("build_knowledge_db.py", mirror_audit)
         delta = text.index("audit_allakhazam_normalization_delta.py", build)
         map_audit = text.index("audit_map_catalog.py", delta)
 
-        self.assertLess(mirror_audit, require_complete)
-        self.assertLess(require_complete, build)
+        self.assertLess(mirror_args, require_complete)
+        self.assertLess(require_complete, mirror_audit)
+        self.assertLess(mirror_audit, build)
         self.assertLess(build, delta)
         self.assertLess(delta, map_audit)
 

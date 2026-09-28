@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source_name": "Reviewed current-live Odus zone-line evidence",
+  "source_version": "reviewed-2026-09-27",
+  "edges": [
+    {
+      "source_key": "stonebrunt-warrens-two-way",
+      "source": "Stonebrunt Mountains",
+      "source_eq_zone_id": "100",
+      "target": "The Warrens",
+      "target_eq_zone_id": "101",
+      "connection_kind": "zone_line",
+      "bidirectional": true,
+      "source_url": "https://www.eqarchives.com/zones/view/warrens",
+      "evidence": "EQ Archives lists The Warrens as adjacent to Stonebrunt Mountains, and its Warrens travel/adjacency data identifies Stonebrunt Mountains as an exit. The exact client IDs pin this reviewed reciprocal zone-line connection to current canonical Stonebrunt Mountains (100) and The Warrens (101)."
+    },
+    {
+      "source_key": "warrens-paineel-two-way",
+      "source": "The Warrens",
+      "source_eq_zone_id": "101",
+      "target": "Paineel",
+      "target_eq_zone_id": "75",
+      "connection_kind": "zone_line",
+      "bidirectional": true,
+      "source_url": "https://www.eqarchives.com/zones/view/warrens",
+      "evidence": "EQ Archives lists Paineel as an adjacent zone of The Warrens, with the Warrens succor point described at the Paineel zone line. The exact client IDs pin this reviewed reciprocal zone-line connection to The Warrens (101) and Paineel (75)."
+    },
+    {
+      "source_key": "current-toxxulia-paineel-two-way",
+      "source": "Toxxulia Forest",
+      "source_eq_zone_id": "414",
+      "target": "Paineel",
+      "target_eq_zone_id": "75",
+      "connection_kind": "zone_line",
+      "bidirectional": true,
+      "source_url": "https://norrath-atlas.com/zones/toxxulia/",
+      "evidence": "The reviewed Toxxulia route source explicitly classifies Paineel as a two-way zone-line connection. The current installed-client identity is pinned to Toxxulia Forest zone 414 so this edge cannot bind the retired same-name zone 38; Paineel is pinned to zone 75."
+    }
+  ]
+}

@@ -176,6 +176,146 @@ class AllakhazamMirrorAuditTests(unittest.TestCase):
         self.assertEqual(sum(1 for path in self.root.rglob("*") if path.is_file()), 12)
         self.assertFalse(any(path.suffix in {".db", ".sqlite", ".sqlite3"} for path in self.root.rglob("*")))
 
+
+    def test_interrupted_clean_capture_requires_explicit_override(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            mirror = root / "mirror"
+            project = root / "project"
+            mirror.mkdir()
+            project.mkdir()
+            (mirror / "quest.html").write_text(
+                self._canonical("https://everquest.allakhazam.com/db/quest.html?quest=1"),
+                encoding="utf-8",
+            )
+            (project / "hts-log.txt").write_text(
+                "Exit requested by engine\nmirror aborted after 12 days\n",
+                encoding="utf-8",
+            )
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        str(mirror),
+                        "--httrack-project",
+                        str(project),
+                        "--require-complete",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("not canonical-complete", stderr.getvalue())
+
+            report_path = root / "audit.json"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        str(mirror),
+                        "--httrack-project",
+                        str(project),
+                        "--require-complete",
+                        "--allow-interrupted-clean",
+                        "--output",
+                        str(report_path),
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertIn("completion provenance is unverified", stderr.getvalue())
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertFalse(payload["canonical_complete"])
+            self.assertTrue(payload["interrupted_clean_capture_accepted"])
+            self.assertTrue(payload["unverified_clean_capture_accepted"])
+            self.assertEqual(payload["completion_policy"], "allow-unverified-clean")
+
+    def test_stale_log_from_different_httrack_project_is_not_authoritative(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            mirror = root / "mirror"
+            project = root / "current-project"
+            mirror.mkdir()
+            project.mkdir()
+            (mirror / "quest.html").write_text(
+                self._canonical("https://everquest.allakhazam.com/db/quest.html?quest=1"),
+                encoding="utf-8",
+            )
+            (project / "hts-log.txt").write_text(
+                "HTTrack launched\n"
+                "(/usr/bin/httrack https://everquest.allakhazam.com/db/ "
+                "-O1 /mnt/e/HTTrackLinuxFullTest_20260819)\n"
+                "Exit requested by engine\n"
+                "mirror aborted after 12 days\n",
+                encoding="utf-8",
+            )
+
+            report_path = root / "audit.json"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        str(mirror),
+                        "--httrack-project",
+                        str(project),
+                        "--require-complete",
+                        "--output",
+                        str(report_path),
+                    ]
+                )
+            self.assertEqual(code, 2)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["httrack_run_state"], "unknown")
+            self.assertFalse(payload["httrack_log_project_match"])
+            self.assertIn("different HTTrack output project", stderr.getvalue())
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        str(mirror),
+                        "--httrack-project",
+                        str(project),
+                        "--require-complete",
+                        "--allow-unverified-clean",
+                        "--output",
+                        str(report_path),
+                    ]
+                )
+            self.assertEqual(code, 0)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["unverified_clean_capture_accepted"])
+            self.assertFalse(payload["canonical_complete"])
+            self.assertIn("different HTTrack output project", payload["unverified_clean_capture_reason"])
+            self.assertIn("completion provenance is unverified", stderr.getvalue())
+
+    def test_interrupted_override_does_not_accept_active_httrack_project(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            mirror = root / "mirror"
+            project = root / "project"
+            mirror.mkdir()
+            project.mkdir()
+            (mirror / "quest.html").write_text(
+                self._canonical("https://everquest.allakhazam.com/db/quest.html?quest=1"),
+                encoding="utf-8",
+            )
+            (project / "hts-log.txt").write_text(
+                "Exit requested by engine\nmirror aborted\n",
+                encoding="utf-8",
+            )
+            (project / "hts-in_progress.lock").write_text("", encoding="utf-8")
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                code = main(
+                    [
+                        str(mirror),
+                        "--httrack-project",
+                        str(project),
+                        "--require-complete",
+                        "--allow-interrupted-clean",
+                    ]
+                )
+            self.assertEqual(code, 2)
+
     def test_missing_folder_fails_cleanly(self):
         with self.assertRaises(FileNotFoundError):
             audit_allakhazam_mirror(self.root / "missing")

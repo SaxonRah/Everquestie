@@ -27,25 +27,52 @@
 # map packs, or a source checkout. Those are builder inputs only.
 # ============================================================
 
+param(
+    [Alias("AllowInterruptedMirror")]
+    [switch]$AllowUnverifiedMirror
+)
+
 $ErrorActionPreference = "Stop"
 
 # ------------------------------------------------------------
 # Project root
 # ------------------------------------------------------------
 
-$ProjectRoot = "C:\Everquestie"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
+
+$BuildLogDirectory = Join-Path $ProjectRoot "build\logs"
+New-Item -ItemType Directory -Force -Path $BuildLogDirectory | Out-Null
+$BuildLog = Join-Path $BuildLogDirectory (
+    "full-knowledge-build-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log"
+)
+Start-Transcript -Path $BuildLog -Force | Out-Null
+
+try {
 
 # ------------------------------------------------------------
 # Source paths
 # ------------------------------------------------------------
+#
+# The application and the full builder share one source-of-truth for local paths:
+# %USERPROFILE%\.eqquest\settings.ini. Resolve through the same Python SettingsFile
+# implementation used by the UI so a path selected in EverQuestie is the path the
+# clean/full rebuild actually uses.
+# ------------------------------------------------------------
 
-$EqInstall = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest"
-$AllakhazamProject = "C:\AllakhazamEverquest\EQ_Allakhazam_DB"
-$AllakhazamMirror = Join-Path $AllakhazamProject "everquest.allakhazam.com"
-$McpRepo = "C:\Everquestie\third_party\everquest1-mcp"
-$GoodsMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Good's Maps"
-$BrewallMaps = "C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest\maps\Brewall"
+$ResolvedPathJson = python .\tools\resolve_builder_paths.py --project-root $ProjectRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not resolve builder source paths from EverQuestie settings.ini."
+}
+$ResolvedPaths = ($ResolvedPathJson -join [Environment]::NewLine) | ConvertFrom-Json
+
+$SettingsPath = [string]$ResolvedPaths.settings_path
+$EqInstall = [string]$ResolvedPaths.eq_install
+$AllakhazamProject = [string]$ResolvedPaths.allakhazam_project
+$AllakhazamMirror = [string]$ResolvedPaths.allakhazam_mirror
+$McpRepo = [string]$ResolvedPaths.mcp_repository
+$GoodsMaps = [string]$ResolvedPaths.goods_maps
+$BrewallMaps = [string]$ResolvedPaths.brewall_maps
 
 # ------------------------------------------------------------
 # Outputs
@@ -78,15 +105,18 @@ function Get-NewestFileDate {
         throw "$SourceName directory does not exist: $Path"
     }
 
-    $Newest = Get-ChildItem $Path -File -Recurse -ErrorAction Stop |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+    $NewestDate = $null
+    Get-ChildItem $Path -File -Recurse -ErrorAction Stop | ForEach-Object {
+        if ($null -eq $NewestDate -or $_.LastWriteTime -gt $NewestDate) {
+            $NewestDate = $_.LastWriteTime
+        }
+    }
 
-    if ($null -eq $Newest) {
+    if ($null -eq $NewestDate) {
         throw "$SourceName directory contains no files: $Path"
     }
 
-    return $Newest.LastWriteTime.ToString("yyyy-MM-dd")
+    return $NewestDate.ToString("yyyy-MM-dd")
 }
 
 function Assert-LastExitCode {
@@ -108,6 +138,9 @@ Write-Host
 Write-Host "============================================"
 Write-Host " EverQuestie Full Knowledge Build Preflight"
 Write-Host "============================================"
+Write-Host
+Write-Host "Settings:"
+Write-Host ("    {0}" -f $SettingsPath)
 Write-Host
 
 $RequiredDirectories = [ordered]@{
@@ -184,11 +217,22 @@ Write-Host " Allakhazam Mirror Inventory Coverage"
 Write-Host "============================================"
 Write-Host
 
-python .\tools\audit_allakhazam_mirror.py `
-    $AllakhazamMirror `
-    --httrack-project $AllakhazamProject `
-    --output $MirrorAuditReport `
-    --require-complete
+$MirrorAuditArgs = @(
+    $AllakhazamMirror,
+    "--httrack-project", $AllakhazamProject,
+    "--output", $MirrorAuditReport,
+    "--require-complete"
+)
+if ($AllowUnverifiedMirror) {
+    Write-Warning (
+        "Developer override enabled: a clean Allakhazam corpus with unverified " +
+        "completion provenance may be imported when inactive and free of temporary " +
+        "files. The resulting snapshot is NOT canonical crawl-complete."
+    )
+    $MirrorAuditArgs += "--allow-unverified-clean"
+}
+
+python .\tools\audit_allakhazam_mirror.py @MirrorAuditArgs
 Assert-LastExitCode "Allakhazam completed-mirror inventory audit"
 
 # ------------------------------------------------------------
@@ -200,7 +244,8 @@ Write-Host "Determining source versions from local files..."
 Write-Host
 
 $BuildDate = Get-Date
-$Version = $BuildDate.ToString("yyyy.MM.dd") + "-full"
+$VersionSuffix = if ($AllowUnverifiedMirror) { "-full-unverified-mirror" } else { "-full" }
+$Version = $BuildDate.ToString("yyyy.MM.dd") + $VersionSuffix
 
 $AllakhazamVersion = Get-NewestFileDate `
     -Path $AllakhazamMirror `
@@ -218,6 +263,13 @@ Write-Host "============================================"
 Write-Host " Resolved Build Configuration"
 Write-Host "============================================"
 Write-Host
+Write-Host "Settings file:      $SettingsPath"
+Write-Host "EQ install:         $EqInstall"
+Write-Host "Allakhazam project: $AllakhazamProject"
+Write-Host "Allakhazam mirror:  $AllakhazamMirror"
+Write-Host "MCP repository:     $McpRepo"
+Write-Host "Good's maps:        $GoodsMaps"
+Write-Host "Brewall maps:       $BrewallMaps"
 Write-Host "Build version:      $Version"
 Write-Host "Allakhazam version: $AllakhazamVersion"
 Write-Host "Good's version:     $GoodsVersion"
@@ -440,7 +492,12 @@ Write-Host
 Write-Host "Build passed:"
 Write-Host "  EQ client          : included"
 Write-Host "  Allakhazam temp    : audited read-only"
-Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"
+if ($AllowUnverifiedMirror) {
+    Write-Host "  Allakhazam mirror  : CLEAN CAPTURE WITH UNVERIFIED PROVENANCE accepted by override"
+    Write-Host "                       NOT canonical crawl-complete / NOT release-complete"
+} else {
+    Write-Host "  Allakhazam mirror  : confirmed HTTrack complete + audited + included"
+}
 Write-Host "  Allakhazam delta   : audited"
 Write-Host "  MCP inventory      : verified"
 Write-Host "  MCP rich details   : verified"
@@ -453,3 +510,13 @@ Write-Host "  Route acceptance   : passed"
 Write-Host "  Regression tests   : passed"
 Write-Host
 Write-Host "============================================"
+
+} finally {
+    Write-Host
+    Write-Host ("Build transcript: {0}" -f $BuildLog)
+    try {
+        Stop-Transcript | Out-Null
+    }
+    catch {
+    }
+}

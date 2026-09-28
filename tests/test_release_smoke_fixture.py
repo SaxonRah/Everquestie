@@ -51,8 +51,8 @@ class ReleaseSmokeFixtureTests(unittest.TestCase):
                 TRAVEL_DIR,
                 zone_alias_dir=ZONE_ALIAS_DIR,
             )
-            self.assertEqual(len(results), 3)
-            self.assertEqual(sum(result.edges for result in results), 9)
+            self.assertEqual(len(results), 5)
+            self.assertEqual(sum(result.edges for result in results), 14)
             self.assertEqual(working.read_bytes(), before)
 
             create_knowledge_snapshot(
@@ -85,8 +85,8 @@ class ReleaseSmokeFixtureTests(unittest.TestCase):
                 {
                     "zone_alias_supplements": 1,
                     "zone_aliases": 1,
-                    "travel_supplements": 3,
-                    "travel_edges": 9,
+                    "travel_supplements": 5,
+                    "travel_edges": 14,
                 },
             )
 

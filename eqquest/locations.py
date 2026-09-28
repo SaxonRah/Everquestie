@@ -285,13 +285,32 @@ def location_evidence_for_entity(
     Ambiguous/unresolved map labels are intentionally excluded. Provider/importer
     locations remain visible even when their zone cannot be projected, but only
     safely canonicalized locations expose ``zone_entity_id`` / ``navigable=True``.
+
+    Runtime knowledge is immutable, so cache the frozen evidence rows by entity and
+    inclusion policy. Return a new list each time to preserve the historical mutable
+    list API without allowing callers to mutate the cached tuple.
     """
+    cache = None
+    cache_key = (
+        int(entity_id),
+        bool(include_provider),
+        bool(include_maps),
+    )
+    if not getattr(db, "knowledge_writable", True):
+        cache = getattr(db, "_location_evidence_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(db, "_location_evidence_cache", cache)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
     result: list[LocationEvidence] = []
     if include_provider:
         result.extend(_provider_locations(db, entity_id))
     if include_maps:
         result.extend(_map_locations(db, entity_id))
-    return sorted(
+    ordered = sorted(
         result,
         key=lambda loc: (
             1 if not loc.zone_name else 0,
@@ -302,6 +321,9 @@ def location_evidence_for_entity(
             loc.source_line or 0,
         ),
     )
+    if cache is not None:
+        cache[cache_key] = tuple(ordered)
+    return ordered
 
 
 def location_evidence_for_term(

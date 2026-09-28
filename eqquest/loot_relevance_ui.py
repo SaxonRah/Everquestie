@@ -4,9 +4,15 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .knowledge_location_ui import ask_knowledge_map_choice, ask_knowledge_route_choice
-from .live_composition import chain_activity_pathways_refresh, chain_live_build
+from .live_composition import chain_activity_pathways_refresh, chain_live_build, chain_live_start
 from .live_navigation import handoff_to_travel, open_exact_knowledge_entity
-from .loot_relevance import LootQuestUse, LootRelevance, loot_relevance_text, recent_loot_relevance
+from .loot_relevance import (
+    LootQuestUse,
+    LootRelevance,
+    LootSessionObservationIndex,
+    loot_relevance_text,
+    recent_loot_relevance,
+)
 from .loot_source_navigation import loot_source_navigation
 from .loot_turn_in_navigation import loot_turn_in_navigation
 
@@ -103,6 +109,10 @@ def install_loot_relevance_ui() -> None:
 
         self._loot_relevance_by_item: dict[str, tuple[LootRelevance, LootQuestUse]] = {}
         self._loot_relevance_signature = None
+        self._loot_relevance_observations = LootSessionObservationIndex()
+        self._loot_relevance_observations.reset(
+            int(getattr(self, "_activity_session_start_event_id", 0) or 0)
+        )
 
     def _selected_loot_relevance(self) -> tuple[LootRelevance, LootQuestUse] | None:
         tree = getattr(self, "loot_relevance_tree", None)
@@ -281,7 +291,16 @@ def install_loot_relevance_ui() -> None:
             return
 
         boundary = int(getattr(self, "_activity_session_start_event_id", 0) or 0)
-        rows = recent_loot_relevance(self.db, boundary, limit_items=10)
+        observation_index = getattr(self, "_loot_relevance_observations", None)
+        if observation_index is None:
+            observation_index = LootSessionObservationIndex()
+            self._loot_relevance_observations = observation_index
+        rows = recent_loot_relevance(
+            self.db,
+            boundary,
+            limit_items=10,
+            observation_index=observation_index,
+        )
         signature = tuple(
             (
                 item.item_id,
@@ -356,6 +375,15 @@ def install_loot_relevance_ui() -> None:
                 "No displayed use never means an item is automatically vendor trash."
             )
 
+    def _reset_loot_relevance_after_start(self) -> None:
+        boundary = int(getattr(self, "_activity_session_start_event_id", 0) or 0)
+        observation_index = getattr(self, "_loot_relevance_observations", None)
+        if observation_index is None:
+            observation_index = LootSessionObservationIndex()
+            self._loot_relevance_observations = observation_index
+        observation_index.reset(boundary)
+        self._loot_relevance_signature = None
+
     chain_live_build(current_app, _build_loot_relevance)
     current_app._selected_loot_relevance = _selected_loot_relevance
     current_app._loot_relevance_view_item = _loot_relevance_view_item
@@ -365,5 +393,6 @@ def install_loot_relevance_ui() -> None:
     current_app._loot_relevance_navigate_turn_in = _loot_relevance_navigate_turn_in
     current_app._loot_relevance_explain = _loot_relevance_explain
     current_app._refresh_loot_relevance = _refresh_loot_relevance
+    chain_live_start(current_app, _reset_loot_relevance_after_start)
     chain_activity_pathways_refresh(current_app, _refresh_loot_relevance)
     setattr(current_app, _LOOT_RELEVANCE_MARKER, True)

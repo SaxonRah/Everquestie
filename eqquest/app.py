@@ -71,6 +71,7 @@ KNOWLEDGE_KIND_LABELS = {
     "help": "Official Help",
 }
 KNOWLEDGE_CHILD_LIMIT = 1000
+TRACKED_RECONCILE_META_KEY = "tracked_reconcile_knowledge_revision"
 
 
 class EverQuestieApp(tk.Tk):
@@ -143,12 +144,10 @@ class EverQuestieApp(tk.Tk):
             value=self._initial_client_compile_status()
         )
 
-        # If a previous run already observed the quest assignment/progress, rebuild
-        # tracked quests immediately after an Allakhazam graph upgrade. If the
-        # stored history lacks a reliable boundary, reconciliation preserves the
-        # existing progress instead of guessing.
-        for tracked in self.db.tracked_quests():
-            self.quest_engine.reconcile_quest_from_history(int(tracked["id"]))
+        # Historical tracked-quest replay is a knowledge-upgrade migration, not
+        # normal startup work. Packaged runtime schedules it once per snapshot after
+        # the UI is visible; builder imports reconcile changed tracked quests directly.
+        self._startup_reconcile_running = False
 
         self._knowledge_entity_by_item: dict[str, int] = {}
         self._knowledge_kind_nodes: dict[str, str] = {}
@@ -158,12 +157,250 @@ class EverQuestieApp(tk.Tk):
         self._tracked_step_by_item: dict[str, tuple[int, int]] = {}
 
         self._settings_save_job: str | None = None
+
+        # The interactive application must never fall back to rebuilding full-corpus
+        # Live intelligence indexes on Tk's thread. Small standalone builder/tests may
+        # still use the dynamic fallback, while the app prepares compact catalogs in
+        # the background when a source-checkout DB predates them or they became dirty.
+        if getattr(self.db, "knowledge_writable", True):
+            setattr(self.db, "_prefer_bounded_runtime_catalogs", True)
+
         self._build_ui()
         self.theme_manager.apply(ThemeManager.id_for_label(self.ui_theme_var.get()))
         self._bind_settings_autosave()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(0, self._ensure_builder_runtime_catalogs_async)
+        self.after(0, self._maybe_reconcile_tracked_quests_async)
         self.after(100, self._drain_lines)
         self.after(400, self._refresh_guidance)
+
+    def _tracked_reconcile_revision(self) -> str:
+        """Return the immutable knowledge revision that owns quest-step semantics."""
+        if not getattr(self.db, "runtime_split", False):
+            return ""
+        version = self.db.get_meta("knowledge_snapshot_version", "").strip()
+        built_at = self.db.get_meta("knowledge_snapshot_built_at", "").strip()
+        if not version:
+            return ""
+        return f"{version}|{built_at}"
+
+    def _maybe_reconcile_tracked_quests_async(self) -> None:
+        """Replay stored history once after a packaged knowledge upgrade.
+
+        Quest progress is persistent writable player state, so replaying every tracked
+        quest on every launch is wasted work. The old synchronous constructor path also
+        multiplied startup cost by tracked quests × stored event history. Runtime now
+        performs that migration once per immutable snapshot on a worker connection.
+        """
+        if getattr(self, "_closing", False):
+            return
+        if not getattr(self.db, "runtime_split", False):
+            return
+        if getattr(self, "_startup_reconcile_running", False):
+            return
+
+        revision = self._tracked_reconcile_revision()
+        if not revision:
+            return
+        if self.db.get_meta(TRACKED_RECONCILE_META_KEY, "") == revision:
+            return
+
+        tracked_ids = [int(row["id"]) for row in self.db.tracked_quests()]
+        if not tracked_ids:
+            self.db.set_meta(TRACKED_RECONCILE_META_KEY, revision)
+            return
+
+        self._startup_reconcile_running = True
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="disabled")
+        self.status.set(
+            f"Refreshing {len(tracked_ids):,} tracked quest(s) for updated knowledge…"
+        )
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = self.db.open_worker_connection()
+                events = worker_db.observed_event_history()
+                engine = QuestEngine(worker_db)
+                for quest_id in tracked_ids:
+                    engine.reconcile_quest_from_events(
+                        quest_id,
+                        events,
+                        source="stored observation history after knowledge update",
+                    )
+                worker_db.set_meta(TRACKED_RECONCILE_META_KEY, revision)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                if not getattr(self, "_closing", False):
+                    try:
+                        self.after(
+                            0,
+                            lambda exc=exc: self._finish_startup_reconcile_error(exc),
+                        )
+                    except Exception:
+                        pass
+                return
+
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            if not getattr(self, "_closing", False):
+                try:
+                    self.after(
+                        0,
+                        lambda count=len(tracked_ids): self._finish_startup_reconcile(count),
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieTrackedQuestUpgrade",
+            daemon=True,
+        ).start()
+
+    def _finish_startup_reconcile(self, count: int) -> None:
+        self._startup_reconcile_running = False
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="normal")
+        self.status.set(f"Tracked quest knowledge refresh complete: {count:,} quest(s)")
+        try:
+            self._refresh_guidance()
+        except Exception:
+            pass
+
+    def _finish_startup_reconcile_error(self, exc: Exception) -> None:
+        self._startup_reconcile_running = False
+        start_button = getattr(self, "start_monitor_button", None)
+        if start_button is not None:
+            start_button.configure(state="normal")
+        self.status.set(f"Tracked quest knowledge refresh deferred: {exc}")
+
+    def _ensure_builder_runtime_catalogs_async(self) -> None:
+        """Prepare compact Live lookup catalogs without blocking Tk startup."""
+        if getattr(self, "_closing", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            return
+        if getattr(self, "_runtime_catalog_build_running", False):
+            return
+
+        from .activity_pathways import ACTIVITY_PATHWAY_CATALOG_VERSION
+        from .zone_opportunities import ZONE_OPPORTUNITY_CATALOG_VERSION
+
+        needs_activity = (
+            self.db.get_meta("activity_pathway_catalog_version", "")
+            != ACTIVITY_PATHWAY_CATALOG_VERSION
+            or self.db.get_meta("activity_pathway_catalog_dirty", "1") == "1"
+        )
+        needs_zone = (
+            self.db.get_meta("zone_opportunity_catalog_version", "")
+            != ZONE_OPPORTUNITY_CATALOG_VERSION
+            or self.db.get_meta("zone_opportunity_catalog_dirty", "1") == "1"
+        )
+        if not (needs_activity or needs_zone):
+            return
+
+        self._runtime_catalog_build_running = True
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="disabled")
+        self.status.set("Preparing bounded Live indexes in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                from .activity_pathways import (
+                    ACTIVITY_PATHWAY_CATALOG_VERSION,
+                    ActivityPathwayEngine,
+                )
+                from .zone_opportunities import (
+                    ZONE_OPPORTUNITY_CATALOG_VERSION,
+                    compile_zone_opportunity_catalog,
+                )
+
+                worker_db = Database(db_path)
+                if (
+                    worker_db.get_meta("zone_opportunity_catalog_version", "")
+                    != ZONE_OPPORTUNITY_CATALOG_VERSION
+                    or worker_db.get_meta("zone_opportunity_catalog_dirty", "1") == "1"
+                ):
+                    compile_zone_opportunity_catalog(worker_db)
+                if (
+                    worker_db.get_meta("activity_pathway_catalog_version", "")
+                    != ACTIVITY_PATHWAY_CATALOG_VERSION
+                    or worker_db.get_meta("activity_pathway_catalog_dirty", "1") == "1"
+                ):
+                    ActivityPathwayEngine(worker_db).compile_catalog()
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                if not getattr(self, "_closing", False):
+                    try:
+                        self.after(
+                            0,
+                            lambda exc=exc: self._finish_builder_runtime_catalogs_error(exc),
+                        )
+                    except Exception:
+                        pass
+                return
+
+            worker_db.close()
+            if not getattr(self, "_closing", False):
+                try:
+                    self.after(0, self._finish_builder_runtime_catalogs)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieRuntimeCatalogs",
+            daemon=True,
+        ).start()
+
+    def _finish_builder_runtime_catalogs(self) -> None:
+        self._runtime_catalog_build_running = False
+        if (
+            hasattr(self, "db_mirror_import_button")
+            and not getattr(self, "_db_mirror_import_running", False)
+        ):
+            self.db_mirror_import_button.configure(state="normal")
+
+        pathway_engine = getattr(self, "activity_pathway_engine", None)
+        reset_pathway_cache = getattr(pathway_engine, "reset_knowledge_cache", None)
+        if callable(reset_pathway_cache):
+            reset_pathway_cache()
+
+        self.status.set("Bounded Live indexes ready")
+        refresh_live = getattr(self, "_refresh_activity_pathways", None)
+        if callable(refresh_live):
+            try:
+                refresh_live(force=True)
+            except Exception:
+                pass
+
+    def _finish_builder_runtime_catalogs_error(self, exc: Exception) -> None:
+        self._runtime_catalog_build_running = False
+        if (
+            hasattr(self, "db_mirror_import_button")
+            and not getattr(self, "_db_mirror_import_running", False)
+        ):
+            self.db_mirror_import_button.configure(state="normal")
+        # Keep _prefer_bounded_runtime_catalogs enabled: a failed accelerator build
+        # should suppress optional Live recommendations, never trigger a full-corpus
+        # synchronous fallback that freezes the client.
+        self.status.set(f"Live index preparation failed: {exc}")
 
     def _initial_client_compile_status(self) -> str:
         timestamp = self.db.get_meta("eq_mcp_last_compile", "")
@@ -182,9 +419,12 @@ class EverQuestieApp(tk.Tk):
             side="left", fill="x", expand=True, padx=6
         )
         ttk.Button(top, text="Browse…", command=self._browse_log).pack(side="left")
-        ttk.Button(top, text="Start monitoring", command=self._start).pack(
-            side="left", padx=(6, 0)
+        self.start_monitor_button = ttk.Button(
+            top,
+            text="Start monitoring",
+            command=self._start,
         )
+        self.start_monitor_button.pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Stop", command=self._stop).pack(side="left", padx=(6, 0))
 
         notebook = ttk.Notebook(self)
@@ -218,14 +458,10 @@ class EverQuestieApp(tk.Tk):
         self._build_import()
         self._refresh_mcp_status()
 
-        # Source provenance summaries are useful diagnostics, but a finalized
-        # knowledge snapshot can contain hundreds of thousands of source_pages
-        # with very large archived-text payloads.  Building this summary during
-        # Tk construction can dominate packaged startup time.  Packaged runtime
-        # loads it only when the user explicitly requests it.
-        if not getattr(self.db, "runtime_split", False):
-            self._refresh_source_summary()
-
+        # Detailed source/provenance counts are diagnostics, not startup state.
+        # Full-mirror builder databases can contain enormous source_pages/entity
+        # inventories, so every application mode defers this scan until the user
+        # explicitly presses Refresh summary.
         status = ttk.Frame(self, padding=(8, 2, 8, 8))
         status.pack(fill="x")
         ttk.Label(status, textvariable=self.status).pack(side="left")
@@ -543,14 +779,20 @@ class EverQuestieApp(tk.Tk):
         scroll.grid(row=0, column=1, sticky="ns")
         self.database_text.configure(yscrollcommand=scroll.set)
         if getattr(self.db, "runtime_split", False):
-            self._set_database_text(
+            message = (
                 "Packaged knowledge snapshot loaded.\n\n"
                 "Full SQLite integrity diagnostics are intentionally deferred because "
-                "the immutable knowledge database may be many GiB. Click "
-                "'Refresh diagnostics' to run them explicitly."
+                "the immutable knowledge database may be many GiB."
             )
         else:
-            self._refresh_database_diagnostics()
+            message = (
+                "Builder/development database loaded.\n\n"
+                "Full SQLite integrity diagnostics are intentionally deferred. "
+                "A full Allakhazam corpus can make PRAGMA integrity_check take minutes."
+            )
+        self._set_database_text(
+            message + "\n\nClick 'Refresh diagnostics' only when you explicitly want the full scan."
+        )
 
     def _build_import(self):
         root = self.import_tab.content
@@ -644,19 +886,43 @@ class EverQuestieApp(tk.Tk):
         ttk.Label(mirrors, text="DB mirror").grid(row=0, column=0, sticky="w")
         ttk.Entry(mirrors, textvariable=self.db_mirror_var).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.db_mirror_var)).grid(row=0, column=2)
-        ttk.Button(mirrors, text="Import / refresh DB mirror", command=self._import_db_mirror).grid(row=0, column=3, padx=(6, 0))
+        self.db_mirror_import_button = ttk.Button(
+            mirrors,
+            text="Import / refresh DB mirror",
+            command=self._import_db_mirror,
+        )
+        self.db_mirror_import_button.grid(row=0, column=3, padx=(6, 0))
+        self.db_mirror_cancel_button = ttk.Button(
+            mirrors,
+            text="Cancel",
+            command=self._cancel_db_mirror_import,
+            state="disabled",
+        )
+        self.db_mirror_cancel_button.grid(row=0, column=4, padx=(6, 0))
 
         ttk.Label(mirrors, text="Wiki mirror").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(mirrors, textvariable=self.wiki_mirror_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         ttk.Button(mirrors, text="Browse…", command=lambda: self._browse_source_folder(self.wiki_mirror_var)).grid(row=1, column=2, pady=(8, 0))
-        ttk.Button(mirrors, text="Index / refresh Wiki mirror", command=self._import_wiki_mirror).grid(row=1, column=3, padx=(6, 0), pady=(8, 0))
+        self.wiki_mirror_import_button = ttk.Button(
+            mirrors,
+            text="Index / refresh Wiki mirror",
+            command=self._import_wiki_mirror,
+        )
+        self.wiki_mirror_import_button.grid(row=1, column=3, padx=(6, 0), pady=(8, 0))
+        self.wiki_mirror_cancel_button = ttk.Button(
+            mirrors,
+            text="Cancel",
+            command=self._cancel_wiki_mirror_import,
+            state="disabled",
+        )
+        self.wiki_mirror_cancel_button.grid(row=1, column=4, padx=(6, 0), pady=(8, 0))
 
         ttk.Label(
             mirrors,
             text="Manual only: EverQuestie does not scan, watch, index, modify, or otherwise open these mirror paths until you press the corresponding Import/Index button. Canonical Allakhazam URLs remain provenance keys; EverQuestie never fetches the mirror itself from the network.",
             wraplength=950,
             justify="left",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
         single = ttk.LabelFrame(root, text="Single saved Allakhazam page", padding=10)
         single.pack(fill="x", pady=(8, 0))
@@ -691,16 +957,25 @@ class EverQuestieApp(tk.Tk):
         source_scroll.grid(row=0, column=1, sticky="ns")
         self.source_summary_text.configure(yscrollcommand=source_scroll.set)
 
+        self.source_summary_text.configure(state="normal")
         if getattr(self.db, "runtime_split", False):
-            self.source_summary_text.configure(state="normal")
-            self.source_summary_text.insert(
-                "end",
+            source_summary_notice = (
                 "Packaged knowledge snapshot is ready.\n\n"
                 "The detailed provenance/source summary is deferred so EverQuestie "
-                "does not scan the large immutable knowledge database during startup. "
-                "Press 'Refresh summary' when you specifically want those diagnostics."
+                "does not scan the large immutable knowledge database during startup."
             )
-            self.source_summary_text.configure(state="disabled")
+        else:
+            source_summary_notice = (
+                "Builder/development knowledge database is ready.\n\n"
+                "The detailed provenance/source summary is deferred because a full "
+                "Allakhazam mirror can make startup-scale aggregate scans expensive."
+            )
+        self.source_summary_text.insert(
+            "end",
+            source_summary_notice
+            + "\nPress 'Refresh summary' when you specifically want those diagnostics.",
+        )
+        self.source_summary_text.configure(state="disabled")
 
         ttk.Button(summary, text="Refresh summary", command=self._refresh_source_summary).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
@@ -882,6 +1157,11 @@ class EverQuestieApp(tk.Tk):
             self._set_database_text(f"Database diagnostics failed:\n\n{exc}")
 
     def _rebuild_search_index(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Search-index rebuilding is builder-only; packaged EverQuestie uses the shipped index."
+            )
+            return
         if getattr(self, "_database_rebuild_running", False):
             return
         self._database_rebuild_running = True
@@ -1082,6 +1362,11 @@ class EverQuestieApp(tk.Tk):
         self.source_summary_text.configure(state="disabled")
 
     def _import_eq_client(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "EverQuest client-data import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         folder = self.eq_game_path_var.get().strip()
         if not folder:
             self._browse_eq_game_path()
@@ -1106,6 +1391,11 @@ class EverQuestieApp(tk.Tk):
         self._refresh_source_summary()
 
     def _compile_eq_client_via_mcp(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "EverQuest client-data compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         eq_path = self.eq_game_path_var.get().strip()
         mcp_path = self.mcp_path_var.get().strip()
         if not eq_path:
@@ -1201,31 +1491,204 @@ class EverQuestieApp(tk.Tk):
         self.status.set("Local EverQuest data compile failed")
         messagebox.showerror("EverQuest client compile failed", str(exc))
 
+    def _cancel_db_mirror_import(self) -> None:
+        cancel_event = getattr(self, "_db_mirror_cancel_event", None)
+        if cancel_event is None or not getattr(self, "_db_mirror_import_running", False):
+            return
+        cancel_event.set()
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Cancelling Allakhazam mirror import after the current page…")
+
+    def _update_db_mirror_import_progress(
+        self,
+        processed: int,
+        changed: int,
+        unchanged: int,
+        ignored: int,
+        read_errors: int,
+        detail: str,
+    ) -> None:
+        if not getattr(self, "_db_mirror_import_running", False):
+            return
+        suffix = f" | {detail}" if detail else ""
+        self.status.set(
+            f"Allakhazam mirror: {processed:,} files processed | "
+            f"{changed:,} changed | {unchanged:,} unchanged | "
+            f"{ignored:,} ignored | {read_errors:,} read errors{suffix}"
+        )
+
     def _import_db_mirror(self) -> None:
+        if getattr(self, "_db_mirror_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Allakhazam mirror compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = self.db_mirror_var.get().strip()
         if not folder:
             self._browse_source_folder(self.db_mirror_var)
             folder = self.db_mirror_var.get().strip()
         if not folder:
             return
-        try:
-            summary = self.mirror_importer.import_mirror(folder)
-        except Exception as exc:
-            messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
-            return
+
+        self._save_settings_now()
+        self._db_mirror_import_running = True
+        cancel_event = threading.Event()
+        self._db_mirror_cancel_event = cancel_event
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="disabled")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="normal")
+        self.status.set(
+            f"Importing Allakhazam mirror in background: {Path(folder).name}"
+        )
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+
+                def progress(summary, path) -> None:
+                    detail = path.name if path is not None else ""
+                    self.after(
+                        0,
+                        lambda processed=summary.processed,
+                               changed=summary.changed,
+                               unchanged=summary.unchanged,
+                               ignored=summary.ignored,
+                               read_errors=summary.read_errors,
+                               detail=detail: self._update_db_mirror_import_progress(
+                            processed,
+                            changed,
+                            unchanged,
+                            ignored,
+                            read_errors,
+                            detail,
+                        ),
+                    )
+
+                summary = AllakhazamMirrorImporter(worker_db).import_mirror(
+                    folder,
+                    progress=progress,
+                    cancelled=cancel_event.is_set,
+                )
+
+                # Source-checkout/developer play should use the same bounded lookup
+                # catalogs as packaged runtime. Rebuild them only when mirror facts
+                # changed or a previous knowledge edit marked the catalog stale.
+                from .activity_pathways import (
+                    ACTIVITY_PATHWAY_CATALOG_VERSION,
+                    ActivityPathwayEngine,
+                )
+                from .zone_opportunities import (
+                    ZONE_OPPORTUNITY_CATALOG_VERSION,
+                    compile_zone_opportunity_catalog,
+                )
+
+                if (
+                    summary.changed
+                    or worker_db.get_meta(
+                        "zone_opportunity_catalog_version",
+                        "",
+                    ) != ZONE_OPPORTUNITY_CATALOG_VERSION
+                    or worker_db.get_meta(
+                        "zone_opportunity_catalog_dirty",
+                        "1",
+                    ) == "1"
+                ):
+                    compile_zone_opportunity_catalog(worker_db)
+
+                if (
+                    summary.changed
+                    or worker_db.get_meta(
+                        "activity_pathway_catalog_version",
+                        "",
+                    ) != ACTIVITY_PATHWAY_CATALOG_VERSION
+                    or worker_db.get_meta(
+                        "activity_pathway_catalog_dirty",
+                        "1",
+                    ) == "1"
+                ):
+                    ActivityPathwayEngine(worker_db).compile_catalog()
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(
+                    0,
+                    lambda exc=exc: self._finish_db_mirror_import_error(exc),
+                )
+                return
+
+            worker_db.close()
+            self.after(
+                0,
+                lambda summary=summary, folder=folder: self._finish_db_mirror_import(
+                    folder,
+                    summary,
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamMirror",
+            daemon=True,
+        ).start()
+
+    def _finish_db_mirror_import(self, folder: str, summary) -> None:
+        self._db_mirror_import_running = False
+        self._db_mirror_cancel_event = None
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="normal")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
 
         self.db.set_meta("allakhazam_db_mirror", folder)
+
+        pathway_engine = getattr(self, "activity_pathway_engine", None)
+        reset_pathway_cache = getattr(pathway_engine, "reset_knowledge_cache", None)
+        if callable(reset_pathway_cache):
+            reset_pathway_cache()
 
         relationships = sum(r.relationships for r in summary.imported)
         discovered = sum(r.discovered_entities for r in summary.imported)
         steps = sum(r.quest_steps for r in summary.imported)
         locations = sum(r.locations for r in summary.imported)
+
+        tracked_ids = {
+            int(row["id"])
+            for row in self.db.tracked_quests()
+        }
         for imported in summary.imported:
-            if imported.kind == "quest" and self.db.is_quest_tracked(imported.entity_id):
+            if (
+                imported.kind == "quest"
+                and int(imported.entity_id) in tracked_ids
+            ):
                 self._reconcile_tracked_quest(imported.entity_id)
 
+        if summary.cancelled:
+            self.status.set(
+                f"Allakhazam mirror import cancelled after {summary.processed:,} files; "
+                f"{summary.changed:,} changed pages were preserved"
+            )
+            dialog_title = "Allakhazam DB mirror import cancelled"
+        else:
+            self.status.set(
+                f"Allakhazam mirror refresh complete: {summary.changed:,} changed, "
+                f"{summary.unchanged:,} unchanged"
+            )
+            dialog_title = "Allakhazam DB mirror refreshed"
+
         messagebox.showinfo(
-            "Allakhazam DB mirror refreshed",
+            dialog_title,
+            f"Files processed: {summary.processed}\n"
+            f"Cancelled: {'yes' if summary.cancelled else 'no'}\n"
             f"Imported/changed entity pages: {summary.changed}\n"
             f"Unchanged entity pages: {summary.unchanged}\n"
             f"Ignored/non-entity pages: {summary.ignored}\n"
@@ -1239,25 +1702,163 @@ class EverQuestieApp(tk.Tk):
         self._refresh_guidance()
         self._refresh_source_summary()
 
+    def _finish_db_mirror_import_error(self, exc: Exception) -> None:
+        self._db_mirror_import_running = False
+        self._db_mirror_cancel_event = None
+        if hasattr(self, "db_mirror_import_button"):
+            self.db_mirror_import_button.configure(state="normal")
+        if hasattr(self, "db_mirror_cancel_button"):
+            self.db_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Allakhazam DB mirror import failed")
+        messagebox.showerror("Allakhazam DB mirror import failed", str(exc))
+
+    def _cancel_wiki_mirror_import(self) -> None:
+        cancel_event = getattr(self, "_wiki_mirror_cancel_event", None)
+        if cancel_event is None or not getattr(self, "_wiki_mirror_import_running", False):
+            return
+        cancel_event.set()
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Cancelling Allakhazam Wiki import after the current page…")
+
+    def _update_wiki_mirror_import_progress(
+        self,
+        processed: int,
+        imported: int,
+        unchanged: int,
+        ignored: int,
+        detail: str,
+    ) -> None:
+        if not getattr(self, "_wiki_mirror_import_running", False):
+            return
+        suffix = f" | {detail}" if detail else ""
+        self.status.set(
+            f"Allakhazam Wiki: {processed:,} files processed | "
+            f"{imported:,} changed | {unchanged:,} unchanged | "
+            f"{ignored:,} ignored{suffix}"
+        )
+
     def _import_wiki_mirror(self) -> None:
+        if getattr(self, "_wiki_mirror_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Allakhazam Wiki compilation is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = self.wiki_mirror_var.get().strip()
         if not folder:
             self._browse_source_folder(self.wiki_mirror_var)
             folder = self.wiki_mirror_var.get().strip()
         if not folder:
             return
-        try:
-            result = self.wiki_importer.import_folder(folder)
-        except Exception as exc:
-            messagebox.showerror("Wiki mirror import failed", str(exc))
-            return
+
+        self._wiki_mirror_import_running = True
+        cancel_event = threading.Event()
+        self._wiki_mirror_cancel_event = cancel_event
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="disabled")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="normal")
+        self.status.set("Indexing Allakhazam Wiki mirror in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+
+                def progress(result, path) -> None:
+                    detail = path.name if path is not None else ""
+                    self.after(
+                        0,
+                        lambda processed=result.processed,
+                               imported=result.imported,
+                               unchanged=result.unchanged,
+                               ignored=result.ignored,
+                               detail=detail: self._update_wiki_mirror_import_progress(
+                            processed,
+                            imported,
+                            unchanged,
+                            ignored,
+                            detail,
+                        ),
+                    )
+
+                result = AllakhazamWikiImporter(worker_db).import_folder(
+                    folder,
+                    progress=progress,
+                    cancelled=cancel_event.is_set,
+                )
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_wiki_mirror_import_error(exc))
+                return
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            self.after(
+                0,
+                lambda result=result, folder=folder: self._finish_wiki_mirror_import(
+                    folder,
+                    result,
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamWiki",
+            daemon=True,
+        ).start()
+
+    def _finish_wiki_mirror_import(self, folder: str, result) -> None:
+        self._wiki_mirror_import_running = False
+        self._wiki_mirror_cancel_event = None
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="normal")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
         self.db.set_meta("allakhazam_wiki_mirror", folder)
+
+        if result.cancelled:
+            self.status.set(
+                f"Allakhazam Wiki import cancelled after {result.processed:,} files; "
+                f"{result.imported:,} changed pages were preserved"
+            )
+            dialog_title = "Allakhazam Wiki import cancelled"
+        else:
+            self.status.set(
+                f"Allakhazam Wiki refresh complete: {result.imported:,} changed, "
+                f"{result.unchanged:,} unchanged"
+            )
+            dialog_title = "Allakhazam Wiki indexed"
+
         messagebox.showinfo(
-            "Allakhazam Wiki indexed",
-            f"Imported/changed: {result.imported}\nUnchanged: {result.unchanged}\nIgnored: {result.ignored}",
+            dialog_title,
+            f"Files processed: {result.processed}\n"
+            f"Cancelled: {'yes' if result.cancelled else 'no'}\n"
+            f"Imported/changed: {result.imported}\n"
+            f"Unchanged: {result.unchanged}\n"
+            f"Ignored: {result.ignored}",
         )
         self._search_knowledge()
         self._refresh_source_summary()
+
+    def _finish_wiki_mirror_import_error(self, exc: Exception) -> None:
+        self._wiki_mirror_import_running = False
+        self._wiki_mirror_cancel_event = None
+        if hasattr(self, "wiki_mirror_import_button"):
+            self.wiki_mirror_import_button.configure(state="normal")
+        if hasattr(self, "wiki_mirror_cancel_button"):
+            self.wiki_mirror_cancel_button.configure(state="disabled")
+        self.status.set("Allakhazam Wiki mirror import failed")
+        messagebox.showerror("Wiki mirror import failed", str(exc))
 
     def _browse_log(self):
         path = filedialog.askopenfilename(
@@ -1271,6 +1872,12 @@ class EverQuestieApp(tk.Tk):
                 self.map_view.suggest_root_from_log(path)
 
     def _start(self):
+        if getattr(self, "_startup_reconcile_running", False):
+            self.status.set(
+                "Tracked quest state is being refreshed for updated knowledge; "
+                "monitoring will be available when that one-time migration finishes."
+            )
+            return
         path = self.log_path.get().strip()
         if not path:
             self._browse_log()
@@ -2054,6 +2661,11 @@ class EverQuestieApp(tk.Tk):
             open_url(r["source_url"])
 
     def _import_saved_html(self):
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Saved Allakhazam page import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
         source_url = self.import_url_var.get().strip() or None
 
         html_path = filedialog.askopenfilename(
@@ -2102,6 +2714,14 @@ class EverQuestieApp(tk.Tk):
         self._refresh_source_summary()
 
     def _import_html_folder(self, folder_override: str | None = None):
+        if getattr(self, "_html_folder_import_running", False):
+            return
+        if not getattr(self.db, "knowledge_writable", True):
+            self.status.set(
+                "Saved Allakhazam folder import is builder-only; packaged EverQuestie uses shipped knowledge."
+            )
+            return
+
         folder = folder_override or filedialog.askdirectory(
             title="Choose local Allakhazam DB mirror or saved HTML folder",
             initialdir=self._existing_initial_dir(
@@ -2112,21 +2732,53 @@ class EverQuestieApp(tk.Tk):
             return
         self.settings.set_path("last_allakhazam_import_dir", folder)
         self.settings.save()
-        try:
-            results = self.importer.import_folder(folder)
-        except Exception as exc:
-            messagebox.showerror("Folder import failed", str(exc))
-            return
+
+        self._html_folder_import_running = True
+        self.status.set("Importing saved Allakhazam folder in background…")
+        db_path = self.db.path
+
+        def worker() -> None:
+            worker_db = None
+            try:
+                worker_db = Database(db_path)
+                results = AllakhazamImporter(worker_db).import_folder(folder)
+            except Exception as exc:
+                if worker_db is not None:
+                    try:
+                        worker_db.close()
+                    except Exception:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_html_folder_import_error(exc))
+                return
+            try:
+                worker_db.close()
+            except Exception:
+                pass
+            self.after(0, lambda results=results: self._finish_html_folder_import(results))
+
+        threading.Thread(
+            target=worker,
+            name="EverQuestieAllakhazamFolder",
+            daemon=True,
+        ).start()
+
+    def _finish_html_folder_import(self, results) -> None:
+        self._html_folder_import_running = False
         if not results:
+            self.status.set("Saved Allakhazam folder import found no entity pages")
             messagebox.showinfo("Import", "No recognizable Allakhazam entity pages were found.")
             return
+
         relationships = sum(r.relationships for r in results)
         discovered = sum(r.discovered_entities for r in results)
         steps = sum(r.quest_steps for r in results)
         locations = sum(r.locations for r in results)
+        tracked_ids = {int(row["id"]) for row in self.db.tracked_quests()}
         for imported in results:
-            if imported.kind == "quest" and self.db.is_quest_tracked(imported.entity_id):
+            if imported.kind == "quest" and int(imported.entity_id) in tracked_ids:
                 self._reconcile_tracked_quest(imported.entity_id)
+
+        self.status.set(f"Saved Allakhazam folder import complete: {len(results):,} changed pages")
         messagebox.showinfo(
             "Imported folder",
             f"Pages imported: {len(results)}\n"
@@ -2138,6 +2790,11 @@ class EverQuestieApp(tk.Tk):
         self._search_knowledge()
         self._refresh_guidance()
         self._refresh_source_summary()
+
+    def _finish_html_folder_import_error(self, exc: Exception) -> None:
+        self._html_folder_import_running = False
+        self.status.set("Saved Allakhazam folder import failed")
+        messagebox.showerror("Folder import failed", str(exc))
 
     def _on_close(self):
         """Fast shutdown path with no Live intelligence recomputation."""

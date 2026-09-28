@@ -318,6 +318,8 @@ class MapViewerFrame(ttk.Frame):
         ttk.Button(lookup_row, text="Search", command=lambda: self._lookup_name(self.lookup_query.get())).grid(row=0, column=1, padx=(4, 0))
         self.index_maps_button = ttk.Button(lookup_row, text="Index maps", command=self.index_map_catalog)
         self.index_maps_button.grid(row=0, column=2, padx=(4, 0))
+        if not getattr(self.db, "knowledge_writable", True):
+            self.index_maps_button.configure(state="disabled")
 
         self.lookup_tree = ttk.Treeview(side, columns=("kind", "relation"), show="tree headings", height=8, selectmode="browse")
         self.lookup_tree.heading("#0", text="Name")
@@ -393,12 +395,19 @@ class MapViewerFrame(ttk.Frame):
         self.map_status.set(f"Map pack: {Path(root).name} | {count} base map files | catalog refresh is manual")
 
     def ensure_map_catalog(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            return
         root = self.map_root.get().strip()
         if not root or not Path(root).is_dir() or self._catalog_indexing:
             return
         self.index_map_catalog()
 
     def index_map_catalog(self) -> None:
+        if not getattr(self.db, "knowledge_writable", True):
+            self.lookup_status.set(
+                "Map catalog is shipped immutable knowledge; local map files are rendering assets only."
+            )
+            return
         root = self.map_root.get().strip()
         if not root or not Path(root).is_dir():
             self.lookup_status.set("Choose a valid map pack before indexing.")
@@ -455,7 +464,8 @@ class MapViewerFrame(ttk.Frame):
                     continue
 
                 self._catalog_indexing = False
-                self.index_maps_button.configure(state="normal")
+                if getattr(self.db, "knowledge_writable", True):
+                    self.index_maps_button.configure(state="normal")
                 if status == "ok":
                     stats = payload
                     self.catalog_progress.configure(maximum=1.0)
@@ -527,6 +537,23 @@ class MapViewerFrame(ttk.Frame):
         self._refresh_marker_list()
         self.after_idle(lambda: None if self._restore_view() else self.fit())
 
+    def _clear_loaded_map(self) -> None:
+        """Remove stale geometry when the current zone has no resolvable local map."""
+        self.zone_map = None
+        self.map_file.set("")
+        self.canvas.delete("all")
+        self._overlay_entity_by_item.clear()
+        self._map_label_text_by_item.clear()
+        self._raster_photo = None
+        self._display_photo = None
+        self._display_image_item = None
+        self._wall_exact_photos.clear()
+        self._wall_dirty = True
+        self._base_map_status = ""
+        self._invalidate_raster()
+        self._apply_map_background()
+        self._draw_empty_message()
+
     def load_current_zone(self) -> None:
         zone = self.get_zone()
         root = self.map_root.get().strip()
@@ -549,6 +576,9 @@ class MapViewerFrame(ttk.Frame):
 
         path = resolve_map_for_zone(zone, root, bound_stem=bound, hinted_stem=hinted)
         if path is None:
+            # Never leave the previous zone's geometry visible under a new current
+            # zone. An unresolved map is safer and clearer than a stale wrong map.
+            self._clear_loaded_map()
             self.map_status.set(
                 f"No unique map-file match for {zone}. Open the correct .txt once, then press Bind zone."
             )

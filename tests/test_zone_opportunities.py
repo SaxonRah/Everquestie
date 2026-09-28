@@ -5,7 +5,11 @@ import tempfile
 import unittest
 
 from eqquest.db import Database
-from eqquest.zone_opportunities import zone_opportunities, zone_opportunity_text
+from eqquest.zone_opportunities import (
+    compile_zone_opportunity_catalog,
+    zone_opportunities,
+    zone_opportunity_text,
+)
 
 
 class ZoneOpportunityTests(unittest.TestCase):
@@ -148,6 +152,40 @@ class ZoneOpportunityTests(unittest.TestCase):
                 self._quest(db, "Ambiguous Quest", "quest:ambiguous", "Duplicate Zone")
 
                 self.assertEqual(zone_opportunities(db, "Duplicate Zone"), ())
+            finally:
+                db.close()
+
+    def test_builder_compiled_zone_catalog_is_invalidated_by_identity_edit(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                zone_id = self._zone(db, "Compiled Zone", "9301")
+                quest = self._quest(
+                    db,
+                    "Compiled Zone Quest",
+                    "quest:compiled-zone",
+                    "Compiled Zone",
+                )
+
+                stats = compile_zone_opportunity_catalog(db)
+                self.assertGreaterEqual(stats["linked"], 1)
+                self.assertEqual(
+                    db.get_meta("zone_opportunity_catalog_dirty"),
+                    "0",
+                )
+
+                rows = zone_opportunities(db, "Compiled Zone")
+                self.assertEqual([row.quest_id for row in rows], [quest])
+
+                db.add_alias(
+                    zone_id,
+                    "Compiled Zone Alias",
+                    alias_type="source",
+                )
+                self.assertEqual(
+                    db.get_meta("zone_opportunity_catalog_dirty"),
+                    "1",
+                )
             finally:
                 db.close()
 

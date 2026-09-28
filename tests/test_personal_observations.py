@@ -9,7 +9,11 @@ import unittest
 from eqquest.db import Database
 from eqquest.events import Event
 from eqquest.knowledge_snapshot import create_knowledge_snapshot
-from eqquest.personal_observations import personal_observation_summary, personal_observation_text
+from eqquest.personal_observations import (
+    personal_observation_counts,
+    personal_observation_summary,
+    personal_observation_text,
+)
 from eqquest.runtime import RuntimeDatabase
 
 
@@ -63,6 +67,32 @@ class PersonalObservationTests(unittest.TestCase):
                 self.assertNotIn("Unrelated Item", text)
                 self.assertIn("not a calculated drop rate", text)
                 self.assertIn("not guaranteed personal kills", text)
+            finally:
+                db.close()
+
+
+    def test_compact_counts_return_only_requested_labels(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            db = Database(Path(tempdir) / "working.sqlite3")
+            try:
+                npc = db.upsert_entity(
+                    kind="npc",
+                    name="Compact Guard",
+                    external_id="npc:compact",
+                )
+                db.add_event(Event(kind="target_npc", raw="target", target="Compact Guard"))
+                db.add_event(Event(kind="consider", raw="consider", target="Compact Guard"))
+                db.add_event(Event(kind="kill", raw="kill", actor="Compact Guard"))
+
+                rows = personal_observation_counts(
+                    db,
+                    npc,
+                    ("Observed slain", "Targeted"),
+                )
+                self.assertEqual(
+                    [(row.label, row.count) for row in rows],
+                    [("Observed slain", 1), ("Targeted", 1)],
+                )
             finally:
                 db.close()
 

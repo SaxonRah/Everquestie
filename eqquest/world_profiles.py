@@ -282,6 +282,17 @@ def zone_profile_decisions(
     profile_id: str | None = None,
 ) -> dict[int, ZoneProfileDecision]:
     profile = world_profile(profile_id or active_world_profile_id(db))
+
+    runtime_cache = None
+    if not getattr(db, "knowledge_writable", True):
+        runtime_cache = getattr(db, "_zone_profile_decisions_cache", None)
+        if runtime_cache is None:
+            runtime_cache = {}
+            setattr(db, "_zone_profile_decisions_cache", runtime_cache)
+        cached = runtime_cache.get(profile.profile_id)
+        if cached is not None:
+            return cached
+
     rows = db.conn.execute(
         """
         SELECT e.id,e.name,e.data_json
@@ -432,6 +443,9 @@ def zone_profile_decisions(
                 zone_expansions,
             )
         result[zone_id] = decision
+
+    if runtime_cache is not None:
+        runtime_cache[profile.profile_id] = result
     return result
 
 
@@ -497,29 +511,32 @@ def shortest_path_for_profile(
     if source == target:
         return [source]
 
-    adjacency: dict[int, set[int]] = {}
-    rows = db.conn.execute(
-        """
-        SELECT source_zone_entity_id,target_zone_entity_id,bidirectional
-        FROM zone_travel_edges
-        WHERE status='linked' AND target_zone_entity_id IS NOT NULL
-        """
-    ).fetchall()
-    for row in rows:
-        a = int(row["source_zone_entity_id"])
-        b = int(row["target_zone_entity_id"])
-        a_decision = decisions.get(a)
-        b_decision = decisions.get(b)
-        if (
-            a_decision is None
-            or b_decision is None
-            or not a_decision.allowed
-            or not b_decision.allowed
-        ):
-            continue
-        adjacency.setdefault(a, set()).add(b)
-        if bool(row["bidirectional"]):
-            adjacency.setdefault(b, set()).add(a)
+    adjacency = None
+    runtime_cache = None
+    if not getattr(db, "knowledge_writable", True):
+        runtime_cache = getattr(db, "_profile_travel_adjacency_cache", None)
+        if runtime_cache is None:
+            runtime_cache = {}
+            setattr(db, "_profile_travel_adjacency_cache", runtime_cache)
+        adjacency = runtime_cache.get(profile.profile_id)
+
+    if adjacency is None:
+        base_adjacency = ZoneTravelCatalog(db).linked_adjacency()
+        filtered: dict[int, frozenset[int]] = {}
+        for a, targets in base_adjacency.items():
+            a_decision = decisions.get(a)
+            if a_decision is None or not a_decision.allowed:
+                continue
+            allowed_targets = frozenset(
+                b
+                for b in targets
+                if (decisions.get(b) is not None and decisions[b].allowed)
+            )
+            if allowed_targets:
+                filtered[a] = allowed_targets
+        adjacency = filtered
+        if runtime_cache is not None:
+            runtime_cache[profile.profile_id] = adjacency
 
     hop_limit = None if max_hops is None else max(0, int(max_hops))
     queue: deque[tuple[int, list[int]]] = deque([(source, [source])])

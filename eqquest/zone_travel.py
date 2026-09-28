@@ -421,6 +421,33 @@ class ZoneTravelCatalog:
         sql += " ORDER BY connection_kind,target_zone_entity_id,source_name,source_key"
         return [self._edge(row) for row in self.db.conn.execute(sql, args).fetchall()]
 
+    def linked_adjacency(self) -> dict[int, frozenset[int]]:
+        """Return linked travel adjacency, cached for immutable runtime knowledge."""
+        if not self._table_exists():
+            return {}
+
+        if not getattr(self.db, "knowledge_writable", True):
+            cached = getattr(self.db, "_zone_travel_adjacency_cache", None)
+            if cached is not None:
+                return cached
+
+        adjacency: dict[int, set[int]] = {}
+        for row in self.db.conn.execute(
+            "SELECT source_zone_entity_id,target_zone_entity_id,bidirectional "
+            "FROM zone_travel_edges WHERE status='linked' "
+            "AND target_zone_entity_id IS NOT NULL"
+        ).fetchall():
+            a = int(row["source_zone_entity_id"])
+            b = int(row["target_zone_entity_id"])
+            adjacency.setdefault(a, set()).add(b)
+            if bool(row["bidirectional"]):
+                adjacency.setdefault(b, set()).add(a)
+
+        frozen = {node: frozenset(targets) for node, targets in adjacency.items()}
+        if not getattr(self.db, "knowledge_writable", True):
+            setattr(self.db, "_zone_travel_adjacency_cache", frozen)
+        return frozen
+
     def shortest_path(
         self,
         source_zone_entity_id: int,
@@ -441,17 +468,7 @@ class ZoneTravelCatalog:
         if not self._table_exists():
             return []
 
-        adjacency: dict[int, set[int]] = {}
-        for row in self.db.conn.execute(
-            "SELECT source_zone_entity_id,target_zone_entity_id,bidirectional "
-            "FROM zone_travel_edges WHERE status='linked' "
-            "AND target_zone_entity_id IS NOT NULL"
-        ).fetchall():
-            a = int(row["source_zone_entity_id"])
-            b = int(row["target_zone_entity_id"])
-            adjacency.setdefault(a, set()).add(b)
-            if bool(row["bidirectional"]):
-                adjacency.setdefault(b, set()).add(a)
+        adjacency = self.linked_adjacency()
 
         hop_limit = None if max_hops is None else max(0, int(max_hops))
         queue: deque[tuple[int, list[int]]] = deque([(source, [source])])

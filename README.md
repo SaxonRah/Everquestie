@@ -280,6 +280,34 @@ Then run:
 .\tools\build_full_knowledge.ps1
 ```
 
+The full-build driver already creates a fresh temporary builder database and atomically
+replaces `build\working.sqlite3` only after provider compilation succeeds. Its
+`--force` path does not incrementally reuse the old working DB.
+
+For an explicit clean slate before rebuilding generated knowledge artifacts:
+
+```powershell
+.\tools\clean_knowledge_build.ps1
+.\tools\build_full_knowledge.ps1
+```
+
+The cleanup helper preserves all builder inputs (EverQuest installation, Allakhazam
+mirror, MCP checkout, Good/Brewall maps) and preserves player state by default. Add
+`-IncludeSourceCheckoutDb` only when you also want to remove the legacy mutable
+`%USERPROFILE%\.eqquest\eqquest.sqlite3` used by plain source-checkout launches. Add
+`-IncludeUserState` only when you intentionally want to erase packaged tracked quests,
+observed-event history, and runtime bindings.
+
+To test the newly finalized snapshot, use:
+
+```powershell
+.\tools\run_packaged.ps1
+```
+
+A plain `py EverQuestie.py` source-checkout launch can otherwise continue using the
+separate legacy `%USERPROFILE%\.eqquest\eqquest.sqlite3` workspace rather than the
+new `dist\everquestie-knowledge.sqlite3`.
+
 The full build:
 
 1. compiles the installed EQ client data;

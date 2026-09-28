@@ -11,6 +11,7 @@ from eqquest.world_entity_context import (
     build_world_entity_context,
     world_entity_context_text,
 )
+from eqquest.world_entity_detail import build_world_entity_context_for_id
 from eqquest.zone_provider_reconciliation import ProviderZoneReconciliationCatalog
 
 
@@ -296,6 +297,13 @@ class WorldEntityContextTests(unittest.TestCase):
         assert context is not None
         self.assertEqual(context.entity_id, self.scout)
 
+    def test_builder_world_context_by_id_is_not_cached(self):
+        first = build_world_entity_context_for_id(self.db, self.scout)
+        second = build_world_entity_context_for_id(self.db, self.scout)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertIsNot(first, second)
+
     def test_finalized_runtime_exposes_same_context_read_only(self):
         snapshot = self.root / "everquestie-knowledge.sqlite3"
         create_knowledge_snapshot(
@@ -314,6 +322,10 @@ class WorldEntityContextTests(unittest.TestCase):
             self.assertIsNotNone(npc)
             assert npc is not None
             self.assertEqual(npc.locations[0].gameplay_zone_entity_id, self.client_stone)
+            first_by_id = build_world_entity_context_for_id(runtime, npc.entity_id)
+            second_by_id = build_world_entity_context_for_id(runtime, npc.entity_id)
+            self.assertIsNotNone(first_by_id)
+            self.assertIs(first_by_id, second_by_id)
             quest, status = build_world_entity_context(runtime, "A Hive Inquiry", "quest")
             self.assertEqual(status, "exact")
             self.assertIsNotNone(quest)

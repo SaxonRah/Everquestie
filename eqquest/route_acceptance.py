@@ -286,12 +286,12 @@ def evaluate_route_acceptance(
 
 def _path_text(names: tuple[str, ...], *, full_paths: bool, preview_nodes: int) -> str:
     if full_paths or len(names) <= max(2, preview_nodes):
-        return " → ".join(names)
+        return " -> ".join(names)
     keep = max(2, int(preview_nodes))
     front = max(1, keep * 2 // 3)
     back = max(1, keep - front)
     omitted = len(names) - front - back
-    return " → ".join((*names[:front], f"… {omitted} zone(s) …", *names[-back:]))
+    return " -> ".join((*names[:front], f"… {omitted} zone(s) …", *names[-back:]))
 
 
 def route_acceptance_text(
@@ -319,7 +319,7 @@ def route_acceptance_text(
         target_name = result.target.canonical_name or result.target.query or "(empty)"
         lines += [
             "",
-            f"{index}. [{marker} {result.status}] {source_name} → {target_name}",
+            f"{index}. [{marker} {result.status}] {source_name} -> {target_name}",
             f"   {result.reason}",
         ]
         if result.path_zone_names:

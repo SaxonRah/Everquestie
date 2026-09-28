@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_name": "Reviewed current-live The Serpent's Spine travel evidence",
+  "source_version": "reviewed-2026-09-27",
+  "edges": [
+    {
+      "source_key": "stone-hive-blightfire-two-way",
+      "source": "Stone Hive",
+      "source_eq_zone_id": "396",
+      "target": "Blightfire Moors",
+      "target_eq_zone_id": "395",
+      "connection_kind": "zone_line",
+      "bidirectional": true,
+      "source_url": "https://www.projectmiragul.org/zones/view/stonehive",
+      "evidence": "The reviewed Stone Hive zone source lists Blightfire Moors as Stone Hive's adjacent zone. This is the ordinary zone-line connection between the two current client-backed zones, pinned to Stone Hive 396 and Blightfire Moors 395."
+    },
+    {
+      "source_key": "blightfire-to-plane-of-knowledge-book",
+      "source": "Blightfire Moors",
+      "source_eq_zone_id": "395",
+      "target": "The Plane of Knowledge",
+      "target_eq_zone_id": "202",
+      "connection_kind": "portal",
+      "bidirectional": false,
+      "source_url": "https://www.everquest.com/news/newbie-in-norrath-stellara-moors",
+      "evidence": "EverQuest's official Newbie in Norrath article describes finding and using the Plane of Knowledge book in Blightfire Moors. This reviewed edge records the demonstrated Blightfire-to-Plane-of-Knowledge direction only, pinned to current client zones 395 and 202."
+    }
+  ]
+}

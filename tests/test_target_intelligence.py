@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from eqquest.db import Database
+from eqquest.events import Event
 from eqquest.target_intelligence import current_target_intelligence
 
 
@@ -116,6 +117,40 @@ class TargetIntelligenceTests(unittest.TestCase):
 
         self.assertEqual(result.status, "none")
         self.assertFalse(result.resolved)
+
+
+    def test_compact_personal_counts_avoid_full_history_projection(self):
+        npc = self.db.upsert_entity(
+            kind="npc",
+            name="History Rat",
+            external_id="npc:history-rat",
+        )
+        self.db.add_event(
+            Event(kind="target_npc", raw="target one", target="History Rat")
+        )
+        self.db.add_event(
+            Event(kind="kill", raw="rat slain", actor="History Rat", target="OtherPlayer")
+        )
+        self.db.add_event(
+            Event(kind="target_npc", raw="target two", target="history rat")
+        )
+
+        statements: list[str] = []
+        self.db.conn.set_trace_callback(statements.append)
+        try:
+            result = current_target_intelligence(self.db)
+        finally:
+            self.db.conn.set_trace_callback(None)
+
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.entity_id, npc)
+        self.assertEqual(result.personal_observed_slain, 1)
+        self.assertEqual(result.personal_targeted, 2)
+
+        sql = "\n".join(statements).casefold()
+        self.assertNotIn("with matched as", sql)
+        self.assertNotIn("group by context_zone", sql)
+        self.assertNotIn("group by item", sql)
 
     def test_relationship_counts_distinct_related_entities_not_provenance_rows(self):
         npc_page = self._page("npc/5001", "Named Target")

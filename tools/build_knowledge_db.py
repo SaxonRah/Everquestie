@@ -21,6 +21,7 @@ from eqquest.route_acceptance import evaluate_route_acceptance, route_acceptance
 
 
 APPROVED_TRAVEL_SUPPLEMENT_DIR = REPO_ROOT / "builder-data" / "travel-supplements"
+APPROVED_ZONE_ALIAS_DIR = REPO_ROOT / "builder-data" / "zone-aliases"
 
 _TOPOLOGY_FRONTIER_STATUSES = {
     "disconnected",
@@ -377,6 +378,7 @@ def main() -> int:
             invocations,
             snapshot_version=args.version,
             supplement_dir=APPROVED_TRAVEL_SUPPLEMENT_DIR,
+            zone_alias_dir=APPROVED_ZONE_ALIAS_DIR,
             overwrite=bool(args.force),
             progress=print,
         )

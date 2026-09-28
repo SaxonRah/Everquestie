@@ -10,6 +10,9 @@ from .zone_authority import prefer_eqclient_zone_resolution
 from .zone_identity import ZoneIdentityIndex
 
 
+ZONE_OPPORTUNITY_CATALOG_VERSION = "1"
+
+
 @dataclass(frozen=True, slots=True)
 class ZoneOpportunityStep:
     step_order: int
@@ -51,6 +54,200 @@ def _event_kind(match_json: str | None) -> str:
     if not isinstance(value, dict):
         return ""
     return str(value.get("event") or "").strip().casefold()
+
+
+def _object_exists(db, name: str) -> bool:
+    return db.conn.execute(
+        """
+        SELECT 1 FROM sqlite_temp_master
+        WHERE type IN ('table','view') AND name=?
+        UNION ALL
+        SELECT 1 FROM sqlite_master
+        WHERE type IN ('table','view') AND name=?
+        LIMIT 1
+        """,
+        (name, name),
+    ).fetchone() is not None
+
+
+def compile_zone_opportunity_catalog(db) -> dict[str, int]:
+    """Resolve source-backed quest-step zone tokens once during knowledge finalization."""
+    if not getattr(db, "knowledge_writable", True):
+        raise RuntimeError("Zone Opportunity catalog compilation is builder-only")
+
+    db.conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS zone_opportunity_step_zones (
+            zone_text TEXT PRIMARY KEY COLLATE NOCASE,
+            zone_entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+            zone_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS ix_zone_opportunity_step_zones_lookup
+        ON zone_opportunity_step_zones(status, zone_entity_id);
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_insert
+        AFTER INSERT ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_update
+        AFTER UPDATE ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_step_delete
+        AFTER DELETE ON quest_steps
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_insert
+        AFTER INSERT ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_update
+        AFTER UPDATE ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_alias_delete
+        AFTER DELETE ON entity_aliases
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_insert
+        AFTER INSERT ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_update
+        AFTER UPDATE ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        CREATE TRIGGER IF NOT EXISTS eq_zone_opportunities_dirty_external_delete
+        AFTER DELETE ON entity_external_ids
+        BEGIN
+          INSERT INTO app_meta(key,value)
+          VALUES('zone_opportunity_catalog_dirty','1')
+          ON CONFLICT(key) DO UPDATE SET value='1';
+        END;
+        """
+    )
+    compiled_available = _object_exists(db, "zone_opportunity_step_zones")
+    if compiled_available:
+        compiled_available = (
+            db.get_meta("zone_opportunity_catalog_version", "")
+            == ZONE_OPPORTUNITY_CATALOG_VERSION
+        )
+    if compiled_available and getattr(db, "knowledge_writable", True):
+        compiled_available = (
+            db.get_meta("zone_opportunity_catalog_dirty", "1") != "1"
+        )
+
+    if (
+        not compiled_available
+        and getattr(db, "knowledge_writable", True)
+        and getattr(db, "_prefer_bounded_runtime_catalogs", False)
+    ):
+        return ()
+
+    if compiled_available:
+        rows = db.conn.execute(
+            """
+            SELECT zone_text AS zone
+            FROM zone_opportunity_step_zones
+            WHERE status='linked' AND zone_entity_id=?
+            ORDER BY zone_text COLLATE NOCASE
+            """,
+            (int(zone_entity_id),),
+        ).fetchall()
+        return tuple(str(row["zone"]) for row in rows)
+
+    rows = db.conn.execute(
+        """
+        SELECT zone
+        FROM quest_steps
+        WHERE zone IS NOT NULL AND TRIM(zone)<>''
+          AND source_page_id IS NOT NULL
+        GROUP BY zone COLLATE NOCASE
+        ORDER BY zone COLLATE NOCASE
+        """
+    ).fetchall()
+    index = ZoneIdentityIndex(db)
+
+    linked = ambiguous = unresolved = 0
+    payload: list[tuple[str, int | None, str, str, str]] = []
+    for row in rows:
+        text = " ".join(str(row["zone"] or "").split()).strip()
+        if not text:
+            continue
+        resolution = prefer_eqclient_zone_resolution(index.resolve(text), text)
+        if resolution.identity is not None:
+            status = "linked"
+            zone_id = int(resolution.identity.entity_id)
+            zone_name = str(resolution.identity.name)
+            linked += 1
+        else:
+            status = "ambiguous" if resolution.status == "ambiguous" else "unresolved"
+            zone_id = None
+            zone_name = ""
+            if status == "ambiguous":
+                ambiguous += 1
+            else:
+                unresolved += 1
+        payload.append(
+            (
+                text,
+                zone_id,
+                zone_name,
+                status,
+                str(resolution.reason or ""),
+            )
+        )
+
+    with db.batch():
+        db.conn.execute("DELETE FROM zone_opportunity_step_zones")
+        db.conn.executemany(
+            """
+            INSERT INTO zone_opportunity_step_zones(
+                zone_text,zone_entity_id,zone_name,status,reason
+            ) VALUES(?,?,?,?,?)
+            """,
+            payload,
+        )
+        db.set_meta(
+            "zone_opportunity_catalog_version",
+            ZONE_OPPORTUNITY_CATALOG_VERSION,
+        )
+        db.set_meta("zone_opportunity_catalog_dirty", "0")
+
+    return {
+        "tokens": len(payload),
+        "linked": linked,
+        "ambiguous": ambiguous,
+        "unresolved": unresolved,
+    }
 
 
 def _resolved_step_zone_tokens(db, index: ZoneIdentityIndex, zone_entity_id: int) -> tuple[str, ...]:

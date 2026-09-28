@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from typing import Iterable
 
 from .activity_pathways import PathwaySuggestion
 from .db import normalize_name
 from .events import Event, event_from_observed_row
-from .loot_relevance import recent_loot_relevance
+from .loot_relevance import loot_quest_uses_for_name
 from .zone_authority import authoritative_zones_match
 
 
@@ -18,6 +18,71 @@ class SessionLedgerEntry:
     annotations: tuple[str, ...]
 
 
+@dataclass(slots=True)
+class SessionLedgerCounter:
+    """Incremental kill/loot counters for one monitoring-session boundary.
+
+    The Live ledger renders once per persisted event. Re-querying every prior session
+    row for each new event makes annotation cost quadratic over a long play session.
+    This cursor consumes each kill/loot row once and keeps only normalized counters.
+    """
+
+    after_event_id: int = 0
+    last_event_id: int = 0
+    totals: dict[tuple[str, str], int] = field(default_factory=dict)
+    personal_kills: dict[str, int] = field(default_factory=dict)
+
+    def reset(self, after_event_id: int) -> None:
+        boundary = max(0, int(after_event_id))
+        self.after_event_id = boundary
+        self.last_event_id = boundary
+        self.totals.clear()
+        self.personal_kills.clear()
+
+    def update_through(self, db, event_id: int, after_event_id: int) -> None:
+        boundary = max(0, int(after_event_id))
+        if self.after_event_id != boundary or self.last_event_id < boundary:
+            self.reset(boundary)
+
+        upper = max(boundary, int(event_id))
+        if upper <= self.last_event_id:
+            return
+
+        rows = db.conn.execute(
+            """
+            SELECT id,kind,actor,target,item
+            FROM observed_events
+            WHERE id>? AND id<=? AND kind IN ('kill','loot')
+            ORDER BY id
+            """,
+            (int(self.last_event_id), upper),
+        ).fetchall()
+        for row in rows:
+            kind = str(row["kind"] or "").casefold()
+            subject = row["actor"] if kind == "kill" else row["item"]
+            key = normalize_name(str(subject or ""))
+            if not key:
+                continue
+            counter_key = (kind, key)
+            self.totals[counter_key] = self.totals.get(counter_key, 0) + 1
+            if (
+                kind == "kill"
+                and str(row["target"] or "").strip().casefold() == "you"
+            ):
+                self.personal_kills[key] = self.personal_kills.get(key, 0) + 1
+
+        # IDs are monotonically increasing. Advancing through non-kill/loot gaps keeps
+        # future updates bounded to rows that actually arrived since the last render.
+        self.last_event_id = upper
+
+    def subject_counts(self, kind: str, subject: str) -> tuple[int, int]:
+        kind_key = str(kind or "").casefold()
+        key = normalize_name(str(subject or ""))
+        total = int(self.totals.get((kind_key, key), 0))
+        personal = int(self.personal_kills.get(key, 0)) if kind_key == "kill" else 0
+        return total, personal
+
+
 def latest_observed_event(db) -> tuple[int, Event] | None:
     """Return the newest persisted player observation without changing either DB."""
     row = db.conn.execute(
@@ -26,32 +91,6 @@ def latest_observed_event(db) -> tuple[int, Event] | None:
     if row is None:
         return None
     return int(row["id"]), event_from_observed_row(row)
-
-
-def _session_subject_counts(
-    db,
-    after_event_id: int,
-    *,
-    kind: str,
-    field: str,
-    subject: str,
-) -> tuple[int, int]:
-    if field not in {"actor", "item"}:
-        raise ValueError(f"Unsupported observed-event subject field: {field}")
-    rows = db.conn.execute(
-        f"SELECT target,{field} AS subject FROM observed_events WHERE id>? AND kind=? ORDER BY id",
-        (int(after_event_id), kind),
-    ).fetchall()
-    key = normalize_name(subject)
-    total = 0
-    personal = 0
-    for row in rows:
-        if normalize_name(str(row["subject"] or "")) != key:
-            continue
-        total += 1
-        if kind == "kill" and str(row["target"] or "").strip().casefold() == "you":
-            personal += 1
-    return total, personal
 
 
 def _matching_pathways(
@@ -203,18 +242,9 @@ def _tracked_objective_context(
     return tuple(out)
 
 
-def _loot_relevance_lines(db, after_event_id: int, item_name: str) -> tuple[str, ...]:
-    key = normalize_name(item_name)
-    matches = (
-        row
-        for row in recent_loot_relevance(db, int(after_event_id), limit_items=1000)
-        if normalize_name(row.item_name) == key
-    )
-    item = next(matches, None)
-    if item is None:
-        return ()
+def _loot_relevance_lines(db, item_name: str) -> tuple[str, ...]:
     lines: list[str] = []
-    for use in item.uses:
+    for use in loot_quest_uses_for_name(db, item_name):
         quantity = f" x{use.quantity}" if use.quantity else ""
         tracked = "; tracked" if use.tracked else ""
         lines.append(
@@ -231,6 +261,7 @@ def session_ledger_entry(
     current_zone: str | None = None,
     pathway_suggestions: Iterable[PathwaySuggestion] = (),
     annotation_limit: int = 8,
+    counter: SessionLedgerCounter | None = None,
 ) -> SessionLedgerEntry | None:
     """Enrich one persisted kill/loot row with conservative session intelligence.
 
@@ -246,16 +277,12 @@ def session_ledger_entry(
         return None
     event = event_from_observed_row(row)
     annotations: list[str] = []
+    ledger_counter = counter or SessionLedgerCounter()
+    ledger_counter.update_through(db, int(event_id), int(after_event_id))
 
     if event.kind == "kill" and str(event.actor or "").strip():
         mob = str(event.actor).strip()
-        observed, personal = _session_subject_counts(
-            db,
-            after_event_id,
-            kind="kill",
-            field="actor",
-            subject=mob,
-        )
+        observed, personal = ledger_counter.subject_counts("kill", mob)
         if str(event.target or "").strip().casefold() == "you":
             annotations.append(
                 f"KILL TRACK | personal kill #{personal}; {mob} observed slain x{observed} this session"
@@ -282,13 +309,7 @@ def session_ledger_entry(
 
     elif event.kind == "loot" and str(event.item or "").strip():
         item = str(event.item).strip()
-        observed, _personal = _session_subject_counts(
-            db,
-            after_event_id,
-            kind="loot",
-            field="item",
-            subject=item,
-        )
+        observed, _personal = ledger_counter.subject_counts("loot", item)
         source = str(event.actor or "").strip()
         source_text = f"; from {source}'s corpse" if source else ""
         annotations.append(f"LOOT TRACK | {item} x{observed} this session{source_text}")
@@ -304,7 +325,7 @@ def session_ledger_entry(
                 current_zone=current_zone,
             )
         )
-        annotations.extend(_loot_relevance_lines(db, after_event_id, item))
+        annotations.extend(_loot_relevance_lines(db, item))
 
     limit = max(0, int(annotation_limit))
     if limit and len(annotations) > limit:

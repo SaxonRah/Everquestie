@@ -60,10 +60,7 @@ if ([string]::IsNullOrWhiteSpace($VersionSafe)) {
     throw "-Version does not contain any filename-safe characters."
 }
 
-if ([string]::IsNullOrWhiteSpace($WorkingDb)) {
-    $WorkingDb = Join-Path (Join-Path $ProjectRoot "build") "working.sqlite3"
-}
-$WorkingDb = [System.IO.Path]::GetFullPath($WorkingDb)
+$WorkingDb = Resolve-FromProject $WorkingDb "build\working.sqlite3"
 if (-not (Test-Path $WorkingDb -PathType Leaf)) {
     throw "Builder database was not found at '$WorkingDb'. Build/import a working knowledge DB first or pass -WorkingDb."
 }
